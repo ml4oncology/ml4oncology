@@ -1,0 +1,378 @@
+#!/usr/bin/env python
+# coding: utf-8
+"""
+========================================================================
+© 2021 Institute for Clinical Evaluative Sciences. All rights reserved.
+
+TERMS OF USE:
+##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
+
+##Not-for-profit.## This code and data may not be used in connection with profit generating activities.
+
+##No liability.## The Institute for Clinical Evaluative Sciences makes no warranty or representation regarding the fitness, quality or reliability of this code and data.
+
+##No Support.## The Institute for Clinical Evaluative Sciences will not provide any technological, educational or informational support in connection with the use of this code and data.
+
+##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
+========================================================================
+"""
+
+# In[2]:
+
+
+import sys
+
+
+# In[3]:
+
+
+for i, p in enumerate(sys.path):
+    sys.path[i] = sys.path[i].replace("/software/anaconda/3/", "/MY/DATA/.conda/envs/myenv/")
+
+
+# In[4]:
+
+
+import tqdm
+import pandas as pd
+import numpy as np
+import utilities as util
+import warnings
+warnings.filterwarnings('ignore')
+
+import matplotlib.pyplot as plt
+
+
+# In[5]:
+
+
+get_ipython().system('ls data')
+
+
+# In[6]:
+
+
+df = util.read_partially_reviewed_csv()
+df = util.get_included_regimen(df)
+cycle_lengths = df['cycle_length'].to_dict()
+
+
+# # Neutrophil
+
+# In[8]:
+
+
+neutrophil_df = pd.read_csv('data/neutrophil.csv')
+neutrophil_df = neutrophil_df.rename({str(i): i for i in range(-5, 29)}, axis='columns')
+print("number of rows =", len(neutrophil_df))
+
+# keep rows that have at least 2 blood count measures
+mask = (~neutrophil_df[range(-5,29)].isnull()).sum(axis=1) >= 2
+neutrophil_df = neutrophil_df[mask]
+print("number of rows after filtering =", len(neutrophil_df))
+
+
+# In[9]:
+
+
+# number of patients per cancer regiment
+util.num_patients_per_regimen(neutrophil_df)
+
+
+# In[10]:
+
+
+# number of blood counts per regimen
+util.num_blood_counts_per_regimen(neutrophil_df)
+
+
+# In[11]:
+
+
+# histogram of numbers of blood counts measured (for a single row)
+util.hist_blood_counts(neutrophil_df)
+
+
+# In[12]:
+
+
+# histogram of number of days between the last and the previous blood count measurement (for a single row)
+util.hist_days_btwn_prev_and_last_count(neutrophil_df)
+
+
+# In[8]:
+
+
+util.scatter_plot(neutrophil_df, cycle_lengths)
+
+
+# In[12]:
+
+
+fig = plt.figure(figsize=(15,75))
+i = 1
+for idx, row in tqdm.tqdm(neutrophil_df.iterrows(), total=len(neutrophil_df)):
+    y = row[range(-5,29)].values
+    x = list(range(-5,29))
+
+    # if more than 25 blood measurements
+    if (~pd.isnull(y)).sum() > 25:
+        ax = fig.add_subplot(20,2,i)
+        plt.subplots_adjust(hspace=0.3)
+        i += 1
+        plt.scatter(x, y)
+        plt.title(f"Patient: {int(row['ikn'])}, Regimen: {row['regimen']}, Chemo cycle: {row['chemo_cycle']}")
+        plt.ylabel('Blood Count (10^9/L)')
+        plt.xlabel('Day')
+
+plt.show()
+
+
+# In[7]:
+
+
+neutrophil_threshold = 1.5
+util.below_threshold_bar_plot(neutrophil_df, cycle_lengths, neutrophil_threshold)
+
+
+# In[7]:
+
+
+util.iqr_plot(neutrophil_df, cycle_lengths,
+             show_outliers=False, save=True, filename='neutrophil-plot2')
+
+
+# In[7]:
+
+
+util.mean_cycle_plot(neutrophil_df, cycle_lengths)
+
+
+# # Hemoglobin
+
+# In[13]:
+
+
+hemoglobin_df = pd.read_csv('data/hemoglobin.csv')
+hemoglobin_df = hemoglobin_df.rename({str(i): i for i in range(-5, 29)}, axis='columns')
+print("number of rows =", len(hemoglobin_df))
+
+# keep rows that have at least 2 blood count measures
+mask = (~hemoglobin_df[range(-5,29)].isnull()).sum(axis=1) >= 2
+hemoglobin_df = hemoglobin_df[mask]
+print("number of rows after filtering =", len(hemoglobin_df))
+
+
+# In[12]:
+
+
+util.scatter_plot(hemoglobin_df, cycle_lengths, unit='g/L')
+
+
+# In[9]:
+
+
+hemoglobin_threshold = 100
+util.below_threshold_bar_plot(hemoglobin_df, cycle_lengths, hemoglobin_threshold)
+
+
+# In[9]:
+
+
+util.iqr_plot(hemoglobin_df, cycle_lengths, unit='g/L',
+             show_outliers=False, save=True, filename='hemoglobin-plot2')
+
+
+# In[15]:
+
+
+util.mean_cycle_plot(hemoglobin_df, cycle_lengths, unit='g/L')
+
+
+# # Platelet
+
+# In[14]:
+
+
+platelet_df = pd.read_csv('data/platelet.csv')
+platelet_df = platelet_df.rename({str(i): i for i in range(-5, 29)}, axis='columns')
+print("number of rows =", len(platelet_df))
+
+# keep rows that have at least 2 blood count measures
+mask = (~platelet_df[range(-5,29)].isnull()).sum(axis=1) >= 2
+platelet_df = platelet_df[mask]
+print("number of rows after filtering =", len(platelet_df))
+
+
+# In[17]:
+
+
+util.scatter_plot(platelet_df, cycle_lengths)
+
+
+# In[11]:
+
+
+platelet_threshold = 75
+util.below_threshold_bar_plot(platelet_df, cycle_lengths, platelet_threshold)
+
+
+# In[11]:
+
+
+util.iqr_plot(platelet_df, cycle_lengths,
+             show_outliers=False, save=True, filename='platelet-plot2')
+
+
+# In[21]:
+
+
+util.mean_cycle_plot(platelet_df, cycle_lengths)
+
+
+# ## IQR playground
+
+# In[22]:
+
+
+plt.boxplot([[0, 0.1, 0.7],[0.9,0.8,1.5]], labels=['y','x'])
+plt.show()
+
+
+# # Different Thresholds
+
+# In[9]:
+
+
+for (neutrophil_threshold, color) in [(1.5, None), (1.0, 'blue'), (0.5, 'green')]:
+    print('###################################################################################################################')
+    print(f'############################################ NEUTROPHIL THRESHOLD {neutrophil_threshold} #############################################')
+    print('###################################################################################################################')
+    util.below_threshold_bar_plot(neutrophil_df, cycle_lengths, neutrophil_threshold, color=color, 
+                                  save=True, filename=f"neutrophil-plot1-threshold{neutrophil_threshold}")
+
+
+# In[10]:
+
+
+for (hemoglobin_threshold, color) in [(100, None), (80, 'green')]:
+    print('###################################################################################################################')
+    print(f'############################################ HEMOGLOBIN THRESHOLD {hemoglobin_threshold} #############################################')
+    print('###################################################################################################################')
+    util.below_threshold_bar_plot(hemoglobin_df, cycle_lengths, hemoglobin_threshold, color=color,
+                                 save=True, filename=f"hemoglobin-plot1-threshold{hemoglobin_threshold}")
+
+
+# In[11]:
+
+
+for (platelet_threshold, color) in [(75, None), (50, 'blue'), (25, 'green')]:
+    print('###################################################################################################################')
+    print(f'############################################# PLATELET THRESHOLD {platelet_threshold} ###############################################')
+    print('###################################################################################################################')
+    util.below_threshold_bar_plot(platelet_df, cycle_lengths, platelet_threshold, color=color,
+                                 save=True, filename=f"platelet-plot1-threshold{platelet_threshold}")
+
+
+# # How to Display Saved Images
+
+# In[34]:
+
+
+# how to display the saved images
+get_ipython().run_line_magic('matplotlib', 'inline')
+from IPython.display import Image
+Image('plots/neutrophil-plot1-threshold1.5.jpg')
+
+
+# # IQR plots based on sex/age
+
+# In[33]:
+
+
+top5_regimens = neutrophil_df['regimen'].value_counts().index.tolist()[0:5]
+blood_types = ['neutrophil', 'hemoglobin', 'platelet']
+
+
+# In[34]:
+
+
+for idx, blood_df in enumerate([neutrophil_df, hemoglobin_df, platelet_df]):
+    df = blood_df.copy()
+    df = df[df['regimen'].isin(top5_regimens)]
+    print('###################################################################################################################')
+    print(f'#################################################### {blood_types[idx]} ###################################################')
+    print('###################################################################################################################')
+    iqr_plot_by_sex(df, cycle_lengths, show_outliers=False, figsize=(15,20))
+
+
+# In[39]:
+
+
+for idx, blood_df in enumerate([neutrophil_df, hemoglobin_df, platelet_df]):
+    df = blood_df.copy()
+    df = df[df['regimen'].isin(top5_regimens)]
+    df['over60'] = df['age'] >= 60
+    print('###################################################################################################################')
+    print(f'#################################################### {blood_types[idx]} ###################################################')
+    print('###################################################################################################################')
+    iqr_plot_by_age(df, cycle_lengths, show_outliers=False, figsize=(15,20))
+
+
+# In[22]:
+
+
+def iqr_plot_by_sex(df, cycle_lengths, unit='10^9/L', show_outliers=True, save=False, 
+                    filename='NEUTROPHIL_PLOT3', figsize=(15,150)):
+    fig = plt.figure(figsize=figsize)
+    plt.subplots_adjust(hspace=0.3)
+    num_regimen = len(set(df['regimen']))
+    counter = 1
+    for regimen, group_reg in df.groupby('regimen'):
+        cycle_length = int(cycle_lengths[regimen])
+        for sex, group in group_reg.groupby('sex'):
+            data = np.array([group[day].dropna().values for day in range(0,cycle_length+1)], dtype=object)
+            ax = fig.add_subplot(num_regimen,2,counter)
+            bp = plt.boxplot(data, labels=range(0,cycle_length+1), showfliers=show_outliers)
+            plt.title(regimen+' - Sex'+sex)
+            plt.ylabel(f'Blood Count ({unit})')
+            plt.xlabel('Day')
+            medians = [median.get_ydata()[0] for median in bp['medians']]
+            plt.plot(range(1,cycle_length+2), medians, color='red')
+            counter += 1
+    if save:
+        plt.savefig(f'plots/{filename}.jpg', bbox_inches='tight')    
+    plt.show()
+
+
+# In[35]:
+
+
+def iqr_plot_by_age(df, cycle_lengths, unit='10^9/L', show_outliers=True, save=False, 
+                    filename='NEUTROPHIL_PLOT3', figsize=(15,150)):
+    fig = plt.figure(figsize=figsize)
+    plt.subplots_adjust(hspace=0.3)
+    num_regimen = len(set(df['regimen']))
+    counter = 1
+    for regimen, group_reg in df.groupby('regimen'):
+        cycle_length = int(cycle_lengths[regimen])
+        for over60, group in group_reg.groupby('over60'):
+            data = np.array([group[day].dropna().values for day in range(0,cycle_length+1)], dtype=object)
+            ax = fig.add_subplot(num_regimen,2,counter)
+            bp = plt.boxplot(data, labels=range(0,cycle_length+1), showfliers=show_outliers)
+            plt.title(regimen+' - Over60'+str(over60))
+            plt.ylabel(f'Blood Count ({unit})')
+            plt.xlabel('Day')
+            medians = [median.get_ydata()[0] for median in bp['medians']]
+            plt.plot(range(1,cycle_length+2), medians, color='red')
+            counter += 1
+    if save:
+        plt.savefig(f'plots/{filename}.jpg', bbox_inches='tight')    
+    plt.show()
+
+
+# In[ ]:
+
+
+
+
