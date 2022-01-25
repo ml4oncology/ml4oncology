@@ -1,0 +1,7 @@
+# Create back up template
+DATE=2022-01-04
+mkdir backup/$DATE backup/$DATE/scripts backup/$DATE/ED-H-D backup/$DATE/cytopenia backup/$DATE/bash
+cp bash/* backup/$DATE/bash
+cp scripts/*.py backup/$DATE/scripts
+cp ED-H-D/*.ipynb backup/$DATE/ED-H-D
+cp cytopenia/*.ipynb backup/$DATE/cytopenia

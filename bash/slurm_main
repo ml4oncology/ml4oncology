@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH -p med
+#SBATCH -c 32
+#SBATCH -w dsh09ana007
+#SBATCH --mem 128G
+module load apps/anaconda/3
+source activate myenv
+python scripts/slurm_program.py
+
+# ##############################
+# Template1
+# SBATCH -p med
+# SBATCH -c 64
+# SBATCH -w dsh09ana003
+# SBATCH --mem 512G
+# ##############################
+# Template2
+# SBATCH -p gpu_med
+# SBATCH -c 16
+# SBATCH -w dsh09gvu001
+# SBATCH --mem 128G
+# ##############################

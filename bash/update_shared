@@ -1,0 +1,5 @@
+SHARE_PATH=XXXXXXXX
+cp bash/* $SHARE_PATH/bash
+cp scripts/*.py $SHARE_PATH/scripts
+cp ED-H-D/*.ipynb $SHARE_PATH/ED-H-D
+cp cytopenia/*.ipynb $SHARE_PATH/cytopenia

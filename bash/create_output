@@ -1,0 +1,29 @@
+rm -r output
+mkdir output
+mkdir output/results
+
+# Copy bash files
+cp -r bash/ output/
+
+# Copy results
+cp -r ED-H-D/models/ML/within_30_days/tables/ output/results
+cp -r ED-H-D/models/ML/within_30_days/figures/ output/results
+cp ED-H-D/models/ML/data_splits_summary.csv output/results
+cp ED-H-D/models/hyperparameters.csv output/results
+cp ED-H-D/models/GRU/within_30_days/classification_result.csv output/results/tables/GRU_classification_result.csv
+cp ED-H-D/data/pearson_coefficient.jpg output/results
+
+# Copy scripts
+# NOTE: need to change config
+cp -r scripts/ output/
+
+# Copy notebooks
+# NOTE: need to change user_path for all notebooks, 
+#       first part/scratch notes of cytopenia/Preprocess.py
+#       scratch notes of ED-H-D/Training.py
+mkdir output/ED-H-D
+mkdir output/cytopenia
+jupyter nbconvert --output-dir output/ED-H-D --to script ED-H-D/*ipynb
+jupyter nbconvert --output-dir output/cytopenia --to script cytopenia/*ipynb
+rm output/cytopenia/Investigation.py
+cp -r notebooks_pyspark/ output/

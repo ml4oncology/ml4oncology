@@ -368,6 +368,7 @@ class Train(PrepData):
     Employ model calibration and Baysian hyperparameter optimization
     """
     def __init__(self):
+        super(Train, self).__init__()
         cols = pd.MultiIndex.from_product([['Train', 'Valid'], self.blood_types])
         indices = pd.MultiIndex.from_product([[], []])
         self.score_df = pd.DataFrame(index=indices, columns=cols)
