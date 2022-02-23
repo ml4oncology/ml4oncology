@@ -7,8 +7,6 @@ ML pipeline for data processing and model training for the prediction of adverse
 
 The dataset, provided by ICES [1], is a population based administrative data consisting of data on demographics, cancer diagnosis and treatment, symptom questionnaires, and lab tests for approximately 120000 patients in Ontario, Canada between 2005 and 2020. By predicting adverse events in chemotherapy patients before their next scheduled chemotherapy administration, these models can aid in early intervention and facilitate tailored treatment.
 
-The full report for cytopenia prediction can be found in "A Warning System for Cytopenias during Chemotherapy using Population-Based Administrative Data.pdf".
-
 This dataset is not open-source. The code can only be run in the ICES DSH (Data Safe Haven) environment.
 
 ## Instructions
