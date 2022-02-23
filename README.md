@@ -19,7 +19,13 @@ This dataset is not open-source. The code can only be run in the ICES DSH (Data 
 or convert those python files into jupyter notebooks, and run them on a jupyter browser.
 
 ## Prerequisites
-See requirements.txt
+See environment.yaml, or run
+
+	conda env create -f environment.yaml
+
+To use that conda environment on jupyter notebook, run
+
+	python -m ipykernel install --user --name=myenv
 
 ## References
 [1] ICES. Data Discovery Better Health. https://www.ices.on.ca/. Accessed Aug 16, 2021.

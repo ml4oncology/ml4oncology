@@ -1,8 +1,0 @@
-pandas
-numpy
-pickle
-tqdm
-matplotlib
-scikit-learn
-xgboost
-bayesian-optimization
