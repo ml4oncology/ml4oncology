@@ -1,7 +1,21 @@
+"""
+========================================================================
+© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+
+TERMS OF USE:
+##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
+
+##Not-for-profit.## This code and data may not be used in connection with profit generating activities.
+
+##No liability.## The Institute for Clinical Evaluative Sciences makes no warranty or representation regarding the fitness, quality or reliability of this code and data.
+
+##No Support.## The Institute for Clinical Evaluative Sciences will not provide any technological, educational or informational support in connection with the use of this code and data.
+
+##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
+========================================================================
+"""
 #!/usr/bin/env python
 # coding: utf-8
-
-# use <b>./kevin_launch_jupyter-notebook_webserver.sh</b> instead of <b>launch_jupyter-notebook_webserver.sh</b> if you want to increase buffer memory size so we can load greater filesizes
 
 # In[1]:
 
@@ -12,52 +26,36 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[2]:
-
-
-import sys
-
-
-# In[3]:
-
-
-env = 'myenv'
-user_path = 'XXXXXX'
-for i, p in enumerate(sys.path):
-    sys.path[i] = sys.path[i].replace("/software/anaconda/3/", f"{user_path}/.conda/envs/{env}/")
-sys.prefix = f'{user_path}/.conda/envs/{env}/'
-
-
-# In[80]:
+# In[39]:
 
 
 import tqdm
 import pandas as pd
+pd.options.mode.chained_assignment = None
 import numpy as np
-import multiprocessing as mp
 import matplotlib.pyplot as plt
-from scipy.stats import pearsonr
 
-from scripts.utilities import (get_clean_variable_names)
-from scripts.config import (root_path, regiments_folder)
-from scripts.preprocess import (clean_string, get_y3, get_systemic)
-from scripts.prep_data import (PrepData, PrepDataEDHD)
-from scripts.train import (Train)
-
-
-# In[5]:
+from scripts.utility import (get_pearson_matrix)
+from scripts.visualize import (pearson_plot)
+from scripts.config import (root_path, regiments_folder, acu_folder, y3_cols)
+from scripts.preprocess import (clean_string)
+from scripts.prep_data import (PrepDataEDHD)
 
 
-y3 = get_y3()
+# # Age Demographic
+
+# In[8]:
+
+
+y3 = pd.read_csv(f'{root_path}/data/y3.csv')
+y3 = y3[y3_cols+['dthdate']]
 y3 = clean_string(y3, ['sex'])
 y3 = y3[~(y3['sex'] == 'O')]
 y3['bdate'] = pd.to_datetime(y3['bdate'])
 y3['dthdate'] = pd.to_datetime(y3['dthdate'])
 
 
-# # Age Demographic
-
-# In[6]:
+# In[9]:
 
 
 data = y3.copy()
@@ -69,7 +67,7 @@ data['age'] = died.year - born.year - ((died.month) < (born.month))
 data = data[~((data['age'] > 110) & (data['dthdate'] == today))] # do not include patients over 110 years old today
 
 
-# In[7]:
+# In[10]:
 
 
 fig = plt.figure(figsize=(15, 4))
@@ -80,85 +78,72 @@ plt.legend()
 plt.show()
 
 
-# # Death vs Age
+# # Target within 14, 30, 90, 180, 365 days - Label Distribution
 
-# In[8]:
-
-
-data = y3.copy()
-born = data['bdate'].dt
-died = data['dthdate'].dt
-data['age'] = died.year - born.year - ((died.month) < (born.month))
-data = data[~data['age'].isnull()]
-
-
-# In[9]:
-
-
-fig = plt.figure(figsize=(15, 4))
-for sex, group in data.groupby('sex'):
-    plt.hist(group['age'], alpha=0.5, label=sex, bins=109)
-plt.xticks(range(0,109,4))
-plt.legend()
-plt.show()
-
-
-# # Target within 14, 30, 180, 365 days - Label Distribution
-
-# In[10]:
+# In[42]:
 
 
 def get_distribution():
-    df = pd.read_csv(f'{root_path}/ED-H-D/data/model_data.csv', dtype={'curr_morph_cd': str, 'lhin_cd': str})
-    cols = df.columns
-    target_cols = cols[cols.str.contains('within')]
-    prep = PrepData()
-    
+    prep = PrepDataEDHD(adverse_event='acu')
+    df = prep.load_data()
+    prep.event_dates['visit_date'] = df['visit_date']
     results = []
-    for days in [14, 30, 180, 365]:
-        keep_cols = target_cols[target_cols.str.contains(str(days))]
-        result = prep.get_label_distribution(df[keep_cols])
+    for days in tqdm.tqdm([14, 30, 90, 180, 365]):
+        target_keyword = f'_within_{days}days'
+        df = prep.get_event_data(df, target_keyword, event='H', create_targets=True)
+        df = prep.get_event_data(df, target_keyword, event='ED', create_targets=True)
+        df['ACU'+target_keyword] = df['ED'+target_keyword] | df['H'+target_keyword] 
+        df['TR_ACU'+target_keyword] = df['TR_ED'+target_keyword] | df['TR_H'+target_keyword] 
+        target_cols = df.columns[df.columns.str.contains(target_keyword)]
+        result = prep.get_label_distribution(df[target_cols])
         result.columns = pd.MultiIndex.from_arrays([(f'{days} days', f'{days} days'), ('False', 'True')])
-        result.index = result.index.str.replace(f'_within_{days}days', '')
+        result.index = result.index.str.replace(target_keyword, '')
         results.append(result)
     return pd.concat(results, axis=1)
 
 
-# In[11]:
+# In[43]:
 
 
 get_distribution()
 
 
-# # Month Distribution
+# # Month/Year Distribution
 
-# In[16]:
-
-
-df = pd.read_csv(f'{root_path}/{regiments_folder}/regiments_EDHD.csv', dtype=str)
-regimens_keep = df.loc[df['include'] == '1', 'regimens'].values
-del df
-systemic = get_systemic(regimens_keep)
+# In[58]:
 
 
-# In[37]:
+systemic = pd.read_csv(f'{root_path}/data/systemic.csv')
+systemic['visit_date'] = pd.to_datetime(systemic['visit_date'])
+
+
+# In[59]:
 
 
 fig = plt.figure(figsize=(15, 4))
 labels, counts = np.unique(systemic['visit_date'].dt.month, return_counts=True)
-all(labels == np.arange(1, 13))
+assert all(labels == np.arange(1, 13))
 labels=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 plt.bar(labels, counts, align='center')
 plt.show()
 
 
-# In[51]:
+# In[60]:
 
 
 mapping = {'Winter': [12,1,2], 'Spring': [3,4,5], 'Summer': [6,7,8], 'Fall': [9,10,11]}
 mapping = {month: season for season, months in mapping.items() for month in months}
 labels, counts = np.unique(systemic['visit_date'].dt.month.map(mapping), return_counts=True)
 plt.bar(labels[[1, 2, 0, 3]], counts[[1, 2, 0, 3]], align='center')
+plt.show()
+
+
+# In[61]:
+
+
+fig = plt.figure(figsize=(15, 4))
+labels, counts = np.unique(systemic['visit_date'].dt.year, return_counts=True)
+plt.bar(labels, counts, align='center')
 plt.show()
 
 
@@ -402,7 +387,7 @@ from scripts.config import all_observations
 # In[5]:
 
 
-olis = pd.read_csv(f'{root_path}/ED-H-D/data/olis_complete.csv', dtype=str) 
+olis = pd.read_csv(f'{root_path}/{acu_folder}/data/olis_complete.csv', dtype=str) 
 olis['value'] = olis['value'].astype(float)
 
 
@@ -437,66 +422,129 @@ df = df.T
 df
 
 
+# # Diagnostic Codes
+
+# In[98]:
+
+
+from scripts.preprocess import clean_string
+
+
+# In[99]:
+
+
+df = pd.read_csv(f'{root_path}/data/dad.csv', dtype=str)
+print(f'Completed Loading dad Dataset')
+df = clean_string(df, diag_cols)
+raw = pd.Series(df[diag_cols].values.flatten())
+raw = raw[~raw.isnull()]
+all_diag_codes = pd.Series(raw.unique())
+print(f"Total number of unique diag codes: {len(all_diag_codes)}")
+
+
+# In[100]:
+
+
+for cause, mapping in diag_code_mapping.items():
+    X = pd.Series(mapping)
+    codes = X[X.isin(all_diag_codes)].values.tolist()
+    print(f"Total number of {cause} codes: {len(X)}")
+    print(f"Total number of {cause} codes in dad.csv: {len(codes)}")
+    print(f'{cause} codes in dad.csv: {codes}')
+
+
+# In[101]:
+
+
+ALL = all_diag_codes
+ALL[ALL.str.contains('K52')]
+
+
+# In[102]:
+
+
+freq_df = pd.DataFrame(ALL.str.len().value_counts(), columns=['Frequency of code lengths']).sort_index()
+freq_df
+
+
+# In[103]:
+
+
+for code in X: 
+    tmp = ALL[ALL.str.contains(code)]
+    if any(tmp.str.len() > 4):
+        break
+tmp
+
+
+# In[104]:
+
+
+complete_diag_code_mapping = {}
+for cause, diag_codes in diag_code_mapping.items():
+    complete_diag_codes = []
+    for code in diag_codes:
+        complete_diag_codes += all_diag_codes[all_diag_codes.str.contains(code)].values.tolist()
+    complete_diag_code_mapping[cause] = complete_diag_codes
+
+
+# In[105]:
+
+
+for cause, diag_codes in complete_diag_code_mapping.items():
+    mask = False
+    for diag_col in diag_cols:
+        mask |= df[diag_col].isin(diag_codes)
+    df[f'{cause}_H'] = mask
+
+
+# In[106]:
+
+
+pd.DataFrame([df['INFX_H'].value_counts(), 
+              df['GI_H'].value_counts(), 
+              df['TR_H'].value_counts()])
+
+
+# In[107]:
+
+
+df[diag_cols]
+
+
 # # Analyze Correlations
 
-# In[54]:
+# In[76]:
 
 
-output_path = f'{root_path}/ED-H-D'
 target_keyword = '_within_30days'
+output_path = f'{root_path}/{acu_folder}/models/within_30_days'
 
 
-# In[55]:
+# In[73]:
 
 
-prep = PrepDataEDHD()
-model_data = prep.get_data(output_path, target_keyword)
+prep = PrepDataEDHD(adverse_event='acu')
+model_data = prep.get_data(target_keyword, missing_thresh=80)
 model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.05, upper_percentile=0.95)
-
-dtypes = model_data.dtypes
-cols = dtypes[~(dtypes == object)].index
-cols = cols.drop('ikn')
-target_cols = cols[cols.str.contains(target_keyword)]
-feature_cols = cols[~cols.str.contains(target_keyword)]
+pearson_matrix = get_pearson_matrix(df, target_keyword, output_path)
 
 
-# In[56]:
+# In[77]:
 
 
-pearson_matrix = pd.DataFrame(columns=feature_cols, index=target_cols)
-for target in target_cols:
-    for feature in tqdm.tqdm(feature_cols):
-        data = model_data[~model_data[feature].isnull()]
-        corr, prob = pearsonr(data[target], data[feature])
-        pearson_matrix.loc[target, feature] = np.round(corr, 3)
-pearson_matrix = pearson_matrix.T
-pearson_matrix.index = get_clean_variable_names(pearson_matrix.index)
-pearson_matrix.columns = pearson_matrix.columns.str.replace(target_keyword, '')
-pearson_matrix.to_csv(f'{output_path}/data/pearson_matrix.csv', index_label='index')
-
-
-# In[92]:
-
-
-pearson_matrix = pd.read_csv(f'{output_path}/data/pearson_matrix.csv')
+pearson_matrix = pd.read_csv(f'{output_path}/tables/pearson_matrix.csv')
 pearson_matrix = pearson_matrix.set_index('index')
 pearson_matrix.style.background_gradient(cmap='Greens')
 
 
-# In[95]:
+# In[78]:
 
 
-fig, ax = plt.subplots(figsize=(25,9))
-indices = pearson_matrix['ACU'].sort_values().index
-ax.plot(pearson_matrix.loc[indices], marker='o')
-ax.set_ylabel('Pearson Correlation Coefficient', fontsize=16)
-ax.set_xlabel('Feature Columns', fontsize=16)
-plt.legend(pearson_matrix.columns, fontsize=14)
-plt.xticks(rotation='90')
-plt.savefig(f'{output_path}/data/pearson_coefficient.jpg', bbox_inches='tight', dpi=300)
+pearson_plot(pearson_matrix, output_path)
 
 
-# In[96]:
+# In[79]:
 
 
 print("Variables with high pearson correlation to any of the targets")
@@ -504,7 +552,3 @@ pearson_matrix.max(axis=1).sort_values(ascending=False).head(n=20)
 
 
 # In[ ]:
-
-
-
-

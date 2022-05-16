@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH -p med
-#SBATCH -c 32
-#SBATCH -w dsh09ana007
+#SBATCH -p gpu_med
+#SBATCH -c 16
+#SBATCH -w dsh09gvu001
 #SBATCH --mem 128G
 module load apps/anaconda/3
 source activate myenv
-python scripts/slurm_program.py
+python scripts/perm_importance.py --adverse-event CYTO
 
 # ##############################
 # Template1

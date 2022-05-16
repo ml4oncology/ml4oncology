@@ -14,3 +14,15 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
+import pandas as pd
+from scripts.utility import get_eGFR
+
+def test_eGFR():
+    # kidney.org/professionals/kdoqi/gfr_calculator
+    test_df = pd.DataFrame([[70, 200, 'M'],
+                            [70, 200, 'F'],
+                            [70, 100, 'M'],
+                            [70, 100, 'F']], columns=['age', 'value', 'sex'])
+    answer = [30, 23, 70, 52]
+    test_df = get_eGFR(test_df)
+    assert all(test_df['eGFR'].round() == answer)

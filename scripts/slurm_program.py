@@ -1,143 +1,144 @@
+"""
+========================================================================
+© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+
+TERMS OF USE:
+##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
+
+##Not-for-profit.## This code and data may not be used in connection with profit generating activities.
+
+##No liability.## The Institute for Clinical Evaluative Sciences makes no warranty or representation regarding the fitness, quality or reliability of this code and data.
+
+##No Support.## The Institute for Clinical Evaluative Sciences will not provide any technological, educational or informational support in connection with the use of this code and data.
+
+##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
+========================================================================
+"""
+import shutil
 import sys
 import os
 sys.path.append(os.getcwd())
-import tqdm
+import pickle
 import pandas as pd
 import numpy as np
-import multiprocessing as mp
-import pickle
+from collections import defaultdict
 
-from sklearn.multioutput import MultiOutputClassifier
-from sklearn.calibration import CalibratedClassifierCV
+from scripts.utility import (initialize_folders, load_predictions, save_predictions)
+from scripts.config import (root_path, cyto_folder, acu_folder, can_folder, death_folder)
+from scripts.prep_data import (PrepDataEDHD, PrepDataCYTO)
+from scripts.train import (TrainML, TrainRNN, TrainENS)
+from scripts.evaluate import (Evaluate)
 
-from scripts.utilities import (load_predictions, subgroup_performance_summary)
-from scripts.config import (root_path, event_map, calib_param_logistic)
-from scripts.prep_data import (PrepDataEDHD)
-from scripts.train import (Train, TrainGRU)
-
-class TrainEDHD(Train):
-    def __init__(self, dataset, clip_thresholds=None, n_jobs=32):
-        super(TrainEDHD, self).__init__(dataset, clip_thresholds, n_jobs)
+class End2EndPipeline():
+    def __init__(self):
+        self.output_path = self.get_output_path()
+        self.dataset = self.get_data_splits()
+        X_train, Y_train, X_valid, Y_valid, X_test, Y_test = self.dataset
+        self.labels = {'Train': Y_train, 'Valid': Y_valid, 'Test': Y_test}
         
-    def get_LR_model(self, C, max_iter=100):
-        params = {'C': C, 
-                  'class_weight': 'balanced',
-                  'max_iter': max_iter,
-                  'random_state': 42, 
-                  'solver': 'sag',
-                  'tol': 1e-3}
-        model = MultiOutputClassifier(CalibratedClassifierCV(
-                                        self.ml_models['LR'](**params), 
-                                        n_jobs=9,
-                                        **calib_param_logistic), 
-                                      n_jobs=9)
-        return model
-    
-class PrepDataGRU(PrepDataEDHD):   
-    def clean_feature_target_cols(self, feature_cols, target_cols):
-        return feature_cols, target_cols
-    def extra_norm_cols(self):
-        return super().extra_norm_cols() + ['days_since_true_prev_chemo']
+    def get_output_path(self):
+        raise NotImplementedError
         
-def get_train(main_dir, output_path, days=30, gru=False, processes=64):
-    target_keyword = f'_within_{days}days'
-    prep = PrepDataGRU() if gru else PrepDataEDHD()
-    model_data = prep.get_data(main_dir, target_keyword, rem_days_since_prev_chemo=not gru)
-    model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
-    model_data = prep.dummify_data(model_data)
-    train, valid, test = prep.split_data(model_data, target_keyword=target_keyword, convert_to_float=False)
-    
-    X_train, Y_train = train
-    X_valid, Y_valid = valid
-    X_test, Y_test = test
-    
-    Y_train.columns = Y_train.columns.str.replace(target_keyword, '')
-    Y_valid.columns = Y_valid.columns.str.replace(target_keyword, '')
-    Y_test.columns = Y_test.columns.str.replace(target_keyword, '')
+    def get_data_splits(self):
+        raise NotImplementedError
+
+    def get_train(self, rnn=False, processes=64):
+        if rnn:
+            return TrainRNN(self.dataset, self.output_path)
+        else:
+            X_train, Y_train, X_valid, Y_valid, X_test, Y_test = self.dataset
+            dataset = (X_train.drop(columns=['ikn']), Y_train, 
+                       X_valid.drop(columns=['ikn']), Y_valid, 
+                       X_test.drop(columns=['ikn']), Y_test)
+            return TrainML(dataset, self.output_path, n_jobs=processes)
         
-    # Initialize and Return Training class
-    dataset = (X_train, Y_train, X_valid, Y_valid, X_test, Y_test)
-    return TrainGRU(dataset, output_path) if gru and isinstance(gru, bool) else TrainEDHD(dataset, n_jobs=processes)
+    def tune_and_train(self, rnn=False, run_bayesopt=True, run_training=True):
+        train = self.get_train(rnn=rnn)
+        train.tune_and_train(run_bayesopt=run_bayesopt, run_training=run_training, save_preds=True)
+    
+    def compute_ensemble(self, run_bayesopt=True, run_calibration=True):
+        preds = load_predictions(save_dir=f'{self.output_path}/predictions')
+        preds_rnn = load_predictions(save_dir=f'{self.output_path}/predictions', filename='rnn_predictions')
+        for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
+        train_ens = TrainENS(self.output_path, preds, self.labels)
+        train_ens.tune_and_train(run_bayesopt=run_bayesopt, run_calibration=run_calibration)
+        return train_ens
 
-def main_ci(days=30, subgroup_ci=False, split_ci=False):
-    main_dir = f'{root_path}/ED-H-D'
-    output_path = f'{main_dir}/models/ML/within_{days}_days'
-    train = get_train(main_dir, output_path, days=days)
-    if split_ci:
-        # get ensemble weights
-        filename = f'{output_path}/best_params/ENS_classifier_best_param.pkl'
-        with open(filename, 'rb') as file:
-            ensemble_weights = pickle.load(file)
-        ensemble_weights = [ensemble_weights[alg] for alg in train.ml_models] 
+    def evaluate(self):
+        ens = self.compute_ensemble(run_bayesopt=False, run_calibration=False)
+        eval_models = Evaluate(output_path=self.output_path, preds=ens.preds, labels=self.labels, orig_data=None)
+        score_df = eval_models.get_evaluation_scores(splits=['Test'], display_ci=True, save_ci=True, save_score=True)
+        return score_df
+    
+    def run(self, run_bayesopt=False, run_training=True):
+        self.tune_and_train(rnn=False, run_bayesopt=run_bayesopt, run_training=run_training)
+        self.tune_and_train(rnn=True, run_bayesopt=run_bayesopt, run_training=run_training)
+        self.compute_ensemble(run_bayesopt=True, run_calibration=True)
+        score_df = self.evaluate()
+        return score_df
+
+class End2EndPipelineEDHD(End2EndPipeline):
+    def __init__(self, adverse_event='acu', days=30):
+        self.adverse_event = adverse_event
+        self.days = days
+        super().__init__()
         
-        train.preds = load_predictions(f'{output_path}/predictions')
-        train.get_evaluation_scores(model_dir=output_path, splits=['Valid', 'Test'], ensemble_weights=ensemble_weights, 
-                                    display_ci=True, save_ci=True, verbose=False)
-    if subgroup_ci:
-        target_keyword = f'_within_{days}days'
-        prep = PrepDataEDHD()
-        model_data = prep.get_data(main_dir, target_keyword)
-        for algorithm in train.ml_models:
-            subgroup_performance_summary(output_path, algorithm, model_data, train, display_ci=True, save_ci=True)
-
-def main_retrain(days=30):
-    main_dir = f'{root_path}/ED-H-D'
-    output_path = f'{main_dir}/models/ML/within_{days}_days'
-    train = get_train(main_dir, output_path, days=days)
-    
-    # Retrain model using best parameters
-    best_params = {}
-    for algorithm in train.ml_models:
-        filename = f'{output_path}/best_params/{algorithm}_classifier_best_param.pkl'
-        with open(filename, 'rb') as file:
-            best_param = pickle.load(file)
-        best_params[algorithm] = best_param
-
-    for algorithm, model in tqdm.tqdm(train.ml_models.items()):
-        if algorithm in []: continue # put the algorithms already trained in this list
-        best_param = best_params[algorithm]
-        if algorithm == 'NN': 
-            best_param['max_iter'] = 100
-            best_param['verbose'] = True
-        train.train_model_with_best_param(algorithm, model, best_param, save_dir=output_path)
-        print(f'{algorithm} training completed!')
+    def get_output_path(self):
+        if self.adverse_event == 'acu':
+            output_path = f'{root_path}/{acu_folder}/models/within_{self.days}_days'
+        elif self.adverse_event == 'death':
+            output_path = f'{root_path}/{death_folder}/models'
+        else:
+            raise ValueError('adverse event must be either acu or death')
+        return output_path
         
-def main_bayesopt(days=30):
-    main_dir = f'{root_path}/ED-H-D'
-    output_path = f'{main_dir}/models/ML/within_{days}_days'
-    train = get_train(main_dir, output_path, days=days)
+    def get_data_splits(self):
+        target_keywords = {'acu': f'_within_{self.days}days', 'death': 'Mortality'}
+        target_keyword = target_keywords[self.adverse_event]
+        prep = PrepDataEDHD(adverse_event=self.adverse_event)
+        model_data = prep.get_data(target_keyword, missing_thresh=80)
+        model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
+        train, valid, test = prep.split_data(prep.dummify_data(model_data), target_keyword=target_keyword, convert_to_float=False)
+        (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = train, valid, test
+        print(prep.get_label_distribution(Y_train, Y_valid, Y_test))
+        Y_train.columns = Y_train.columns.str.replace(target_keyword, '')
+        Y_valid.columns = Y_valid.columns.str.replace(target_keyword, '')
+        Y_test.columns = Y_test.columns.str.replace(target_keyword, '')
+        X_train['ikn'], X_valid['ikn'], X_test['ikn'] = model_data['ikn'], model_data['ikn'], model_data['ikn']
+        return X_train, Y_train, X_valid, Y_valid, X_test, Y_test
     
-    # Conduct Baysian Optimization
-    best_params = {}
-    for algorithm, model in train.ml_models.items():
-        if algorithm in []: continue # put the algorithms already trained and tuned in this list
-        best_param = train.bayesopt(algorithm, save_dir=f'{output_path}/best_params')
-        best_params[algorithm] = best_param
-        if algorithm == 'NN':
-            best_param['max_iter'] = 100
-            best_param['verbose'] = True
-        train.train_model_with_best_param(algorithm, model, best_param, save_dir=output_path)
+    def run(self, run_bayesopt=False, run_training=True):
+        initialize_folders(self.output_path, extra_folders=['figures/important_groups', 'figures/rnn_train_performance'])
+        if not run_bayesopt and self.adverse_event == 'acu':
+            # copy best parameters from 'within 30 days' models
+            for alg in ['LR', 'NN', 'RF', 'XGB', 'RNN']:
+                shutil.copyfile(f'{self.output_path.replace(str(self.days), "30")}/best_params/{alg}_classifier_best_param.pkl', 
+                                f'{self.output_path}/best_params/{alg}_classifier_best_param.pkl')
+        score_df = super().run(run_bayesopt=run_bayesopt, run_training=run_training)
+        return score_df
 
-def main_gru_bayesopt(days=30):
-    main_dir = f'{root_path}/ED-H-D'
-    output_path = f'{main_dir}/models/GRU/within_{days}_days'
-    train = get_train(main_dir, output_path, days=days, gru=True)
-    
-    # Conduct Baysian Optimization
-    best_param = train.bayesopt('gru', save_dir=f'{output_path}/hyperparam_tuning')
-    
-    # Train final model using the best parameters
-    filename = f'{output_path}/hyperparam_tuning/GRU_classifier_best_param.pkl'
-    with open(filename, 'rb') as file:
-        best_param = pickle.load(file)
-
-    save_path = f'{output_path}/gru_classifier'
-    model, train_losses, valid_losses, train_scores, valid_scores = train.train_classification(save=True, save_path=save_path, 
-                                                                                               **best_param)
-    np.save(f"{output_path}/loss_and_acc/train_losses.npy", train_losses)
-    np.save(f"{output_path}/loss_and_acc/valid_losses.npy", valid_losses)
-    np.save(f"{output_path}/loss_and_acc/train_scores.npy", train_scores)
-    np.save(f"{output_path}/loss_and_acc/valid_scores.npy", valid_scores)
+class End2EndPipelineCYTO(End2EndPipeline):
+    def __init__(self):
+        self.split_date = '2017-06-30'
+        super().__init__()
+        
+    def get_output_path(self):
+        return f'{root_path}/{cyto_folder}/models'
+        
+    def get_data_splits(self):
+        prep = PrepDataCYTO()
+        model_data = prep.get_data(include_first_date=True, missing_thresh=75)
+        model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
+        train, valid, test = prep.split_data(prep.dummify_data(model_data), split_date=self.split_date, convert_to_float=False)
+        (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = train, valid, test
+        Y_train = prep.regression_to_classification(Y_train)
+        Y_valid = prep.regression_to_classification(Y_valid)
+        Y_test = prep.regression_to_classification(Y_test)
+        print(prep.get_label_distribution(Y_train, Y_valid, Y_test))
+        X_train['ikn'], X_valid['ikn'], X_test['ikn'] = model_data['ikn'], model_data['ikn'], model_data['ikn']
+        return X_train, Y_train, X_valid, Y_valid, X_test, Y_test
 
 if __name__ == '__main__':
-    main_ci(subgroup_ci=True)
+    # pipeline = End2EndPipelineEDHD(adverse_event='acu', days=180)
+    pipeline = End2EndPipelineCYTO()
+    pipeline.run(run_bayesopt=True, run_training=True)

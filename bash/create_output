@@ -1,29 +1,48 @@
 rm -r output
 mkdir output
 mkdir output/results
+mkdir output/code
 
 # Copy bash files
-cp -r bash/ output/
+# NOTE: need to change update_shared
+cp -r bash/ output/code/
 
 # Copy results
-cp -r ED-H-D/models/ML/within_30_days/tables/ output/results
-cp -r ED-H-D/models/ML/within_30_days/figures/ output/results
-cp ED-H-D/models/ML/data_splits_summary.csv output/results
-cp ED-H-D/models/hyperparameters.csv output/results
-cp ED-H-D/models/GRU/within_30_days/classification_result.csv output/results/tables/GRU_classification_result.csv
-cp ED-H-D/data/pearson_coefficient.jpg output/results
+############### PROACCT RESULTS ###############
+cp -r PROACCT/models/within_30_days/figures output/results/
+rm -r output/results/figures/rnn_train_performance
+rm output/results/figures/curves/*.npy
+cp -r PROACCT/models/within_30_days/tables output/results/
+cp PROACCT/models/*.csv output/results/tables/
+cp PROACCT/models/within_14_days/tables/classification_results.csv output/results/tables/14day_classification_results.csv
+cp PROACCT/models/within_180_days/tables/classification_results.csv output/results/tables/180day_classification_results.csv
+############### CYTOPENIA RESULTS ###############
+# cp -r CYTOPENIA/models/figures output/results/
+# rm -r output/results/figures/rnn_train_performance
+# rm output/results/figures/curves/*.npy
+# cp -r CYTOPENIA/models/tables output/results/
 
 # Copy scripts
-# NOTE: need to change config
-cp -r scripts/ output/
+# NOTE: need to change config.py
+cp -r scripts/ output/code/
 
 # Copy notebooks
-# NOTE: need to change user_path for all notebooks, 
-#       first part/scratch notes of cytopenia/Preprocess.py
-#       scratch notes of ED-H-D/Training.py
-mkdir output/ED-H-D
-mkdir output/cytopenia
-jupyter nbconvert --output-dir output/ED-H-D --to script ED-H-D/*ipynb
-jupyter nbconvert --output-dir output/cytopenia --to script cytopenia/*ipynb
-rm output/cytopenia/Investigation.py
-cp -r notebooks_pyspark/ output/
+mkdir output/code/PROACCT
+mkdir output/code/CYTOPENIA
+mkdir output/code/CAN
+mkdir output/code/DEATH
+mkdir output/code/notebooks_pyspark
+jupyter nbconvert --output-dir output/code/PROACCT --to script PROACCT/*ipynb
+jupyter nbconvert --output-dir output/code/CYTOPENIA --to script CYTOPENIA/*ipynb
+jupyter nbconvert --output-dir output/code/CAN --to script CAN/*ipynb
+jupyter nbconvert --output-dir output/code/DEATH --to script DEATH/*ipynb
+jupyter nbconvert --output-dir output/code/notebooks_pyspark --to script notebooks_pyspark/*ipynb
+
+# Copy environment file
+cp environment.yaml output/code/
+
+# Add Terms of Use
+TOU=`cat TermsOfUse_ForICESCode.txt`
+for filename in output/code/*/*.py; do
+    echo "$(printf "\"\"\"\n$TOU\n\"\"\"\n"| cat - "$filename")" > $filename
+done

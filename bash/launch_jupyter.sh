@@ -8,4 +8,4 @@ export XDG_RUNTIME_DIR=$RT_DIR
 
 #  Startup jupyter-notebook assuming that there is a jupyter-notebook in the PATH
 #  Set Notebook memory to 48 Gigabytes
-jupyter-notebook --ip=$(hostname -f) --no-browser --NotebookApp.max_buffer_size=48000000000
+jupyter lab --ip=$(hostname -f) --no-browser --NotebookApp.max_buffer_size=48000000000

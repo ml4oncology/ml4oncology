@@ -1,13 +1,44 @@
-# Paths & Symbols
-root_path = 'XXXXXXXX'
-share_path = 'XXXXXXXX'
-sas_folder = 'XXXXXXXX'
-regiments_folder = 'XXXXXXXX'
-plus_minus = u'\u00B1'
+"""
+========================================================================
+© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+
+TERMS OF USE:
+##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
+
+##Not-for-profit.## This code and data may not be used in connection with profit generating activities.
+
+##No liability.## The Institute for Clinical Evaluative Sciences makes no warranty or representation regarding the fitness, quality or reliability of this code and data.
+
+##No Support.## The Institute for Clinical Evaluative Sciences will not provide any technological, educational or informational support in connection with the use of this code and data.
+
+##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
+========================================================================
+"""
+# Paths
+root_path = 'XXXXX'
+share_path = 'XXXXXX'
+sas_folder = 'XXXXXXX'
+regiments_folder = 'XXXXXXX'
+cyto_folder = 'CYTOPENIA' # Cytopenia folder = 'CYTOPENIA'
+acu_folder = 'PROACCT' # Acute care use folder = 'PROACCT' (PRediction of Acute Care use during Cancer Treatment)
+can_folder = 'CAN' # Cisplatin-associated nephrotoxicity folder = 'CAN'
+symp_folder = 'SYMPTOM' # Symptom Deteroriation folder = 'SYMPTOM'
+death_folder = 'DEATH' # Death folder = 'DEATH'
 
 # Main Blood Types and Low Blood Count Thresholds
-cytopenia_thresholds = {'neutrophil': 1.5, 'hemoglobin': 100, 'platelet': 75} # cytopenia = low blood count
-blood_types = cytopenia_thresholds.keys()
+blood_types = {'neutrophil': {'cytopenia_threshold': 1.5,  # cytopenia = low blood count
+                              'cytopenia_name': 'Neutropenia',
+                              'unit': '10^9/L'},
+               'hemoglobin': {'cytopenia_threshold': 100,
+                              'cytopenia_name': 'Anemia',
+                              'unit': 'g/L'}, 
+               'platelet': {'cytopenia_threshold': 75,
+                            'cytopenia_name': 'Thrombocytopenia',
+                            'unit': '10^9/L'}}
+
+cytopenia_gradings = {'Grade 2': {'Neutropenia': 1.5, 'Anemia': 100, 'Thrombocytopenia': 75, 'color': (236, 112, 20)},
+                      'Grade 3': {'Neutropenia': 1.0, 'Anemia': 80, 'Thrombocytopenia': 50, 'color': (204, 76, 2)},
+                      'Grade 4': {'Neutropenia': 0.5, 'Thrombocytopenia': 25, 'color': (102, 37, 6)}}
 
 # All Lab Tests and Blood Work
 all_observations = { '1742-6': 'alanine_aminotransferase',
@@ -82,7 +113,7 @@ all_observations = { '1742-6': 'alanine_aminotransferase',
                      '1751-7': 'albumin',
                      '1920-8': 'asparate',
                      '2000-8': 'calcium',
-                     '14682-9': 'creatinine',
+                     '14682-9': 'creatinine', # in serum/plasma
                      '2157-6': 'creatinine_kinase',
                      '14196-0': 'reticulocyte',
                      '2951-2': 'sodium'}
@@ -120,50 +151,63 @@ cancer_type_mapping = {'81403': 'Adenocarcinoma', # originate in mucous glands i
                        '94403': 'Brain/Spinal Cancer (GBM)', # GBM: Glioblastoma
                        '81203': 'Tansitional Cell Cancer'} # Can occur in kidney, bladder, ureter, urethra, urachus
 
-cancer_code_mapping = {'C50': 'Breast', 
-                       'C34': 'Lung/Bronchus',
-                       'C18': 'Colon',
-                       'C56': 'Ovary',
+cancer_code_mapping = {'C18': 'Colon',
                        'C20': 'Rectum',
+                       'C25': 'Pancreas',
+                       'C34': 'Lung/Bronchus',
+                       'C50': 'Breast', 
+                       'C53': 'Cervix Uteri',
+                       'C56': 'Ovary',
                        'C61': 'Prostate Gland',
-                       '850': 'Ductal',
-                       '814': 'Adenoma',
-                       '807': 'Squamous Cell',
+                       'C67': 'Bladder',
                        '804': 'Epithelial',
+                       '807': 'Squamous Cell',
+                       '814': 'Adenoma',
+                       '844': 'Cystic',
+                       '850': 'Ductal',
                        '852': 'Lobular'}
-
-# Official Language Codes
-english_lang_codes = ['1', '15220', '15222', '3']
-
-# Exclusions
-din_exclude = ['02441489', '02454548', '01968017', '02485575', '02485583', '02485656', '02485591',
-               '02484153', '02474565', '02249790', '02506238', '02497395'] # drug exclusion for neutrophil
 cancer_location_exclude = ['C77', 'C42'] # exclude blood cancers
 
+# Drugs
+din_exclude = ['02441489', '02454548', '01968017', '02485575', '02485583', '02485656', '02485591',
+               '02484153', '02474565', '02249790', '02506238', '02497395'] # drug exclusion for neutrophil
+cisplatin_dins = ['02403188', '02355183', '02126613', '02366711'] # aka Platinol, CDDP
+cisplatin_cco_drug_code = ['003902']
+
+# Official Language Codes
+# NOTE: refer to datadictionary.ices.on.ca, Library: CIC, Member: CIC_IRCC
+english_lang_codes = ['1', '15220', '15222', '3']
+
+# Intent of Systemic Treatment
+# NOTE: refer to datadictionary.ices.on.ca, Library: ALR, Member: SYSTEMIC 
+intent_mapping = {'A': 'adjuvant', # applied after initial treatment for cancer (suppress secondary tumor formation)
+                  'C': 'curative', # promote recovery and cure disease
+                  'N': 'neoadjuvant', # shrink a tumor before main treatment 
+                  'P': 'palliative'} # afford relief, but not cure
+
 # Columns
+systemic_cols = ['ikn', 'regimen', 'visit_date', 
+                 'body_surface_area', # m^2
+                 'intent_of_systemic_treatment',
+                 'line_of_therapy', # the nth different chemotherapy regimen taken
+                ]
+
 y3_cols = ['ikn', 'sex', 'bdate',
            'lhin_cd', # local health integration network
            'curr_morph_cd', # cancer type
            'curr_topog_cd', # cancer location
           ] # 'pstlcode'
 
-systemic_cols = ['ikn', 'regimen', 'visit_date', 
-                 'body_surface_area', # m^2
-                 'intent_of_systemic_treatment', # A - after surgery, C - chemo, N - before surgery, P - incurable
-                 'line_of_therapy', # nth number of different chemotherapy regimen 
-                ] 
-                # 'din', 'cco_drug_code', 'dose_administered', 'measurement_unit']
+drug_cols = ['din', # DIN: Drug Identification Number
+             'cco_drug_code', # CCO: Cancer Care Ontario
+             'dose_administered', 'measurement_unit'] 
     
 olis_cols = ['ikn', 'ObservationCode', 'ObservationDateTime', 'ObservationReleaseTS', 'ReferenceRange', 'Units', 'value']
 
-esas_ecog_cols = ['ecog_grade', 'Wellbeing','Tiredness', 'Pain', 'Shortness of Breath', 'Drowsiness', 
-                  'Lack of Appetite', 'Depression', 'Anxiety', 'Nausea']
+symptom_cols = ['ecog_grade', 'prfs_grade', 'Wellbeing','Tiredness', 'Pain', 'Shortness of Breath', 'Drowsiness', 
+                'Lack of Appetite', 'Depression', 'Anxiety', 'Nausea']
 
 immigration_cols = ['ikn', 'is_immigrant', 'speaks_english']
-
-chemo_df_cols = ['ikn', 'regimen', 'visit_date', 'prev_visit', 'chemo_interval', 'chemo_cycle', 'immediate_new_regimen',
-        'intent_of_systemic_treatment', 'line_of_therapy', 'lhin_cd', 'curr_morph_cd', 'curr_topog_cd',
-        'age', 'sex', 'body_surface_area']
 
 diag_cols = [f'dx10code{i}' for i in range(1, 11)]
 event_main_cols = ['ikn', 'arrival_date', 'depart_date']
@@ -176,9 +220,6 @@ nn_activations = ['tanh', 'relu', 'logistic']
 # calibration params
 calib_param = {'method': 'isotonic', 'cv': 3}
 calib_param_logistic = {'method': 'sigmoid', 'cv': 3}
-
-# ml models
-ml_models = ['LR', 'XGB', 'RF', 'NN']
 
 # Diagnostic Codes
 # fever and infection (INFX)
@@ -285,16 +326,42 @@ event_map = {'H':  {'event_name': 'hospitalization',
                     'database_name': 'nacrs',
                     'event_cause_cols': [f'{cause}_ED' for cause in diag_code_mapping]}}
 
-# Clean Variable Names
+# Clean Variable Names (ORDER MATTERS!)
 clean_variable_mapping = {'chemo': 'chemotherapy', 
-                          'curr_topog_cd': 'cancer_location', 
-                          'curr_morph_cd': 'cancer_type', 
-                          'H': 'hospitalization', 
-                          'ED': 'ED_visit',
                           'prev': 'previous', 
                           'baseline_': '', 
-                          'lhin_cd': 'local health integration network', 
                           'num': 'number_of', 
+                          'lhin_cd': 'local health integration network', 
+                          'curr_topog_cd': 'cancer_location', 
+                          'curr_morph_cd': 'cancer_type', 
+                          'prfs': 'patient_reported_functional_status',
+                          'ODBGF': 'ODB_growth_factor',
+                          'MCV': 'mean_corpuscular_volume',
+                          'MCHC': 'mean_corpuscular_hemoglobin_concentration',
+                          'MCH': 'mean_corpuscular_hemoglobin',
                           'INFX': 'due_to_fever_and_infection', 
                           'TR': 'due_to_treatment_related', 
-                          'GI': 'due_to_gastrointestinal_toxicity'}
+                          'GI': 'due_to_gastrointestinal_toxicity',
+                          'OTH': 'Other',
+                          'H': 'hospitalization', 
+                          'ED': 'ED_visit'}
+
+# Variable Groupings
+# {group: keywords} - Any variables whose name contains these keywords are assigned into that group
+variable_groupings_by_keyword = {'Acute care use': 'INFX|GI|TR|prev_H|prior_H|prev_ED|prior_ED',
+                                 'Cancer': 'curr_topog_cd|curr_morph_cd', 
+                                 'Demographic': 'age|body|immigrant|lhin|sex|english',
+                                 'Laboratory': 'count',
+                                 'Treatment': 'visit_month|regimen|intent|chemo|therapy|cycle',
+                                 'Symptoms': '|'.join(symptom_cols)}
+
+# Acute Kidney Injury
+# serum creatinine (SCr) levels
+SCr_max_threshold = 132.63 # umol/L (1.5mg/dL)
+SCr_rise_threshold = 26.53 # umol/L (0.3mg/dL)
+SCr_rise_threshold2 = 353.68 # umol/L (4.0mg/dL)
+
+# Chronic Kdiney Disease 
+# glomerular filtration rate (eGFR) - https://www.kidney.org/professionals/kdoqi/gfr_calculator/formula
+eGFR_params = {'F': {'K': 0.7, 'a': -0.241, 'multiplier': 1.012}, # Female
+               'M': {'K': 0.9, 'a': -0.302, 'multiplier': 1.0}} # Male
