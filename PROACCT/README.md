@@ -1,0 +1,3 @@
+# PROACCT - PRediction Of Acute Care use during Cancer Treatment
+
+End to end pipeline for data processing and model training for the prediction of acute care use (emergency department visits and hospitalizations) and other acute care endopoints (emergency department visits and hospitalizations separately, treatment-related, treatment-related infectious, and treatment-related gastrointestinal acute care use).
