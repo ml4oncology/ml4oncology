@@ -19,8 +19,9 @@ import os
 sys.path.append(os.getcwd())
 import pandas as pd
 
-from scripts.config import (root_path)
+from scripts.config import (root_path, sas_folder2)
 from scripts.preprocess import (sas_to_csv)
+from scripts.spark import (extract_observation_units)
                                 
 def main():
     # Please Refer to datadictionary.ices.on.ca
@@ -32,34 +33,15 @@ def main():
     sas_to_csv('immigration') # immigration and language database
     sas_to_csv('dad', chunk_load=True) # DAD: discharge abstract database
     sas_to_csv('nacrs', chunk_load=True) # NACRS: National Ambulatory Care Reporting System
-    sas_to_csv('olis', chunk_load=True) # OLIS: Ontario Laboratories Information System - 187it [59:42]
-    sas_to_csv('olis_blood_count', chunk_load=True) # 331it [1:59:40]
-    sas_to_csv('olis_update', chunk_load=True) # 28it [08:33]
+    sas_to_csv('olis_new', new_name='olis', folder=sas_folder2, chunk_load=True) # OLIS: Ontario Laboratories Information System - 628it [3:09:12]
     sas_to_csv('dad_transfusion', transfer_date='20210810') # 7it [08:50] 
     sas_to_csv('nacrs_transfusion', transfer_date='20210810') # 26it [34:20] 
     sas_to_csv('odb_growth_factors') # ODB - Ontario Drug Benefit
     sas_to_csv('cohort_upd_17jan2022', new_name='combordity') # combordity
     sas_to_csv('dialysis_ohip', transfer_date='20220509') # dialysis
     
-    # Create olis_complete.csv by combining olis.csv, olis_blood_count.csv, and olis_update.csv
-    # Blood work/lab test data in olis that do not overlap with olis_blood_count will be combined with all of olis_blood_count
-    # olis_update.csv does not overlap with olis_blood_count.csv or olis_update.csv
-    olis = pd.read_csv(f'{root_path}/data/olis.csv', dtype=str) 
-    obc = pd.read_csv(f'{root_path}/data/olis_blood_count.csv', dtype=str)
-    ou = pd.read_csv(f'{root_path}/data/olis_update.csv', dtype=str) # only contains two observation codes
-    
-    olis = olis.rename(columns={'value_recommended_d': 'value', 'SUBVALUE_RECOMMENDED_D': 'SubValue_recommended_d'})
-    obc = obc.rename(columns={'Value_recommended_d': 'value'})
-    ou = ou.rename(columns={'value_recommended_d': 'value', 'subvalue_recommended_d': 'SubValue_recommended_d'})
-    
-    olis_code_counts = olis['ObservationCode'].value_counts()
-    obc_code_counts = obc['ObservationCode'].value_counts()
-    olis_codes = olis_code_counts[olis_code_counts > 10000].index.tolist() # remove data with less than 10000 observations
-    obc_codes = obc_code_counts[obc_code_counts > 10000].index.tolist()
-    keep_olis_codes = [code for code in olis_codes if code not in obc_codes and 'XON' not in code] # XON is deprecated code, do not include
-    
-    olis_complete = pd.concat([olis[olis['ObservationCode'].isin(keep_olis_codes)], obc, ou])
-    olis_complete.to_csv(f'{root_path}/data/olis_complete.csv', index=False)
+    # Extra - extract olis units
+    extract_observation_units()
 
 if __name__ == '__main__':
     main()

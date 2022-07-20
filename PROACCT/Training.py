@@ -36,7 +36,7 @@ import matplotlib.pyplot as plt
 
 from scripts.utility import (initialize_folders, load_predictions,
                              get_nunique_entries, get_nmissing, 
-                             data_splits_summary, feature_summary, subgroup_performance_summary)
+                             data_characteristic_summary, feature_summary, subgroup_performance_summary)
 from scripts.visualize import (importance_plot, subgroup_performance_plot)
 from scripts.config import (root_path, acu_folder)
 from scripts.prep_data import (PrepDataEDHD)
@@ -111,8 +111,9 @@ clip_thresholds
 # In[11]:
 
 
-train, valid, test = prep.split_data(prep.dummify_data(model_data), target_keyword=target_keyword, convert_to_float=False)
-(X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = train, valid, test
+# NOTE: any changes to X_train, X_valid, etc will also be seen in dataset
+kwargs = {'target_keyword': target_keyword}
+dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), **kwargs)
 
 
 # In[12]:
@@ -131,42 +132,41 @@ Y_test.columns = Y_test.columns.str.replace(target_keyword, '')
 
 # # Train ML Models
 
-# In[14]:
+# In[37]:
 
 
 pd.set_option('display.max_columns', None)
 
 
-# In[15]:
+# In[140]:
 
 
 # Initialize Training class
-dataset = (X_train, Y_train, X_valid, Y_valid, X_test, Y_test)
 train_ml = TrainML(dataset, output_path, n_jobs=processes)
 
 
-# In[18]:
+# In[ ]:
 
 
 skip_alg = []
-train_ml.tune_and_train(run_bayesopt=False, run_training=False, save_preds=True, skip_alg=skip_alg)
+train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True, skip_alg=skip_alg)
 
 
 # # Train RNN Model
 
-# In[17]:
+# In[14]:
 
 
+# Include ikn to the input data 
 X_train['ikn'] = model_data['ikn']
 X_valid['ikn'] = model_data['ikn']
 X_test['ikn'] = model_data['ikn']
 
 # Initialize Training class 
-dataset = (X_train, Y_train, X_valid, Y_valid, X_test, Y_test)
 train_rnn = TrainRNN(dataset, output_path)
 
 
-# In[18]:
+# In[15]:
 
 
 # Distrubution of the sequence lengths in the training set
@@ -177,7 +177,7 @@ plt.grid()
 plt.show()
 
 
-# In[19]:
+# In[16]:
 
 
 # A closer look at the samples of sequences with length 1 to 21
@@ -188,85 +188,84 @@ plt.xticks(range(1, 21))
 plt.show()
 
 
-# In[50]:
+# In[17]:
 
 
-train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration=False, save_preds=True)
+train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration=True, save_preds=True)
 
 
 # # Train ENS Model 
 # Find Optimal Ensemble Weights
 
-# In[16]:
+# In[14]:
 
 
-labels = {'Train': Y_train, 'Valid': Y_valid, 'Test': Y_test}
 # combine rnn and ml predictions
 preds = load_predictions(save_dir=f'{output_path}/predictions')
 preds_rnn = load_predictions(save_dir=f'{output_path}/predictions', filename='rnn_predictions')
 for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
 del preds_rnn
 # Initialize Training Class
-train_ens = TrainENS(output_path, preds, labels)
+train_ens = TrainENS(dataset, output_path, preds)
 
 
-# In[17]:
+# In[15]:
 
 
-train_ens.tune_and_train(run_bayesopt=False, run_calibration=False)
+train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
 
 
 # # Evaluate Models
 
-# In[18]:
+# In[16]:
 
 
-eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=labels, orig_data=model_data)
+eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
 
 
-# In[28]:
+# In[22]:
 
 
-splits = ['Test']
 kwargs = {'get_baseline': True, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False}
-eval_models.get_evaluation_scores(splits=splits, **kwargs)
+eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[20]:
+# In[23]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_location='upper right', figsize=(12,12))
-eval_models.plot_curves(curve_type='roc', legend_location='lower right', figsize=(12,12))
-eval_models.plot_calibs(figsize=(12,12), n_bins=20, calib_strategy='quantile', include_pred_hist=True)
-eval_models.plot_cdf_pred(figsize=(12,12)) # cumulative distribution function of model prediceval_models
+eval_models.plot_curves(curve_type='pr', legend_location='lower left', figsize=(12,18), save=False)
+eval_models.plot_curves(curve_type='roc', legend_location='lower right', figsize=(12,18), save=False)
+eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,18), save=False) # cumulative distribution function of model prediction
+eval_models.plot_calibs(legend_location='upper left', figsize=(12,18), save=False) 
+# eval_models.plot_calibs(include_pred_hist=True, legend_location='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
 
 
 # # Post-Training Analysis
 
 # ## Study Characteristics
 
-# In[30]:
+# In[98]:
 
 
-data_splits_summary(eval_models, save_dir=f'{main_dir}/models')
+data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models')
 
 
 # ## Feature Characteristics
 
-# In[31]:
+# In[132]:
 
 
 feature_summary(eval_models, prep, target_keyword, save_dir=f'{main_dir}/models').head(60)
 
 
-# ## Threshold Op Points
+# ## Threshold Operating Points
 
-# In[32]:
+# In[38]:
 
 
 pred_thresholds = np.arange(0.05, 0.51, 0.05)
-thresh_df = eval_models.threshold_op_points(algorithm='ENS', pred_thresholds=pred_thresholds, 
-                                            include_outcome_recall=True, event_dates=prep.event_dates)
+thresh_df = eval_models.operating_points(algorithm='ENS', points=pred_thresholds, metric='threshold',
+                                         include_outcome_recall=True, event_dates=prep.event_dates)
 thresh_df
 
 
@@ -278,34 +277,42 @@ thresh_df
 get_ipython().system('python scripts/perm_importance.py --adverse-event ACU')
 
 
-# In[31]:
+# In[17]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,50), top=10, importance_by='feature', pad_x0=4.0)
+importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,50), top=10, importance_by='feature', padding={'pad_x0': 4.0})
 
 
-# In[30]:
+# In[18]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,50), top=10, importance_by='group', pad_x0=1.2)
+importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,50), top=10, importance_by='group', padding={'pad_x0': 1.2})
 
 
 # ## Performance on Subgroups
 
-# In[19]:
+# In[134]:
 
 
 df = subgroup_performance_summary('ENS', eval_models, pred_thresh=0.25, display_ci=False, load_ci=False, save_ci=False)
 df
 
 
+# ## Decision Curve Plot
+
+# In[141]:
+
+
+eval_models.plot_decision_curve_analysis('ENS', padding={'pad_x0': 1.0})
+
+
 # ## ACU
 
 # ### All the Plots
 
-# In[139]:
+# In[26]:
 
 
 eval_models.all_plots_for_single_target(algorithm='ENS', target_type='ACU')
@@ -313,11 +320,12 @@ eval_models.all_plots_for_single_target(algorithm='ENS', target_type='ACU')
 
 # ### Subgroup Performance Plot
 
-# In[20]:
+# In[136]:
 
 
 subgroups = ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Regimen', 'Days Since Starting Regimen']
-subgroup_performance_plot(df, subgroups=subgroups, figsize=(12,24), save=True, save_dir=f'{output_path}/figures')
+padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
+subgroup_performance_plot(df, subgroups=subgroups, padding=padding, figsize=(12,24), save=True, save_dir=f'{output_path}/figures')
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
 # Event Rate = 0.15 means true alarms occur 15% of the time
@@ -325,185 +333,89 @@ subgroup_performance_plot(df, subgroups=subgroups, figsize=(12,24), save=True, s
 
 # # Scratch Notes
 
-# ## 2 variable model
+# ## Brooks 2 Variable Based Model
 
-# In[230]:
-
-
-import matplotlib.pyplot as plt
-from sklearn.metrics import (roc_auc_score, precision_score, recall_score, average_precision_score, roc_curve, precision_recall_curve)
-from sklearn.calibration import calibration_curve
-from scripts.utility import twolevel, compute_bootstrap_scores
+# In[137]:
 
 
-# In[232]:
+df = prep.get_data(target_keyword)
+print(f'Size of data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
+df = df.loc[Y_test.index]
+print(f'Size of test data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
+df = df[df['baseline_sodium_count'].notnull() & df['baseline_albumin_count'].notnull()]
+print(f'Size of test data with both sodium and albumin count = {len(df)}, Number of patients = {df["ikn"].nunique()}')
+df = df[df['days_since_starting_chemo'] == 0] # very first treatment
+print(f'Size of test data with only first day chemos = {len(df)}, Number of patients = {df["ikn"].nunique()}')
+
+
+# In[6]:
 
 
 def predict(df):
     x = 10.392 - 0.472*0.1*df['baseline_albumin_count'] - 0.075*df['baseline_sodium_count']
     return 1 / (1 + np.exp(-x))
 
-def evaluate(labels, pred):
-    result = pd.DataFrame()
-    if isinstance(pred, pd.DataFrame): preds = pred
-    for target_type, Y in labels.iteritems():
-        if isinstance(pred, pd.DataFrame): pred = preds[target_type]
-        auc_scores = compute_bootstrap_scores(Y, pred)
-        auroc_scores, auprc_scores = np.array(auc_scores).T
-        lower, upper = np.percentile(auroc_scores, [2.5, 97.5]).round(3)
-        result.loc['AUROC Score', target_type] = f"{np.round(roc_auc_score(Y, pred), 3)} ({lower}-{upper})"
-        lower, upper = np.percentile(auprc_scores, [2.5, 97.5]).round(3)
-        result.loc['AUPRC Score', target_type] = f"{np.round(average_precision_score(Y, pred), 3)} ({lower}-{upper})"
-    return result
 
-def thresh_op(labels, pred, target_type='H'):
-    result = pd.DataFrame()
-    label = labels[target_type]
-    if isinstance(pred, pd.DataFrame): pred = pred[target_type]
-    for threshold in np.arange(0.05, 0.51, 0.05):
-        threshold = np.round(threshold, 2)
-        pred_bool = pred > threshold
-        result.loc[threshold, 'Warning Rate'] = pred_bool.mean()
-        result.loc[threshold, 'PPV'] = precision_score(label, pred_bool, zero_division=1)
-        result.loc[threshold, 'Sensitivity'] = recall_score(label, pred_bool, zero_division=1)
-    return result
-
-def plot_curves(pred, labels, result, target_type='H'):
-    label = labels[target_type]
-    if isinstance(pred, pd.DataFrame): pred = pred[target_type]
-    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(12,9))
-    axes = axes.flatten()
-    plt.subplots_adjust(hspace=0.3, wspace=0.3)
-    fpr, tpr, thresholds = roc_curve(label, pred)
-    precision, recall, thresholds = precision_recall_curve(label, pred)
-    prob_true, prob_pred = calibration_curve(label, pred, n_bins=20, strategy='quantile')
-    axis_max_limit = max(prob_true.max(), prob_pred.max())
-    max_calib_error = np.max(abs(prob_true - prob_pred)).round(3)
-    mean_calib_error = np.mean(abs(prob_true - prob_pred)).round(3)
-    N = len(label)
-    x, y = np.sort(pred), np.arange(N) / float(N)
-    axes[0].plot(recall, precision, label=f"AUPRC={result.loc['AUPRC Score', target_type]}")
-    axes[1].plot(fpr, tpr, label=f"AUROC={result.loc['AUROC Score', target_type]}")
-    axes[2].plot(prob_true, prob_pred)
-    axes[2].text(axis_max_limit/2, 0.07, f'Mean Calibration Error {mean_calib_error}')
-    axes[2].text(axis_max_limit/2, 0.1, f'Max Calibration Error {max_calib_error}')
-    axes[2].plot([0,axis_max_limit],[0,axis_max_limit],'k:', label='Perfect Calibration')
-    axes[3].plot(x, y)
-    labels = [('Sensitivity', 'Positive Predictive Value', 'pr_curves', True),
-              ('1 - Specificity', 'Sensitivity', 'roc_curves', True),
-              ('Predicted Probability', 'Empirical Probability', 'calibration_curves', False),
-              (f'Predicted Probability of {target_type}', 'Cumulative Proportion of Predictions', 'cdf_prediction_curves', False)]
-    for idx, (xlabel, ylabel, filename, remove_legend_line) in enumerate(labels):
-        axes[idx].set_xlabel(xlabel)
-        axes[idx].set_ylabel(ylabel)
-        leg = axes[idx].legend(loc='lower right', frameon=False)
-        if remove_legend_line: leg.legendHandles[0].set_linewidth(0)
+# In[68]:
 
 
-# In[233]:
-
-
-df = prep.get_data(target_keyword)
-print(f'Size of data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
-df = df[~df['baseline_sodium_count'].isnull() & ~df['baseline_albumin_count'].isnull()]
-print(f'Size of data with both sodium and albumin count = {len(df)}, Number of patients = {df["ikn"].nunique()}')
-df = df[df['days_since_starting_chemo'] == 0] # very first treatment
-print(f'Size of data with only first day chemos = {len(df)}, Number of patients = {df["ikn"].nunique()}')
-df = df.loc[df.index[df.index.isin(X_test.index)]]
-print(f'Size of test data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
-
-
-# In[234]:
-
-
+split = 'Test'
 pred = predict(df)
-labels = Y_test.loc[df.index]
+labels = {split: Y_test.loc[df.index]}
+preds = {split: {'ENS': train_ens.preds[split]['ENS'].loc[df.index],
+                 'BRK': pd.DataFrame({col: pred for col in Y_test.columns})}}
+eval_brooks_model = Evaluate(output_path='', preds=preds, labels=labels, orig_data=df)
 
 
-# In[235]:
+# In[69]:
 
 
 # label distribtuion
-labels.apply(pd.value_counts)
+labels[split].apply(pd.value_counts)
 
 
-# In[236]:
+# In[70]:
 
 
-result = evaluate(labels, pred)
+kwargs = {'algorithms': ['ENS', 'BRK'], 'splits': ['Test'], 'display_ci': True, 'save_score': False}
+result = eval_brooks_model.get_evaluation_scores(**kwargs)
 result
 
 
-# In[237]:
+# In[71]:
 
 
-plot_curves(pred, labels, result)
+eval_brooks_model.all_plots_for_single_target(algorithm='BRK', target_type='H', split='Test',
+                                              n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
 
 
-# In[238]:
+# In[72]:
 
 
-thresh_op(labels, pred)
+points = np.arange(0.05, 0.51, 0.05)
+eval_brooks_model.operating_points('BRK', points, metric='threshold', target_types=['H'], split='Test', save=False)
 
 
-# In[239]:
+# ### Compare with ENS
+
+# In[73]:
 
 
-compare_pred = eval_models.preds['Test']['ENS'].loc[df.index]
-result = evaluate(labels, compare_pred)
-result
+eval_brooks_model.all_plots_for_single_target(algorithm='ENS', target_type='H', split='Test',
+                                              n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
 
 
-# In[240]:
+# In[74]:
 
 
-plot_curves(compare_pred, labels, result)
+points = np.arange(0.05, 0.51, 0.05)
+eval_brooks_model.operating_points('ENS', points, metric='threshold', target_types=['H'], split='Test', save=False)
 
 
-# In[241]:
-
-
-thresh_op(labels, compare_pred)
-
-
-# ### hyperparameters
+# ## Hyperparameters
 
 # In[16]:
 
 
 from scripts.utility import get_hyperparameters
 get_hyperparameters(output_path, days=days)
-
-
-# ### how to read multiindex csvs
-
-# In[29]:
-
-
-pd.read_csv(f'{output_path}/tables/subgroup_performance_summary_ENS.csv', header=[0,1], index_col=[0,1])
-
-
-# ### over under sample
-
-# In[ ]:
-
-
-def over_under_sample(X, Y, undersample_factor=5, oversample_min_samples=5000, seed=42):
-    # undersample
-    n = Y.shape[0]
-    nsamples = int(n / undersample_factor)
-    mask = Y.sum(axis=1) == 0 # undersample the examples with none of the 9 positive targets ~700,000 rows
-    Y = pd.concat([Y[~mask], Y[mask].sample(nsamples, replace=False, random_state=seed)])
-
-    # oversample
-    label_counts = prep.get_label_distribution(Y)
-    label_counts = label_counts[('Train', 'True')] # Train is just the default name, ignore it, its not a bug
-    for col, n_pos_samples in label_counts.iteritems():
-        if n_pos_samples < oversample_min_samples:
-            Y = pd.concat([Y, Y[Y[col]].sample(oversample_min_samples - n_pos_samples, replace=True, random_state=seed)])
-    
-    X = X.loc[Y.index]
-    return X, Y
-X_train, Y_train = over_under_sample(X_train, Y_train, undersample_factor=5, oversample_min_samples=5000)
-X_valid, Y_valid = over_under_sample(X_valid, Y_valid, undersample_factor=5, oversample_min_samples=1000)
-prep.get_label_distribution(Y_train, Y_valid, Y_test)

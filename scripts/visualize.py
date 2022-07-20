@@ -36,6 +36,12 @@ def get_bbox(ax, fig, pad_x0=0.75, pad_y0=0.5, pad_x1=0.15, pad_y1=0.1):
     bbox.y1 += pad_y1
     return bbox
 
+def get_day_xticks(days):
+    xticks = days+1
+    if len(days) > 22: xticks = xticks[::3] # skip every 3rd tick
+    elif len(days) > 16: xticks = xticks[::2] # skip every 2nd tick
+    return xticks
+
 def blood_count_dist_plot(df, include_sex=True):
     fig = plt.figure(figsize=(20,5))
     for idx, blood_type in enumerate(blood_types):
@@ -53,10 +59,11 @@ def day_dist_plot(df, regimens):
     cycle_lengths = dict(df[['regimen', 'cycle_length']].values)
     for i, regimen in enumerate(regimens):
         if regimen not in cycle_lengths: continue
-        days = np.arange(cycle_lengths[regimen])
+        days = np.arange(cycle_lengths[regimen]+1)
         group = df.loc[df['regimen'] == regimen, days]
         dist = [len(group[day].dropna()) for day in days]
         axes[i].bar(days+1, dist) # set day 1 as day of administration (instead of day 0)
+        axes[i].set_xticks(get_day_xticks(days))
         axes[i].set_title(regimen)
 
 def regimen_dist_plot(df, by='patient'):
@@ -72,6 +79,11 @@ def regimen_dist_plot(df, by='patient'):
         n_blood_counts = df.groupby('regimen').apply(func)
         dist = n_blood_counts.sort_values()
         ylabel = 'Number of Blood Measurements'
+    elif by == 'sessions':
+        # number of treatment sessions per regimen
+        n_sessions = df.groupby('regimen').apply(len)
+        dist = n_sessions.sort_values()
+        ylabel = 'Number of Sessions'
     fig = plt.figure(figsize=(15,5))
     plt.bar(dist.index, dist.values) 
     plt.xlabel('Chemotherapy Regiments')
@@ -85,7 +97,7 @@ def scatter_plot(df, unit='10^9/L', save=False, filename="scatter_plot"):
     height = (num_regimen // 2) * 10
     fig = plt.figure(figsize=(10,height))
     for idx, (regimen, group) in tqdm.tqdm(enumerate(df.groupby('regimen'))):
-        days = np.arange(cycle_lengths[regimen])
+        days = np.arange(cycle_lengths[regimen]+1)
         y = group[days].values.flatten()
         x = np.array(list(days+1)*len(group))
 
@@ -95,6 +107,7 @@ def scatter_plot(df, unit='10^9/L', save=False, filename="scatter_plot"):
         plt.title(regimen)
         plt.ylabel(f'Blood Count ({unit})')
         plt.xlabel('Day')
+        plt.xticks(get_day_xticks(days))
     if save: 
         plt.savefig(f'{root_path}/{cyto_folder}/plots/{filename}.jpg', bbox_inches='tight', dpi=300)
     plt.show()
@@ -107,7 +120,7 @@ def below_threshold_bar_plot(df, threshold, save=False, filename='bar_plot', col
     plt.subplots_adjust(hspace=0.3, wspace=0.3)
     idx = 1
     for regimen, group in tqdm.tqdm(df.groupby('regimen')):
-        days = np.arange(cycle_lengths[regimen])
+        days = np.arange(cycle_lengths[regimen]+1)
         num_patients = np.array([group.loc[group[day].notnull(), 'ikn'].nunique() for day in days])
         num_patient_below_threshold = np.array([group.loc[group[day] < threshold, 'ikn'].nunique() for day in days])
         # cannot display data summary with observations less than 6, replace them with 6
@@ -123,6 +136,7 @@ def below_threshold_bar_plot(df, threshold, save=False, filename='bar_plot', col
             plt.title(regimen)
             plt.ylabel(ylabel)
             plt.xlabel('Day')
+            plt.xticks(get_day_xticks(days))
         idx += 3
     plt.text(0, -0.3, '*Observations < 6 are displayed as 6', transform=ax.transAxes, fontsize=12)
     if save:
@@ -137,7 +151,7 @@ def iqr_plot(df, unit='10^9/L', show_outliers=True, save=False, filename='iqr_pl
     plt.subplots_adjust(hspace=0.3)
     nadir_dict = {}
     for idx, (regimen, group) in tqdm.tqdm(enumerate(df.groupby('regimen'))):
-        days = np.arange(cycle_lengths[regimen]).astype(int)
+        days = np.arange(cycle_lengths[regimen]+1).astype(int)
         data = np.array([group[day].dropna().values for day in days], dtype=object)
         ax = fig.add_subplot(num_regimen,2,idx+1)
         bp = plt.boxplot(data, labels=days+1, showfliers=show_outliers)
@@ -164,14 +178,14 @@ def violin_plot(df, unit='10^9/L', save=False, filename='violin_plot'):
     fig = plt.figure(figsize=(16, height))
     plt.subplots_adjust(hspace=0.3)
     for idx, (regimen, group) in tqdm.tqdm(enumerate(df.groupby('regimen'))):
-        chemo_days = np.arange(cycle_lengths[regimen]).astype(int)
+        chemo_days = np.arange(cycle_lengths[regimen]+1).astype(int)
         ax = fig.add_subplot(num_regimen,2,idx+1)
         blood_counts = []
         observation_days = []
-        for day in chemo_days+1:
+        for day in chemo_days:
             values = group[day].dropna().tolist()
             blood_counts += values
-            observation_days += [day,]*len(values)
+            observation_days += [day+1,]*len(values)
         data = pd.DataFrame(zip(blood_counts, observation_days), columns=[f'Blood Count ({unit})', 'Day'])
         sns.violinplot(x='Day', y=f'Blood Count ({unit})', data=data, ax=ax)
         plt.title(regimen)
@@ -186,7 +200,7 @@ def mean_cycle_plot(df, unit='10^9/L', save=False, filename='mean_cycle_plot'):
     plt.subplots_adjust(hspace=0.3)
     cycles = [1,2,3,4,5]
     for idx, (regimen, group) in tqdm.tqdm(enumerate(df.groupby('regimen'))):
-        days = np.arange(cycle_lengths[regimen])
+        days = np.arange(cycle_lengths[regimen]+1)
         ax = fig.add_subplot(num_regimen,2,idx+1)
     
         for cycle in cycles:
@@ -197,6 +211,7 @@ def mean_cycle_plot(df, unit='10^9/L', save=False, filename='mean_cycle_plot'):
         plt.title(regimen)
         plt.ylabel(f'Median Blood Count ({unit})')
         plt.xlabel('Day')
+        plt.xticks(get_day_xticks(days))
         plt.legend([f'cycle{c}' for c in cycles])
     if save:
         plt.savefig(f'{root_path}/{cyto_folder}/plots/{filename}.jpg', bbox_inches='tight', dpi=300)
@@ -214,7 +229,7 @@ def event_rate_stacked_bar_plot(df, regimens, save_dir, cytopenia='Neutropenia',
     cycle_lengths = dict(df[['regimen', 'cycle_length']].values)
     for i, regimen in enumerate(regimens):
         if regimen not in cycle_lengths: continue
-        days = np.arange(cycle_lengths[regimen])
+        days = np.arange(cycle_lengths[regimen]+1)
         group = df.loc[df['regimen'] == regimen, days]
         
         for grade, thresholds in cytopenia_gradings.items():
@@ -228,14 +243,13 @@ def event_rate_stacked_bar_plot(df, regimens, save_dir, cytopenia='Neutropenia',
                         color=np.array(thresholds['color'])/255) 
         axes[i].set_ylabel(f'{cytopenia} Event Rate')
         axes[i].set_xlabel('Day')
+        axes[i].set_xticks(get_day_xticks(days))
         axes[i].set_title(regimen.upper())
-#         legend = axes[i].legend()
-#         if save: fig.savefig(f'{save_dir}/plots/{cytopenia}_{regimen}.jpg', 
-#                              bbox_inches=get_bbox(axes[i], fig, pad_y1=0.3), dpi=300) 
-#         legend.remove()
         if i == len(regimens) - 1:
             axes[i].legend(bbox_to_anchor=(1,0), loc='lower left', frameon=False)
-    if save: plt.savefig(f'{save_dir}/plots/{cytopenia}_{"_".join(regimens)}.jpg', bbox_inches='tight', dpi=300)
+    if save: 
+        plt.savefig(f'{save_dir}/plots/{cytopenia}_{"_".join(regimens)}.jpg', bbox_inches='tight', dpi=300)
+    plt.show()
         
 def pearson_plot(pearson_matrix, output_path, main_target='ACU'):
     fig, ax = plt.subplots(figsize=(15,6))
@@ -272,37 +286,48 @@ def tree_plot(train, target_type='Neutropenia', algorithm='RF'):
         plot_tree(clf, ax=ax)
     
 def importance_plot(algorithm, target_types, save_dir, figsize, top=20, importance_by='feature', 
-                    pad_x0=4.0, colors=None):
-    if importance_by not in {'feature', 'group'}: raise ValueError('importance_by must be either "feature" or "group"')
+                    padding=None, colors=None):
+    if importance_by not in {'feature', 'group'}: 
+        raise ValueError('importance_by must be either "feature" or "group"')
+    if padding is None: padding = {}
     # NOTE: run `python scripts/perm_importance.py` in the command line before running this function
     fig = plt.figure(figsize=figsize)
     plt.subplots_adjust(hspace=0.3)
     N = len(target_types)
-    if colors is None: colors = ['#1f77b4',]*N
+    if colors is None: colors = [None,]*N
     
     df = pd.read_csv(f'{save_dir}/perm_importance/{algorithm}_{importance_by}_importance.csv')
     df = df.set_index('index')
     df.index = get_clean_variable_names(df.index)
     
+    summary = pd.DataFrame()
     for idx, target_type in tqdm.tqdm(enumerate(target_types)):
         feature_importances = df[target_type]
         feature_importances = feature_importances.sort_values(ascending=False)
         feature_importances = feature_importances[0:top] # get the top important features
+        summary[target_type] = [f'{feature} ({importance})' for feature, importance in 
+                                feature_importances.round(4).items()]
         ax = fig.add_subplot(N,1,idx+1)
         ax.barh(feature_importances.index, feature_importances.values, color=colors[idx])
         ax.invert_yaxis()
         ax.set_xlabel('Permutation Importance Score')
         remove_top_right_axis(ax)
         fig.savefig(f'{save_dir}/figures/important_{importance_by}s/{algorithm}_{target_type}.jpg', 
-                    bbox_inches=get_bbox(ax, fig, pad_x0=pad_x0), dpi=300) 
+                    bbox_inches=get_bbox(ax, fig, **padding), dpi=300) 
         ax.set_title(target_type) # set title AFTER saving individual figures
     plt.savefig(f'{save_dir}/figures/important_{importance_by}s/{algorithm}.jpg', bbox_inches='tight', dpi=300)
+    plt.show()
+    summary.index += 1
+    return summary
     
-def subgroup_performance_plot(df, target_type='ACU', subgroups=None, figsize=(16,24), save=False, save_dir=None):
-    if save and save_dir is None:
+def subgroup_performance_plot(df, target_type='ACU', subgroups=None, 
+                              padding=None, figsize=(16,24), save=False, save_dir=None):
+    if save and save_dir is None: 
         raise ValueError('Please provide save_dir if you want to save figures')
-    if subgroups is None:
+    if subgroups is None: 
         subgroups = df.index.levels[0]
+    if padding is None: 
+        padding = {}
     df = df.loc[subgroups]
     df.index = df.index.remove_unused_levels()
     
@@ -356,7 +381,7 @@ def subgroup_performance_plot(df, target_type='ACU', subgroups=None, figsize=(16
         axes[i].set_ylabel(metric)
         axes[i].legend(bbox_to_anchor=(1,0), loc='lower left', frameon=False)
         if save: fig.savefig(f'{save_dir}/subgroup_performance/{target_type}_{metric}.jpg', 
-                             bbox_inches=get_bbox(axes[i], fig, pad_y0=1.2, pad_x1=2.6, pad_y1=0.2), dpi=300) 
+                             bbox_inches=get_bbox(axes[i], fig, **padding), dpi=300) 
     if save: 
         plt.savefig(f'{save_dir}/subgroup_performance/{target_type}.jpg', bbox_inches='tight', dpi=300)
     plt.show()

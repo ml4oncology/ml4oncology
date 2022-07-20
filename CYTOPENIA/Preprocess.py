@@ -31,22 +31,21 @@ get_ipython().run_line_magic('autoreload', '2')
 
 import os
 import tqdm
+import pickle
 import pandas as pd
 pd.options.mode.chained_assignment = None
 import numpy as np
-import multiprocessing as mp
 import matplotlib.pyplot as plt
 from functools import partial
 
-from collections import Counter
-
 from scripts.config import (root_path, sas_folder, cyto_folder, blood_types, all_observations, event_map)
+from scripts.spark import (preprocess_olis_data)
 from scripts.preprocess import (split_and_parallelize, clean_string, group_observations,
                                 load_chemo_df, load_included_regimens, 
                                 filter_systemic_data, process_systemic_data, 
                                 filter_y3_data, process_cancer_and_demographic_data,
                                 filter_immigration_data, process_immigration_data,
-                                filter_olis_data, olis_worker, postprocess_olis_data,
+                                olis_worker, postprocess_olis_data,
                                 filter_esas_data, get_esas_responses, postprocess_esas_responses,
                                 filter_body_functionality_data, body_functionality_worker,
                                 filter_blood_transfusion_data, blood_transfusion_worker, 
@@ -178,24 +177,17 @@ print(f"Number of rows now: {len(chemo_df)}")
 print(f"Number of patients now: {chemo_df['ikn'].nunique()}")
 
 
-# In[15]:
+# In[10]:
 
 
-# Preprocess the Complete Olis Data
-chunks = pd.read_csv(f'{root_path}/data/olis_complete.csv', chunksize=10**7, dtype=str) 
-for i, chunk in tqdm.tqdm(enumerate(chunks), total=44):
-    chunk = filter_olis_data(chunk, chemo_df['ikn'])
-    # write to csv
-    header = True if i == 0 else False
-    mode = 'w' if i == 0 else 'a'
-    chunk.to_csv(f"{main_dir}/data/olis_complete.csv", header=header, mode=mode, index=False)
+get_ipython().run_cell_magic('time', '', "# Preprocess the Raw OLIS Data using PySpark\npreprocess_olis_data(f'{main_dir}/data', set(chemo_df['ikn']))")
 
 
 # In[8]:
 
 
 # Extract the Olis Features
-olis = pd.read_csv(f"{main_dir}/data/olis_complete.csv", dtype=str) 
+olis = pd.read_csv(f"{main_dir}/data/olis.csv", dtype=str) 
 olis['ObservationDateTime'] = pd.to_datetime(olis['ObservationDateTime'])
 
 # get results
@@ -203,14 +195,14 @@ filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(olis['ikn'])] # filter out pat
 worker = partial(olis_worker, latest_limit=max_cycle_length)
 result = split_and_parallelize((filtered_chemo_df, olis), worker, processes=processes)
 result = pd.DataFrame(result, columns=['observation_code', 'chemo_idx', 'days_after_chemo', 'observation_count'])
-result.to_csv(f'{main_dir}/data/olis_complete2.csv', index=False)
+result.to_csv(f'{main_dir}/data/olis2.csv', index=False)
 
 
 # In[9]:
 
 
 # Process the Olis Features
-olis_df = pd.read_csv(f'{main_dir}/data/olis_complete2.csv')
+olis_df = pd.read_csv(f'{main_dir}/data/olis2.csv')
 mapping, missing_df = postprocess_olis_data(chemo_df, olis_df, observations=all_observations, days_range=range(-5,max_cycle_length+1))
 missing_df
 
@@ -322,6 +314,7 @@ for event in ['H', 'ED']:
 
 
 # ### Include odb_growth factor features
+# odb - ontario drug benefit
 
 # In[14]:
 
@@ -567,6 +560,3 @@ train, valid, test = prep.split_data(prep.dummify_data(model_data), split_date=s
 pd.DataFrame([X_train['febrile_neutropenia'].value_counts(), 
               X_valid['febrile_neutropenia'].value_counts(), 
               X_test['febrile_neutropenia'].value_counts()], index=['Train', 'Valid', 'Test']).T
-
-
-# In[ ]:

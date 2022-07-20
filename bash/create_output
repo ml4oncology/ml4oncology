@@ -1,6 +1,5 @@
 rm -r output
 mkdir output
-mkdir output/results
 mkdir output/code
 
 # Copy bash files
@@ -9,18 +8,34 @@ cp -r bash/ output/code/
 
 # Copy results
 ############### PROACCT RESULTS ###############
-cp -r PROACCT/models/within_30_days/figures output/results/
-rm -r output/results/figures/rnn_train_performance
-rm output/results/figures/curves/*.npy
-cp -r PROACCT/models/within_30_days/tables output/results/
-cp PROACCT/models/*.csv output/results/tables/
-cp PROACCT/models/within_14_days/tables/classification_results.csv output/results/tables/14day_classification_results.csv
-cp PROACCT/models/within_180_days/tables/classification_results.csv output/results/tables/180day_classification_results.csv
+mkdir output/PROACCT_results
+cp -r PROACCT/models/within_30_days/figures output/PROACCT_results/
+rm -r output/PROACCT_results/figures/rnn_train_performance
+rm output/PROACCT_results/figures/curves/*.npy
+cp -r PROACCT/models/within_30_days/tables output/PROACCT_results/
+cp PROACCT/models/*.csv output/PROACCT_results/tables/
+cp PROACCT/models/within_14_days/tables/classification_results.csv output/PROACCT_results/tables/14day_classification_results.csv
+cp PROACCT/models/within_180_days/tables/classification_results.csv output/PROACCT_results/tables/180day_classification_results.csv
 ############### CYTOPENIA RESULTS ###############
-# cp -r CYTOPENIA/models/figures output/results/
-# rm -r output/results/figures/rnn_train_performance
-# rm output/results/figures/curves/*.npy
-# cp -r CYTOPENIA/models/tables output/results/
+mkdir output/CYTO_results
+cp -r CYTOPENIA/models/figures output/CYTO_results/
+rm -r output/CYTO_results/figures/rnn_train_performance
+cp -r CYTOPENIA/models/tables output/CYTO_results/
+cp -r CYTOPENIA/plots output/CYTO_results/
+cp -r CYTOPENIA/data/analysis output/CYTO_results/
+rm output/CYTO_results/analysis/*.npy output/CYTO_results/analysis/*_bootstraps.csv
+############### AKI RESULTS ###############
+mkdir output/AKI_results
+cp -r CAN/models/AKI/figures output/AKI_results/
+rm -r output/AKI_results/figures/rnn_train_performance
+rm output/AKI_results/figures/curves/*.npy
+cp -r CAN/models/AKI/tables output/AKI_results/
+############### CKD RESULTS ###############
+mkdir output/CKD_results
+cp -r CAN/models/CKD/figures output/CKD_results/
+rm -r output/CKD_results/figures/rnn_train_performance
+rm output/CKD_results/figures/curves/*.npy
+cp -r CAN/models/CKD/tables output/CKD_results/
 
 # Copy scripts
 # NOTE: need to change config.py
@@ -31,12 +46,12 @@ mkdir output/code/PROACCT
 mkdir output/code/CYTOPENIA
 mkdir output/code/CAN
 mkdir output/code/DEATH
-mkdir output/code/notebooks_pyspark
+mkdir output/code/dev_notebooks
 jupyter nbconvert --output-dir output/code/PROACCT --to script PROACCT/*ipynb
 jupyter nbconvert --output-dir output/code/CYTOPENIA --to script CYTOPENIA/*ipynb
 jupyter nbconvert --output-dir output/code/CAN --to script CAN/*ipynb
 jupyter nbconvert --output-dir output/code/DEATH --to script DEATH/*ipynb
-jupyter nbconvert --output-dir output/code/notebooks_pyspark --to script notebooks_pyspark/*ipynb
+jupyter nbconvert --output-dir output/code/dev_notebooks --to script dev_notebooks/*ipynb
 
 # Copy environment file
 cp environment.yaml output/code/

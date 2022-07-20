@@ -14,6 +14,7 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
+import sys
 import tqdm
 import pandas as pd
 import numpy as np
@@ -78,8 +79,7 @@ class PrepData:
         """
         if not cols:
             cols = data.columns
-            cols = cols[cols.str.contains('count') & ~cols.str.contains('is_missing')]
-            cols = cols.drop([f'target_{bt}_count' for bt in blood_types], errors='ignore')
+            cols = cols[cols.str.contains('baseline') & ~cols.str.contains('is_missing')]
             cols = cols.tolist() + ['body_surface_area']
 
         thresh = data[cols].quantile([lower_percentile, upper_percentile])
@@ -87,20 +87,21 @@ class PrepData:
         return data, thresh
 
     def dummify_data(self, data):
+        # convert sex from a categorical column into a binary column
+        data['sex'] = data['sex'] == 'F'
         # make categorical columns into one-hot encoding
         return pd.get_dummies(data)
 
     def replace_missing_body_surface_area(self, data):
         # replace missing body surface area with the mean based on sex
         bsa = 'body_surface_area'
-        mask_F = data['sex'] == 'F' if 'sex' in data.columns else data['sex_F'] == 1
-        mask_M = data['sex'] == 'M' if 'sex' in data.columns else data['sex_M'] == 1
+        mask = (data['sex'] == 1) | (data['sex'] == 'F')
         
         if self.bsa_mean is None:
-            self.bsa_mean = {'female': data.loc[mask_F, bsa].mean(), 'male': data.loc[mask_M, bsa].mean()}
+            self.bsa_mean = {'female': data.loc[mask, bsa].mean(), 'male': data.loc[~mask, bsa].mean()}
             
-        data.loc[mask_F, bsa] = data.loc[mask_F, bsa].fillna(self.bsa_mean['female'])
-        data.loc[mask_M, bsa] = data.loc[mask_M, bsa].fillna(self.bsa_mean['male'])
+        data.loc[mask, bsa] = data.loc[mask, bsa].fillna(self.bsa_mean['female'])
+        data.loc[~mask, bsa] = data.loc[~mask, bsa].fillna(self.bsa_mean['male'])
 
         return data
 
@@ -124,7 +125,7 @@ class PrepData:
     
     def extra_norm_cols(self):
         """
-        You can overwrite this to use custom columns
+        You can overwrite this to include additional custom columns for normalization
         """
         return []
         
@@ -140,12 +141,11 @@ class PrepData:
             data[norm_cols] = self.scaler.transform(data[norm_cols])
         return data
     
-    def clean_feature_target_cols(self, feature_cols, target_cols):
+    def convert_labels(self, target):
         """
         You can overwrite this to do custom operations
         """
-        feature_cols = feature_cols.drop('ikn')
-        return feature_cols, target_cols
+        return target
     
     def create_splits(self, data, split_date=None, verbose=True):
         if split_date is None: 
@@ -184,31 +184,25 @@ class PrepData:
             train_data = train_data.iloc[train_idxs]
 
         # sanity check - make sure there are no overlap of patients in the splits
-        assert(sum(valid_data['ikn'].isin(train_data['ikn'])) + sum(valid_data['ikn'].isin(test_data['ikn'])) + 
-               sum(train_data['ikn'].isin(valid_data['ikn'])) + sum(train_data['ikn'].isin(test_data['ikn'])) + 
-               sum(test_data['ikn'].isin(train_data['ikn'])) + sum(test_data['ikn'].isin(valid_data['ikn'])) == 0)
+        assert(not set.intersection(set(train_data['ikn']), set(valid_data['ikn']), set(test_data['ikn'])))
 
         if verbose:
             logging.info(f'Size of splits: Train:{len(train_data)}, Val:{len(valid_data)}, Test:{len(test_data)}')
             logging.info(f"Number of patients: Train:{train_data['ikn'].nunique()}, Val:{valid_data['ikn'].nunique()}, Test:{test_data['ikn'].nunique()}")
         
         return train_data, valid_data, test_data
-        
 
-    def split_data(self, data, target_keyword='target', impute=True, normalize=True, convert_to_float=True, split_date=None, verbose=True):
+    def split_data(self, data, target_keyword='target', impute=True, normalize=True, split_date=None, verbose=True):
         """
         Split data into training, validation and test sets based on patient ids (and optionally first visit dates)
         Impute and Normalize the datasets
         
         Args:
             split_date (string or None): split the data temporally by patient's very first chemo session date (e.g. 2017-06-30)
-                                         train/val set will contain all visits on or before split_date
-                                         test set will contain all visits after split_date
+                                         train/val set (aka development cohort) will contain all visits on or before split_date
+                                         test set (aka test cohort) will contain all visits after split_date
                                          string format: 'YYYY-MM-DD'
         """
-        # convert dtype object to float
-        if convert_to_float: data = data.astype(float)
-
         # create training, validation, testing set
         train_data, valid_data, test_data = self.create_splits(data, split_date=split_date, verbose=verbose)
 
@@ -239,15 +233,15 @@ class PrepData:
 
         # split into input features and target labels
         cols = train_data.columns
-        feature_cols = cols[~cols.str.contains(target_keyword)]
+        feature_cols = cols[~cols.str.contains(target_keyword)].drop('ikn')
         target_cols = cols[cols.str.contains(target_keyword)]
-        feature_cols, target_cols = self.clean_feature_target_cols(feature_cols, target_cols)
         X_train, X_valid, X_test = train_data[feature_cols], valid_data[feature_cols], test_data[feature_cols]
         Y_train, Y_valid, Y_test = train_data[target_cols], valid_data[target_cols], test_data[target_cols]
+        Y_train, Y_valid, Y_test = self.convert_labels(Y_train), self.convert_labels(Y_valid), self.convert_labels(Y_test)
+        
+        return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
 
-        return [(X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test)]
-
-    def get_label_distribution(self, Y_train, Y_valid=None, Y_test=None, save=False, save_path=''):
+    def get_label_distribution(self, Y_train, Y_valid=None, Y_test=None, save_path=''):
         dists, cols = [], []
         def update_distribution(Y, split):
             dists.append(Y.apply(pd.value_counts))
@@ -262,7 +256,7 @@ class PrepData:
         cols = pd.MultiIndex.from_product([cols+['Total'], ['False', 'True']])
         dists.columns = cols
 
-        if save: dists.to_csv(save_path, index=False)
+        if save_path: dists.to_csv(save_path, index=False)
         return dists
     
 class PrepDataCYTO(PrepData):
@@ -277,7 +271,7 @@ class PrepDataCYTO(PrepData):
         self.chemo_dtypes = {col: str for col in self.transfusion_cols + ['curr_morph_cd', 'lhin_cd']}
     
     def extra_norm_cols(self):
-        return ['chemo_interval', 'cycle_length']
+        return ['cycle_length']
     
     def read_main_blood_count_data(self, blood_type, chemo_df):
         df = pd.read_csv(f'{self.main_dir}/data/{blood_type}.csv')
@@ -337,8 +331,7 @@ class PrepDataCYTO(PrepData):
         input:                               -->        MODEL         -->            target:
         symptoms, body functionality,                                                NBC on next admin
         laboratory test, HB/PB transfusion, GF given,                                HBC on next admin
-        chemo interval, chemo length,                                                PBC on next admin
-        chemo cycle, days since starting chemo,
+        chemo length, chemo cycle, days since starting chemo,                        PBC on next admin
         regimen, visit month, immediate new regimen,
         line of therapy, intent of systemic treatment, 
         local health network, age, sex, immigrant, 
@@ -364,7 +357,7 @@ class PrepDataCYTO(PrepData):
         impute_regimens = regimen_count.index[regimen_with_gf_count / regimen_count > 0.5]
         df.loc[df['regimen'].isin(impute_regimens), 'ODBGF_given'] = True
         if verbose: logging.info(f"All sessions for the regimens {impute_regimens.tolist()} will assume " +
-                                 "ODB growth factors were administered")
+                                  "growth factors were administered")
 
         # get blood transfusion features
         for col in self.transfusion_cols:
@@ -372,9 +365,9 @@ class PrepDataCYTO(PrepData):
             new_col = f"{bt}_transfusion"
             if new_col not in df: df[new_col] = False
 
-            # if transfusion occurs from day -5 to day 3, flag feature as true
+            # if transfusion occurs from day -5 to day 0, flag feature as true
             earliest_date = df['visit_date'] - pd.Timedelta('5 days') 
-            latest_date = df['visit_date'] + pd.Timedelta('3 days') 
+            latest_date = df['visit_date']
             df[new_col] |= df[col].between(earliest_date, latest_date)
             if verbose: logging.info(f"{df[new_col].sum()} sessions with {col.replace('_', ' ').replace('date', '')}feature")
 
@@ -393,7 +386,7 @@ class PrepDataCYTO(PrepData):
         # fill null values with 0
         df = self.fill_missing_feature(df)
         
-        drop_cols = ['visit_date', 'next_visit_date'] + self.transfusion_cols
+        drop_cols = ['visit_date', 'next_visit_date', 'chemo_interval'] + self.transfusion_cols
         df = df.drop(columns=drop_cols)
         if missing_thresh is not None: 
             df = self.drop_features_with_high_missingness(df, missing_thresh, verbose=verbose)
@@ -403,7 +396,7 @@ class PrepDataCYTO(PrepData):
 
         return df
     
-    def regression_to_classification(self, target):
+    def convert_labels(self, target):
         """
         Convert regression labels (last blood count value) to 
         classification labels (if last blood count value is below corresponding threshold)
@@ -489,7 +482,7 @@ class PrepDataEDHD(PrepData):
         for day in [14, 30, 90, 180, 365]:
             days = f'{day}d'
             df[f'{days} {target_keyword}'] = days_until_d.between(pd.Timedelta('1 days'), 
-                                                          pd.Timedelta(days), inclusive=False)
+                                                                  pd.Timedelta(days), inclusive=False)
         df[target_keyword] = days_until_d.notnull()
         
         # store the death dates
@@ -595,7 +588,7 @@ class PrepDataCAN(PrepData):
         self.datetime_cols = ['visit_date', 'next_visit_date']
     
     def extra_norm_cols(self):
-        return ['chemo_interval', 'cisplatin_dosage']
+        return ['cisplatin_dosage', 'baseline_eGFR']
     
     def get_creatinine_data(self, df, verbose=False, remove_over_thresh=False):
         """
@@ -612,7 +605,10 @@ class PrepDataCAN(PrepData):
         # if multiple values, take value closest to index date / prev visit via forward filling
         df[base_scr] = numpy_ffill(scr[range(-30,1)]) # NOTE: this overwrites the prev baseline_creatinine_count
         
-        # exclude sessions where any of the baseline and peak creatinine measurements are missing
+        # get estimated glomerular filtration rate (eGFR) prior to treatment
+        df = get_eGFR(df, col=base_scr, prefix='baseline_')
+        
+        # exclude sessions where any of the baseline creatinine measurements are missing
         mask = df[base_scr].notnull()
         if verbose: 
             logging.info(f'Removing {sum(~mask)} sessions where any of the baseline ' + \
@@ -636,7 +632,7 @@ class PrepDataCAN(PrepData):
                 within_days = min(int(chemo_interval), 28)
                 df.loc[index, peak_scr] = scr.loc[index, range(1, within_days+1)].max(axis=1)
         
-            # exclude sessions where any of thepeak creatinine measurements are missing
+            # exclude sessions where any of the peak creatinine measurements are missing
             mask = df[peak_scr].notnull()
             if verbose: 
                 logging.info(f'Removing {sum(~mask)} sessions where any of the ' + \
@@ -655,10 +651,8 @@ class PrepDataCAN(PrepData):
                              f'creatinine levels are missing')
             df = df[mask]
             
-            # get estimated glomerular filtration rate (eGFR)
-            df = get_eGFR(df, col=base_scr, prefix='baseline_')
+            # get estimated glomerular filtration rate (eGFR) after treatment
             df = get_eGFR(df, col=next_scr, prefix='next_')
-            df['eGFR_fold_increase'] = df['next_eGFR'] / df['baseline_eGFR']
         
         return df
     
@@ -672,8 +666,8 @@ class PrepDataCAN(PrepData):
         """
         input:                               -->        MODEL         -->            target:
         symptoms, body functionality,                                                CKD/AKI within 22 days or before next chemo admin
-        laboratory test, dialysis, diabetes, hypertension,                                         
-        regimen, visit month, chemo interval, chemo cycle,
+        laboratory test, diabetes, hypertension, eGFR,                                        
+        regimen, visit month, chemo cycle,
         dyas since last chemo, days since starting chemo,
         line of therapy, intent of systemic treatment, 
         local health network, age, sex, immigrant, 
@@ -684,12 +678,8 @@ class PrepDataCAN(PrepData):
         df = self.get_creatinine_data(df, verbose=verbose)
         df = self.get_visit_date_feature(df, include_first_date=include_first_date) # convert visit date features as cyclical features
         df = self.fill_missing_feature(df) # fill null values with 0
-        
-        # reduce sparse matrix by replacing rare col entries with less than 6 patients with 'Other'
-        # cols = ['regimen', 'curr_morph_cd', 'curr_topog_cd']
-        # df = replace_rare_col_entries(df, cols, verbose=verbose)
-        
-        df = df.drop(columns=self.datetime_cols)
+    
+        df = df.drop(columns=self.datetime_cols+['chemo_interval'])
         if missing_thresh is not None: 
             df = self.drop_features_with_high_missingness(df, missing_thresh, verbose=verbose)
         
@@ -698,20 +688,25 @@ class PrepDataCAN(PrepData):
             
         return df
     
-    def regression_to_classification(self, target):
+    def convert_labels(self, target):
         """
         Convert regression labels (e.g. SCr rise, SCr fold increase) to classification labels 
-        (e.g. if SCr rise is above corresponding threshold, indicating C-AKI (Cisplatin-associated Acute Kidney Injury))
+        (e.g. if SCr rise is above corresponding threshold, then patient has C-AKI (Cisplatin-associated Acute Kidney Injury))
         """
         cols = target.columns
         if self.adverse_event == 'aki':
-            target['AKI_stage1'] = (target['SCr_rise'] >= SCr_rise_threshold) | target['SCr_fold_increase'].between(1.5, 2)
-            target['AKI_stage2'] = target['SCr_fold_increase'].between(2, 3, inclusive='right')
-            target['AKI_stage3'] = (target['SCr_rise'] >= SCr_rise_threshold2) | (target['SCr_fold_increase'] > 3)
+            target['AKI'] = (target['SCr_rise'] >= SCr_rise_threshold) | (target['SCr_fold_increase'] >= 1.5)
+            # target['AKI_stage1'] = (target['SCr_rise'] >= SCr_rise_threshold) | (target['SCr_fold_increase'] >= 1.5)
+            # target['AKI_stage2'] = target['SCr_fold_increase'] >= 2
+            # target['AKI_stage3'] = (target['SCr_rise'] >= SCr_rise_threshold2) | (target['SCr_fold_increase'] >= 3)
         elif self.adverse_event == 'ckd':
-            target['CKD_stage2'] = target['next_eGFR'].between(60, 90, inclusive='left')
-            target['CKD_stage3a'] = target['next_eGFR'].between(45, 60, inclusive='left') | (target['eGFR_fold_increase'] <= 0.6)
-            target['CKD_stage3b'] = target['next_eGFR'].between(30, 45, inclusive='left')
-            target['CKD_stage4'] = target['next_eGFR'].between(15, 29, inclusive='left')
+            # target['CKD (stage2)'] = target['next_eGFR'] < 90
+            target['CKD'] = target['next_eGFR'] < 60 # stage 3a and higher
+            target['CKD (stage3b)'] = target['next_eGFR'] < 45 # stage 3b and higher
+            target['CKD (stage4)'] = target['next_eGFR'] < 30 # stage 4 and higher
+            # if dialysis was administered from 90 days to 6 months after chemo visit, 
+            # set all target labels as positive
+            target[target['dialysis']] = True
+            
         target = target.drop(columns=cols)
         return target

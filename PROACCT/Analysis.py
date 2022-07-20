@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[39]:
+# In[2]:
 
 
 import tqdm
@@ -147,43 +147,7 @@ plt.bar(labels, counts, align='center')
 plt.show()
 
 
-# # All Lab Tests/Blood Work
-
-# In[55]:
-
-
-olis = pd.read_csv(f'{root_path}/data/olis.csv', dtype=str) 
-observation_olis = olis['ObservationCode'].value_counts()
-del olis
-observation_olis.index = observation_olis.index.str[2:-1] # clean observation code string
-observation_olis = observation_olis[~(observation_olis < 10000)] # must have at least 10000 observations
-exclude = ['XON10382-0', 'XON10383-8', 'XON12394-3', 'XON12400-8'] # exclude these codes
-observation_olis = observation_olis.drop(index=exclude)
-observations = sorted(list(observation_olis.items()))
-print(f"Number of unique observation codes: {len(observations)}")
-observations
-
-
-# In[6]:
-
-
-olis_blood_count = pd.read_csv(f'{root_path}/data/olis_blood_count.csv', dtype=str) 
-observation_olis_blood_count = olis_blood_count['ObservationCode'].value_counts()
-del olis_blood_count
-observation_olis_blood_count.index = observation_olis_blood_count.index.str[2:-1]
-observation_olis_blood_count = observation_olis_blood_count[~(observation_olis_blood_count < 10000)]
-observations = sorted(list(observation_olis_blood_count.items()))
-print(f"Number of unique observation codes: {len(observations)}")
-observations
-
-
-# In[56]:
-
-
-# for observation codes that exist in both datasets, check both datasets contain the same information
-code_in_both_datasets = observation_olis_blood_count.index.intersection(observation_olis.index)
-assert(all(observation_olis_blood_count[code_in_both_datasets] == observation_olis[code_in_both_datasets]))
-
+# # All Lab Tests
 
 # In[6]:
 
@@ -334,92 +298,6 @@ data = [# Alanine Aminotransferase
         ['14920-3', 'Thyroxine (T4) free (Moles/Volume)'], # Does not exists in either data
         ['14933-6', 'Urate'], # Does not exists in either data
        ]
-pd.set_option('display.max_colwidth', None)
-df = pd.DataFrame(data, columns=['ObservationCode', 'ObservationCodeName'])
-
-
-# In[ ]:
-
-
-df['In olis.csv'] = df['ObservationCode'].isin(observation_olis.index)
-df['In olis_blood_count.csv'] = df['ObservationCode'].isin(observation_olis_blood_count.index)
-df['NumObservations'] = df['ObservationCode'].map(observation_olis)
-df['NumObservations'] = df['NumObservations'].fillna(df['ObservationCode'].map(observation_olis_blood_count))
-
-
-# In[133]:
-
-
-# observations only in both datasets
-df[df['In olis.csv'] & df['In olis_blood_count.csv']]
-
-
-# In[134]:
-
-
-# observations only in olis dataset
-df[df['In olis.csv'] & ~df['In olis_blood_count.csv']]
-
-
-# In[135]:
-
-
-# observations only in olis_blood_count dataset
-df[~df['In olis.csv'] & df['In olis_blood_count.csv']]
-
-
-# In[136]:
-
-
-# missing observations from both datasets
-df[~df['In olis.csv'] & ~df['In olis_blood_count.csv']]
-
-
-# # Analyaze groupings of lab tests/blood work 
-# (e.g. differences in count values are too large for the various bilirubins, can't group them together)
-
-# In[13]:
-
-
-from scripts.config import all_observations
-
-
-# In[5]:
-
-
-olis = pd.read_csv(f'{root_path}/{acu_folder}/data/olis_complete.csv', dtype=str) 
-olis['value'] = olis['value'].astype(float)
-
-
-# In[219]:
-
-
-obs_a = '2823-3'
-obs_b = '39789-3'
-tmp = olis[olis['ObservationCode'].isin([obs_a, obs_b])]
-tmp = tmp[~tmp.duplicated(subset=['ikn', 'ObservationCode', 'ObservationDateTime'])]
-tmp = tmp[tmp.duplicated(subset=['ikn', 'ObservationDateTime'], keep=False)]
-tmp = tmp.sort_values(by=['ikn', 'ObservationDateTime'])
-
-
-# In[220]:
-
-
-df_a = tmp[tmp['ObservationCode'] == obs_a]
-df_b = tmp[tmp['ObservationCode'] == obs_b]
-df_a = df_a.reset_index()
-df_b = df_b.reset_index()
-assert(df_a[['ikn', 'ObservationDateTime']].equals(df_b[['ikn', 'ObservationDateTime']]))
-
-
-# In[221]:
-
-
-diff = abs(df_a['value'] - df_b['value'])
-df = pd.concat([diff.describe(), df_a['value'].describe(), df_b['value'].describe()], axis=1)
-df.columns = ['diff', obs_a, obs_b]
-df = df.T
-df
 
 
 # # Diagnostic Codes

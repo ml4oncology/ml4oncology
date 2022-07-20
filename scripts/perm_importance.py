@@ -25,7 +25,7 @@ import numpy as np
 
 from scripts.utility import (load_ml_model, load_ensemble_weights)
 from scripts.config import (root_path, cyto_folder, acu_folder, can_folder, death_folder,
-                            blood_types, variable_groupings_by_keyword)
+                            split_date, blood_types, variable_groupings_by_keyword)
 from scripts.prep_data import (PrepDataCYTO, PrepDataEDHD, PrepDataCAN)
 from scripts.train import (TrainML, TrainRNN)
 
@@ -37,15 +37,21 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s', datefmt='%I:%M:%S')
 
 class PermImportance:    
-    def __init__(self, output_path, preload=True):
+    def __init__(self, output_path, split_date=None, preload=True):
+        """
+        Args:
+            split_date (str or None): date to temoporally split the data into development and testing cohort
+                                      if None, data will be split across all years evenly into train-val-test split
+        """
         self.output_path = output_path
+        self.split_date = split_date
         
         # get test data with 
         #   1. original features 
         #   2. one-hot encoded features
         orig_data_splits, data_splits = self.get_data()
-        _, _, _, _, self.X_test, self.Y_test, = data_splits
-        _, _, _, _, self.orig_X_test, _ = orig_data_splits
+        _, _, self.X_test, _, _, self.Y_test, = data_splits
+        _, _, self.orig_X_test, _, _, _ = orig_data_splits
         
         # initialize RNN and ML Training class - you need some of their member functions
         self.train_rnn = TrainRNN(data_splits, output_path)
@@ -62,7 +68,7 @@ class PermImportance:
             self.models = {}
             for algorithm in self.ensemble_weights:
                 if algorithm == 'RNN':
-                    filename = f'{self.output_path}/best_params/RNN_classifier_best_param.pkl'
+                    filename = f'{self.output_path}/best_params/RNN_best_param.pkl'
                     with open(filename, 'rb') as file: 
                         rnn_model_param = pickle.load(file)
                     del rnn_model_param['learning_rate']
@@ -80,12 +86,12 @@ class PermImportance:
         raise NotImplementedError
         
     def get_data_splits(self, data, include_ikn=False):
-        train, valid, test = self.prep.split_data(data, target_keyword=self.target_keyword, convert_to_float=False)
-        (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = train, valid, test
+        kwargs = {'target_keyword': self.target_keyword, 'split_date': self.split_date}
+        X_train, X_valid, X_test, Y_train, Y_valid, Y_test = self.prep.split_data(data, **kwargs)
         if include_ikn:
             # the ikn corresponding to each data split are assigned by matching the indices
             X_train['ikn'], X_valid['ikn'], X_test['ikn'] = data['ikn'], data['ikn'], data['ikn']
-        data_splits = (X_train, self.clean_y(Y_train), X_valid, self.clean_y(Y_valid), X_test, self.clean_y(Y_test)) 
+        data_splits = (X_train, X_valid, X_test, self.clean_y(Y_train), self.clean_y(Y_valid), self.clean_y(Y_test)) 
         return data_splits
         
     def get_data(self):
@@ -178,13 +184,13 @@ class PermImportanceCYTO(PermImportance):
     def __init__(self, output_path):
         self.prep = PrepDataCYTO()
         self.target_keyword = 'target'
-        super().__init__(output_path)
+        super().__init__(output_path, split_date=split_date)
         
     def load_data(self):
-        return self.prep.get_data(missing_thresh=75)
+        return self.prep.get_data(include_first_date=True, missing_thresh=75)
     
     def clean_y(self, Y):
-        return self.prep.regression_to_classification(Y)
+        return Y
     
     def get_groupings(self):
         return variable_groupings_by_keyword
@@ -226,16 +232,14 @@ class PermImportanceCAN(PermImportance):
     """
     def __init__(self, output_path, adverse_event):
         self.prep = PrepDataCAN(adverse_event=adverse_event)
-        self.target_keyword = 'SCr'
-        if adverse_event == 'ckd':
-            self.target_keyword += '|eGFR'
-        super().__init__(output_path)
+        self.target_keyword = 'SCr|dialysis|next'
+        super().__init__(output_path, split_date=split_date)
         
     def load_data(self):
-        return self.prep.get_data(missing_thresh=80)
+        return self.prep.get_data(include_first_date=True, missing_thresh=80)
     
     def clean_y(self, Y):
-        return self.prep.regression_to_classification(Y)
+        return Y
     
     def get_groupings(self):
         return variable_groupings_by_keyword
@@ -249,7 +253,7 @@ def main(pm, algorithm='ENS', permute_group=False):
 def main_cyto(permute_group=False):
     output_path = f'{root_path}/{cyto_folder}/models'
     pm = PermImportanceCYTO(output_path)
-    main(pm, algorithm='XGB', permute_group=permute_group)
+    main(pm, algorithm='ENS', permute_group=permute_group)
 
 def main_acu(days=30, permute_group=False):
     output_path = f'{root_path}/{acu_folder}/models/within_{days}_days'
@@ -265,13 +269,13 @@ def main_caaki(permute_group=False):
     adverse_event = 'aki'
     output_path = f'{root_path}/{can_folder}/models/{adverse_event.upper()}'
     pm = PermImportanceCAN(output_path, adverse_event)
-    main(pm, algorithm='ENS', permute_group=permute_groups)
+    main(pm, algorithm='XGB', permute_group=permute_group)
     
 def main_cackd(permute_group=False):
     adverse_event = 'ckd'
     output_path = f'{root_path}/{can_folder}/models/{adverse_event.upper()}'
     pm = PermImportanceCAN(output_path, adverse_event)
-    main(pm, algorithm='ENS', permute_group=permute_group)
+    main(pm, algorithm='XGB', permute_group=permute_group)
     
 if __name__ == '__main__':
     main_events = {'CYTO': main_cyto, # Cytopenia

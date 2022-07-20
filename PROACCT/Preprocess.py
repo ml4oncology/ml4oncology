@@ -36,12 +36,13 @@ import numpy as np
 from functools import partial
 
 from scripts.config import (root_path, acu_folder, event_map)
+from scripts.spark import (preprocess_olis_data)
 from scripts.preprocess import (split_and_parallelize,
                                 load_chemo_df, load_included_regimens, 
                                 filter_systemic_data, process_systemic_data,
                                 filter_y3_data, process_cancer_and_demographic_data, 
                                 filter_immigration_data, process_immigration_data,
-                                filter_olis_data, observation_worker, postprocess_olis_data,
+                                observation_worker, postprocess_olis_data,
                                 filter_esas_data, get_esas_responses, postprocess_esas_responses,
                                 filter_body_functionality_data, body_functionality_worker,
                                 filter_event_data, extract_event_dates,
@@ -89,7 +90,7 @@ print(f"Number of unique regiments = {systemic['regimen'].nunique()}")
 print(f"Chemotherapy Cohort from {systemic['visit_date'].min()} to {systemic['visit_date'].max()}")
 
 
-# In[5]:
+# In[7]:
 
 
 systemic = pd.read_csv(f'{output_path}/data/systemic.csv', dtype={'ikn': str})
@@ -142,9 +143,9 @@ chemo_df = process_immigration_data(chemo_df, immigration)
 chemo_df.to_csv(f'{output_path}/data/chemo_processed.csv', index=False)
 
 
-# ### Include features from olis complete (blood work and lab test observations) dataset
+# ### Include features from olis (lab test observations) dataset
 
-# In[6]:
+# In[5]:
 
 
 chemo_df = load_chemo_df(output_path, includes_next_visit=False)
@@ -152,38 +153,29 @@ print(f"Number of rows now: {len(chemo_df)}")
 print(f"Number of patients now: {chemo_df['ikn'].nunique()}")
 
 
-# In[55]:
+# In[28]:
 
 
-# Preprocess the Complete Blood Work Data
-chunks = pd.read_csv(f'{root_path}/data/olis_complete.csv', chunksize=10**7, dtype=str) 
-for i, chunk in tqdm.tqdm(enumerate(chunks), total=44):
-    chunk = filter_olis_data(chunk, chemo_df['ikn'])
-    # write to csv
-    header = True if i == 0 else False
-    mode = 'w' if i == 0 else 'a'
-    chunk.to_csv(f"{output_path}/data/olis_complete.csv", header=header, mode=mode, index=False)
+get_ipython().run_cell_magic('time', '', "# Preprocess the Raw OLIS Data using PySpark\npreprocess_olis_data(f'{output_path}/data', set(chemo_df['ikn']))")
 
 
-# In[117]:
+# In[6]:
 
 
-# Extract the Olis Features
-olis = pd.read_csv(f"{output_path}/data/olis_complete.csv", dtype=str) 
+# Extract the OLIS Features
+olis = pd.read_csv(f"{output_path}/data/olis.csv", dtype=str) 
 olis['ObservationDateTime'] = pd.to_datetime(olis['ObservationDateTime'])
-
-# get results
 filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(olis['ikn'])] # filter out patients not in dataset
 result = split_and_parallelize((filtered_chemo_df, olis), observation_worker, processes=processes)
 result = pd.DataFrame(result, columns=['observation_code', 'chemo_idx', 'days_after_chemo', 'observation_count'])
-result.to_csv(f'{output_path}/data/olis_complete2.csv', index=False)
+result.to_csv(f'{output_path}/data/olis2.csv', index=False)
 
 
-# In[13]:
+# In[7]:
 
 
-# Process the Extra Blood Work Features
-olis_df = pd.read_csv(f'{output_path}/data/olis_complete2.csv')
+# Process the OLIS Features
+olis_df = pd.read_csv(f'{output_path}/data/olis2.csv')
 mapping, missing_df = postprocess_olis_data(chemo_df, olis_df, days_range=range(-5,1))
 missing_df
 
@@ -210,7 +202,7 @@ result = pd.DataFrame(result, columns=['index', 'symptom', 'severity'])
 result.to_csv(f'{output_path}/data/esas2.csv', index=False)
 
 
-# In[14]:
+# In[8]:
 
 
 # Process the Questionnaire responses
@@ -239,7 +231,7 @@ for dataset in ['ecog', 'prfs']:
     result.to_csv(f'{output_path}/data/{dataset}.csv', index=False)
 
 
-# In[15]:
+# In[9]:
 
 
 for dataset in ['ecog', 'prfs']:
@@ -251,7 +243,7 @@ for dataset in ['ecog', 'prfs']:
     chemo_df = chemo_df.join(bf, how='left') # ALT WAY: pd.merge(chemo_df, ecog, left_index=True, right_index=True, how='left')
 
 
-# In[16]:
+# In[10]:
 
 
 chemo_df.to_csv(f'{output_path}/data/model_data.csv', index_label='index')

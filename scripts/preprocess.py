@@ -83,15 +83,15 @@ def create_clean_regimen(df):
     df['regimen'] = df['regimen'].str.lower()
     return df
 
-def sas_to_csv(name, new_name=False, transfer_date=None, chunk_load=False, chunksize=10**6):
+def sas_to_csv(name, new_name='', folder=sas_folder, transfer_date=None, chunk_load=False, chunksize=10**6):
     filename = name if transfer_date is None else f'transfer{transfer_date}/{name}'
     name = new_name if new_name else name
     if not chunk_load:
-        df = pd.read_sas(f'{root_path}/{sas_folder}/{filename}.sas7bdat')
+        df = pd.read_sas(f'{root_path}/{folder}/{filename}.sas7bdat')
         df = clean_sas(df, name)
         df.to_csv(f"{root_path}/data/{name}.csv", index=False)
     else:
-        chunks = pd.read_sas(f'{root_path}/{sas_folder}/{filename}.sas7bdat', chunksize=chunksize)
+        chunks = pd.read_sas(f'{root_path}/{folder}/{filename}.sas7bdat', chunksize=chunksize)
         for i, chunk in tqdm.tqdm(enumerate(chunks)):
             chunk = clean_sas(chunk, name)
             header = True if i == 0 else False
@@ -554,22 +554,59 @@ def filter_dialysis_data(dialysis):
     dialysis = clean_string(dialysis, ['ikn'])
     dialysis['servdate'] = pd.to_datetime(dialysis['servdate'])
     dialysis = dialysis.sort_values(by='servdate')
-    dialysis = dialysis.drop_duplicates(subset='ikn', keep='first')
     dialysis = dialysis.drop(columns=['feecode'])
-    dialysis = dialysis.rename(columns={'servdate': 'prior_dialysis'})
+    dialysis = dialysis.drop_duplicates()
+    dialysis = dialysis.rename(columns={'servdate': 'dialysis_date'})
     return dialysis
 
+def dialysis_worker(partition, days_after=90):
+    # determine if patient recieved dialysis x to x+180 days (e.g. 3-6 months) after treatment
+    chemo_df, dialysis = partition
+    result = []
+    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
+        dialysis_group = dialysis[dialysis['ikn'] == ikn]
+        for chemo_idx, chemo_row in chemo_group.iterrows():
+            earliest_date = chemo_row['visit_date'] + pd.Timedelta(f'{days_after} days')
+            latest_date = earliest_date + pd.Timedelta('180 days')
+            mask = dialysis_group['dialysis_date'].between(earliest_date, latest_date)
+            if mask.any(): result.append(chemo_idx)
+    return result
+
+def process_dialysis_data(chemo_df, dialysis, days_after=90):
+    """
+    If patient require dialysis between 90 days after chemo visit and before 6 months, patient will be cosidered having CKD
+    """
+    # filter out patients not in dataset
+    filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(dialysis['ikn'])]
+    logging.info(f"Only {filtered_chemo_df['ikn'].nunique()} patients have recorded administration of dialysis")
+    chemo_df['dialysis'] = False
+    result = split_and_parallelize((filtered_chemo_df, dialysis), dialysis_worker, processes=1)
+    chemo_df.loc[result, 'dialysis'] = True
+    return chemo_df
+
 # Olis (blood work/lab test) data
-def _filter_olis_data(olis):
-    # convert string column into timestamp column
-    olis.loc[:, 'ObservationDateTime'] = pd.to_datetime(olis['ObservationDateTime']).values
-    olis.loc[:, 'ObservationDateTime'] = olis['ObservationDateTime'].dt.floor('D').values # keep only the date, not time
-    olis.loc[:, 'ObservationReleaseTS'] = pd.to_datetime(
-                                            olis['ObservationReleaseTS'], errors='coerce').values # there are out of bound timestamp errors
+def filter_olis_data(olis, chemo_ikns, observations=None):
+    """
+    Args:
+        observations (sequence or None): sequeunce of observation codes associated with specific lab tests we want to keep
+    """
+    logging.warning('For much faster performance, consider using spark.filter_olis_data')
+    # organize and format columns
+    olis = olis[olis_cols]
+    olis = clean_string(olis, ['ikn', 'ObservationCode', 'ReferenceRange', 'Units'])
+    olis['ObservationDateTime'] = pd.to_datetime(olis['ObservationDateTime']).dt.floor('D').values # keep only the date, not time
+    olis['ObservationReleaseTS'] = pd.to_datetime(olis['ObservationReleaseTS'], errors='coerce').values # there are out of bound timestamp errors
+    
+    # filter patients not in chemo_df
+    olis = olis[olis['ikn'].isin(chemo_ikns)]
+    
+    if observations:
+        # filter rows with excluded observations
+        olis = olis[olis['ObservationCode'].isin(observations)]
     
     # remove rows with blood count null or neg values
-    olis['value'] = olis['value'].astype(float)
-    olis = olis[~olis['value'].isnull() | ~(olis['value'] < 0)]
+    olis['value'] = olis.pop('value_recommended_d').astype(float)
+    olis = olis[olis['value'].notnull() & (olis['value'] >= 0)]
     
     # remove duplicate rows
     subset = ['ikn','ObservationCode', 'ObservationDateTime', 'value']
@@ -582,25 +619,6 @@ def _filter_olis_data(olis):
     olis = olis.drop_duplicates(subset=subset, keep='last')
     
     return olis
-
-def filter_olis_data(chunk, chemo_ikns, select_blood_types=None):
-    """
-    Args:
-        keep_blood_types (list or None): list of observation codes associated with specific blood work tests we want to keep
-    """
-    # organize and format columns
-    chunk = chunk[olis_cols]
-    chunk = clean_string(chunk, ['ikn', 'ObservationCode', 'ReferenceRange', 'Units'])
-    
-    # filter patients not in chemo_df
-    chunk = chunk[chunk['ikn'].isin(chemo_ikns)]
-    
-    if select_blood_types:
-        # filter rows with excluded blood types
-        chunk = chunk[chunk['ObservationCode'].isin(select_blood_types)]
-    
-    chunk = _filter_olis_data(chunk)
-    return chunk
 
 def olis_worker(partition, earliest_limit=-5, latest_limit=28):
     chemo_df, olis_df = partition
@@ -641,27 +659,27 @@ def observation_worker(partition, days_ago=5):
 
 def closest_measurement_worker(partition, days_after=90):
     """
-    Finds the closest SCr measurement after x number of days after treatment and within 1 year since then.
-    partition must contain only one type of observation (e.g. serume creeatinine observations only)
+    Finds the closest measurement x number of days after treatment to 2 years after treatment
+    partition must contain only one type of observation (e.g. serume creatinine observations only)
     """
-    chemo_df, scr_df = partition
-    scr_df = scr_df.sort_values(by='ObservationDateTime') # might be redundant but just in case
+    chemo_df, obs_df = partition
+    obs_df = obs_df.sort_values(by='ObservationDateTime') # might be redundant but just in case
     result = []
     for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
-        scr_group = scr_df[scr_df['ikn'] == ikn]
-        if scr_group.empty:
+        obs_group = obs_df[obs_df['ikn'] == ikn]
+        if obs_group.empty:
             continue
 
         for chemo_idx, chemo_row in chemo_group.iterrows():
             earliest_date = chemo_row['visit_date'] + pd.Timedelta(f'{days_after} days')
-            latest_date = earliest_date + pd.Timedelta('365 days')
-            closest_scr = scr_group[scr_group['ObservationDateTime'].between(earliest_date, latest_date)]
-            if closest_scr.empty:
+            latest_date = earliest_date + pd.Timedelta('730 days')
+            closest_obs = obs_group[obs_group['ObservationDateTime'].between(earliest_date, latest_date)]
+            if closest_obs.empty:
                 continue
                 
-            closest_scr = closest_scr.iloc[0]
-            days_after_chemo = (closest_scr['ObservationDateTime'] - chemo_row['visit_date']).days
-            result.append((chemo_idx, days_after_chemo, closest_scr['value']))
+            closest_obs = closest_obs.iloc[0]
+            days_after_chemo = (closest_obs['ObservationDateTime'] - chemo_row['visit_date']).days
+            result.append((chemo_idx, days_after_chemo, closest_obs['value']))
     return result
                           
 def postprocess_olis_data(chemo_df, olis_df, observations=all_observations, days_range=range(-5,29)):

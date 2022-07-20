@@ -16,14 +16,18 @@ TERMS OF USE:
 """
 # Paths
 root_path = 'XXXXX'
-share_path = 'XXXXXX'
-sas_folder = 'XXXXXXX'
-regiments_folder = 'XXXXXXX'
+share_path = 'XXXXX'
+sas_folder = 'XXXXX'
+sas_folder2 = 'XXXXX'
+regiments_folder = 'XXXXX'
 cyto_folder = 'CYTOPENIA' # Cytopenia folder = 'CYTOPENIA'
 acu_folder = 'PROACCT' # Acute care use folder = 'PROACCT' (PRediction of Acute Care use during Cancer Treatment)
 can_folder = 'CAN' # Cisplatin-associated nephrotoxicity folder = 'CAN'
 symp_folder = 'SYMPTOM' # Symptom Deteroriation folder = 'SYMPTOM'
 death_folder = 'DEATH' # Death folder = 'DEATH'
+
+# Date to temporally split data into developement and test cohort
+split_date = '2017-06-30'
 
 # Main Blood Types and Low Blood Count Thresholds
 blood_types = {'neutrophil': {'cytopenia_threshold': 1.5,  # cytopenia = low blood count
@@ -151,12 +155,15 @@ cancer_type_mapping = {'81403': 'Adenocarcinoma', # originate in mucous glands i
                        '94403': 'Brain/Spinal Cancer (GBM)', # GBM: Glioblastoma
                        '81203': 'Tansitional Cell Cancer'} # Can occur in kidney, bladder, ureter, urethra, urachus
 
-cancer_code_mapping = {'C18': 'Colon',
+cancer_code_mapping = {'C16': 'Stomach',
+                       'C18': 'Colon',
+                       'C19': 'Rectosigmoid Junction',
                        'C20': 'Rectum',
                        'C25': 'Pancreas',
                        'C34': 'Lung/Bronchus',
                        'C50': 'Breast', 
                        'C53': 'Cervix Uteri',
+                       'C54': 'Corpus Uteri', # body of uterus
                        'C56': 'Ovary',
                        'C61': 'Prostate Gland',
                        'C67': 'Bladder',
@@ -202,7 +209,8 @@ drug_cols = ['din', # DIN: Drug Identification Number
              'cco_drug_code', # CCO: Cancer Care Ontario
              'dose_administered', 'measurement_unit'] 
     
-olis_cols = ['ikn', 'ObservationCode', 'ObservationDateTime', 'ObservationReleaseTS', 'ReferenceRange', 'Units', 'value']
+olis_cols = ['ikn', 'ObservationCode', 'ObservationDateTime', 'ObservationReleaseTS', 'ReferenceRange', 'Units', 
+             'value_recommended_d']
 
 symptom_cols = ['ecog_grade', 'prfs_grade', 'Wellbeing','Tiredness', 'Pain', 'Shortness of Breath', 'Drowsiness', 
                 'Lack of Appetite', 'Depression', 'Anxiety', 'Nausea']
@@ -331,11 +339,13 @@ clean_variable_mapping = {'chemo': 'chemotherapy',
                           'prev': 'previous', 
                           'baseline_': '', 
                           'num': 'number_of', 
+                          '_count': '',
                           'lhin_cd': 'local health integration network', 
                           'curr_topog_cd': 'cancer_location', 
                           'curr_morph_cd': 'cancer_type', 
                           'prfs': 'patient_reported_functional_status',
-                          'ODBGF': 'ODB_growth_factor',
+                          'eGFR': 'estimated_glomerular_filtration_rate',
+                          'ODBGF': 'growth_factor',
                           'MCV': 'mean_corpuscular_volume',
                           'MCHC': 'mean_corpuscular_hemoglobin_concentration',
                           'MCH': 'mean_corpuscular_hemoglobin',
@@ -351,7 +361,7 @@ clean_variable_mapping = {'chemo': 'chemotherapy',
 variable_groupings_by_keyword = {'Acute care use': 'INFX|GI|TR|prev_H|prior_H|prev_ED|prior_ED',
                                  'Cancer': 'curr_topog_cd|curr_morph_cd', 
                                  'Demographic': 'age|body|immigrant|lhin|sex|english',
-                                 'Laboratory': 'count',
+                                 'Laboratory': 'baseline',
                                  'Treatment': 'visit_month|regimen|intent|chemo|therapy|cycle',
                                  'Symptoms': '|'.join(symptom_cols)}
 

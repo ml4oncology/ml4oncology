@@ -20,7 +20,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_packed_sequence
-
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
@@ -28,6 +27,7 @@ from sklearn.multioutput import MultiOutputClassifier
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 from sklearn.isotonic import IsotonicRegression
 from xgboost import XGBClassifier
+from skmisc.loess import loess
 from bayes_opt import BayesianOptimization
 
 from scripts.config import (nn_solvers, nn_activations, calib_param, calib_param_logistic)
@@ -44,7 +44,7 @@ class MLModels:
                        "NN": MLPClassifier} # Multilayer perceptron (aka neural network)
         
         self.model_tuning_config = {'LR': [{'init_points': 3, 'n_iter': 10}, 
-                                           {'C': (0, 1)}],
+                                           {'C': (0.0001, 1)}],
                                     'XGB': [{'init_points': 5, 'n_iter': 25}, 
                                             {'learning_rate': (0.001, 0.1),
                                              'n_estimators': (50, 200),
@@ -65,7 +65,7 @@ class MLModels:
                                             'second_layer_size': (16, 256),
                                             'solver': (0, len(nn_solvers)-0.0001),
                                             'activation': (0, len(nn_activations)-0.0001)}]}
-        
+    
     def get_LR_model(self, C=1.0, max_iter=100):
         params = {'C': C, 
                   'class_weight': 'balanced',
@@ -176,11 +176,6 @@ class IsotonicCalibrator:
         
     def calibrate(self, pred, label):
         for target_type in self.target_types:
-            # Reference: github.com/wblachowski/models-calibration
-            # y_pred, y_true = pred[target_type], label[target_type]
-            # prob_true, prob_pred = calibration_curve(y_true, y_pred, n_bins=20, strategy='quantile')
-            # self.regressor[target_type].fit(prob_pred, prob_true)
-            
             # Reference: github.com/scikit-learn/scikit-learn/blob/main/sklearn/calibration.py
             self.regressor[target_type].fit(pred[target_type], label[target_type])
         
@@ -196,3 +191,30 @@ class IsotonicCalibrator:
                     raise e
         result = np.array(result).T
         return pd.DataFrame(result, columns=pred_prob.columns, index=pred_prob.index)
+    
+class LOESS:
+    """Locally estimated scatterplot smoothing model
+    Used as a baseline model in which a single predictor/variable/column is used to predict a target
+    """
+    def __init__(self, **params):
+        self.params = params
+        self.models = {}
+        self.target_types = []
+        
+    def fit(self, x, Y):
+        for target_type, y in Y.iteritems():
+            self.models[target_type] = loess(x, y, **self.params)
+            self.models[target_type].fit()
+        self.target_types = Y.columns.tolist()
+        
+    def predict(self, x):
+        preds = {target_type: self.models[target_type].predict(x).values for target_type in self.target_types}
+        return preds
+    
+    def predict_with_confidence_interval(self, x):
+        preds, ci_lower, ci_upper = {}, {}, {}
+        for target_type in self.target_types:
+            pred = self.models[target_type].predict(x, stderror=True)
+            ci = pred.confidence(0.05)
+            preds[target_type], ci_lower[target_type], ci_upper[target_type] = pred.values, ci.lower, ci.upper
+        return preds, ci_lower, ci_upper
