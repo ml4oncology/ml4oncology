@@ -69,16 +69,20 @@ def load_ensemble_weights(save_dir):
     return ensemble_weights
 
 # Bootstrap Confidence Interval 
+def bootstrap_sample(data, random_seed):
+    np.random.seed(random_seed)
+    N = len(data)
+    weights = np.random.random(N) 
+    return data.sample(n=N, replace=True, random_state=random_seed, weights=weights)
+    
 def bootstrap_worker(bootstrap_partition, Y_true, Y_pred):
     """
     Compute bootstrapped AUROC/AUPRC scores by resampling the labels and predictions together
     and recomputing the AUROC/AUPRC
     """
     scores = []
-    for i in bootstrap_partition:
-        np.random.seed(i)
-        weights = np.random.random(len(Y_true)) 
-        y_true = Y_true.sample(n=len(Y_true), replace=True, random_state=i, weights=weights)
+    for random_seed in bootstrap_partition:
+        y_true = bootstrap_sample(Y_true, random_seed)
         y_pred = Y_pred[y_true.index]
         if y_true.nunique() < 2:
             continue
@@ -128,7 +132,7 @@ def get_nmissing(df, verbose=False):
     missing = missing[missing != 0] # remove columns without missing values
     missing = pd.DataFrame(missing, columns=['Missing (N)'])
     missing['Missing (%)'] = (missing['Missing (N)'] / len(df) * 100).round(3)
-    
+        
     if verbose:
         other = ['intent_of_systemic_treatment', 'lhin_cd', 'curr_morph_cd', 'curr_topog_cd', 'body_surface_area']
         idx = missing.index
@@ -405,7 +409,12 @@ def data_characteristic_summary(eval_models, save_dir, partition='split', **kwar
     summary_df.to_csv(f'{save_dir}/data_characteristic_summary.csv')
     return summary_df
 
-def feature_summary(eval_models, prep, target_keyword, save_dir):
+def feature_summary(eval_models, prep, target_keyword, save_dir, deny_old_survey=True):
+    """
+    Args:
+        deny_old_survey (bool): considers survey (symptom questionnaire) response more than 
+                                5 days prior to chemo session as "missing" data
+    """
     df = prep.dummify_data(eval_models.orig_data.copy())
     train_idxs = eval_models.labels['Train'].index
 
@@ -420,6 +429,14 @@ def feature_summary(eval_models, prep, target_keyword, save_dir):
     summary = summary.loc[['count', 'mean', 'std']].T
     summary = summary.round(6)
     summary['count'] = len(train_idxs) - summary['count']
+    
+    if deny_old_survey:
+        cols = summary.index[summary.index.isin(symptom_cols)]
+        visit_date = prep.event_dates['visit_date']
+        for col in cols:
+            days_before_chemo = visit_date - prep.event_dates[f'{col}_survey_date']
+            summary.loc[col, 'count'] = sum(days_before_chemo >= pd.Timedelta('5 days'))
+            
     summary = summary.rename(columns={'count': 'Missingness_training', 'mean': 'Mean_training', 'std': 'SD_training'})
 
     # assign the groupings for each feature
@@ -731,7 +748,7 @@ def get_worst_performing_subgroup(eval_models, category='regimen', algorithm='XG
     summary_df = summary_df.sort_values(by=(target_type, 'AUROC'))
     return summary_df
 
-# get estimated glomerular filteration rate
+# Get estimated glomerular filteration rate
 def get_eGFR(df, col='value', prefix=''):
     """
     Estimate the glomerular filteration rate according to [1] for determining chronic kidney disease

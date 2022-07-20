@@ -32,7 +32,6 @@ from scripts.preprocess import (split_and_parallelize)
 from scripts.utility import (twolevel, compute_bootstrap_scores, group_pred_by_outcome, pred_thresh_binary_search)
 from scripts.config import (blood_types, clean_variable_mapping)
 from scripts.visualize import (get_bbox)
-from scripts.model import (LOESS)
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s', datefmt='%I:%M:%S')
@@ -245,7 +244,7 @@ class Evaluate:
         if title: ax.set_title(title)
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
-        if curve_type == 'pr': ax.set_ylim(0, 1)
+        if curve_type == 'pr': ax.set_ylim(-0.05, 1.05)
         leg = ax.legend(loc=legend_location, frameon=False)
         if one_target: leg.legendHandles[0].set_linewidth(0) # remove the legend line
             
@@ -476,7 +475,7 @@ class Evaluate:
         plt.show()
         
     def plot_decision_curve_analysis(self, algorithm, target_types=None, split='Test', 
-                                     figsize=(), padding=None):
+                                     xlim=None, figsize=(), padding=None):
         # setup 
         if target_types is None: target_types = self.target_types
         N = len(target_types)
@@ -503,6 +502,7 @@ class Evaluate:
                 ax.plot(threshold, y, label=label)
             ax.set_xlabel('Threshold Probability')
             ax.set_ylabel('Net Benefit')
+            if xlim is not None: ax.set_xlim(*xlim)
             ax.set_ylim((y_max/-4, y_max+y_max*0.1)) # bound/scale the y axis to make plot look nicer
             ax.legend(frameon=False)
             fig.savefig(f'{self.output_path}/figures/decision_curve/{algorithm}_{target_type}.jpg', 
@@ -511,17 +511,19 @@ class Evaluate:
         plt.savefig(f'{self.output_path}/figures/decision_curve/{algorithm}.jpg', bbox_inches='tight', dpi=300)
         plt.show()
         
-class EvaluateLOESS(Evaluate):
+class EvaluateBaselineModel(Evaluate):
     def __init__(self, base_col, preds_min, preds_max, preds, labels, orig_data, output_path):
         super().__init__(output_path, preds, labels, orig_data)
         self.col = base_col
         self.preds_min = preds_min
         self.preds_max = preds_max
         
-        save_path = f'{output_path}/figures/curves/loess'
+        save_path = f'{output_path}/figures/baseline'
         if not os.path.exists(save_path): os.makedirs(save_path)
         
         self.name_mapping = {'baseline_eGFR': 'Pre-Treatment eGFR', 'next_eGFR': '9-month Post-Treatment eGFR'}
+        self.name_mapping.update({f'baseline_{bt}_count': f'Pre-Treatment {bt.title()} Count' for bt in blood_types})
+        self.name_mapping.update({f'target_{bt}_count': f'Before Next Treatment {bt.title()} Count' for bt in blood_types})
         
     def plot_loess(self, ax, algorithm, target_type, split):            
         x = self.orig_data[self.col].sort_values()
@@ -537,7 +539,7 @@ class EvaluateLOESS(Evaluate):
             
     def all_plots_for_single_target(self, algorithm='LOESS', target_type='AKI', split='Test',
                                     n_bins=10, calib_strategy='quantile', figsize=(12,12), 
-                                    save=True, filename='LOESS'):
+                                    save=True, filename=''):
         # setup 
         fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize)
         axes = axes.flatten()
@@ -556,11 +558,9 @@ class EvaluateLOESS(Evaluate):
         
         # save
         if save:
-            # for idx, name in enumerate(['loess', 'pr','roc','calib']):
-            #     filename = f'{self.output_path}/figures/curves/loess/{target_type}_{name}_{filename}.jpg'
-            #     fig.savefig(filename, bbox_inches=get_bbox(axes[idx], fig), dpi=300) 
-            filename = f'{self.output_path}/figures/loess/{target_type}_{filename}.jpg'
-            plt.savefig(filename, bbox_inches='tight', dpi=300)
+            if not filename: filename = algorithm
+            savepath = f'{self.output_path}/figures/baseline/{target_type}_{filename}.jpg'
+            plt.savefig(savepath, bbox_inches='tight', dpi=300)
         plt.show()
         
     def all_plots(self, split='Test', **kwargs):
@@ -568,37 +568,3 @@ class EvaluateLOESS(Evaluate):
         for target_type, Y_true in Y.iteritems():
             if Y_true.nunique() < 2: continue # no pos examples, no point in plotting/evaluating
             self.all_plots_for_single_target(target_type=target_type, **kwargs)
-
-# special 
-def plot_loess_calib(ax, Train, algorithm, target_type, split='Test', legend_location='lower right', title=''):
-    # WARNING: PLEASE ENSURE Train.preds CONTAINS UNCALIBRATED PREDICTIONS!!!!
-    # calibrate
-    pred, Y = Train.preds['Valid'][algorithm][target_type], Train.labels['Valid']
-    upper_limit, lower_limit = pred.max(), pred.min()
-    lo = LOESS(span=0.5)
-    lo.fit(pred, Y)
-    # get calibrated prediction
-    orig_pred, Y = Train.preds[split][algorithm][target_type].clip(upper=upper_limit, lower=lower_limit), Train.labels[split]
-    new_pred, new_pred_min, new_pred_max = lo.predict_with_confidence_interval(orig_pred)
-    # get calibration curve
-    indices = np.argsort(orig_pred.values.flatten())
-    orig_pred, new_pred = orig_pred.iloc[indices], new_pred[target_type][indices]
-    new_pred_min, new_pred_max = new_pred_min[target_type][indices], new_pred_max[target_type][indices]
-    axis_max_limit = min(new_pred.max(), orig_pred.max())
-    max_calib_error = np.max(abs(orig_pred - new_pred)).round(3)
-    mean_calib_error = np.mean(abs(orig_pred - new_pred)).round(3)
-    # plot calibration curve
-    ax.plot([0,axis_max_limit],[0,axis_max_limit],'k:', label='Perfect Calibration')
-    ax.plot(orig_pred, new_pred)
-    ax.fill_between(orig_pred, new_pred_min, new_pred_max, alpha=0.25)
-    adjustment_factor = 4
-    if axis_max_limit > 0.5: adjustment_factor = 1
-    elif axis_max_limit > 0.3: adjustment_factor = 2
-    ax.text(axis_max_limit/2, 0.07/adjustment_factor, f'Mean Calibration Error {mean_calib_error}')
-    ax.text(axis_max_limit/2, 0.1/adjustment_factor, f'Max Calibration Error {max_calib_error}')
-    ax.set_ylabel('Observed')
-    ax.set_xlabel('Predicted')
-    ax.set_xlim(-0.01, axis_max_limit)
-    ax.set_ylim(-0.01, axis_max_limit)
-    ax.legend(loc=legend_location, frameon=False)
-    if title: ax.set_title(title)

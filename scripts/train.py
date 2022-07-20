@@ -24,7 +24,8 @@ from bayes_opt import BayesianOptimization
 from sklearn.metrics import (accuracy_score, roc_auc_score, mean_squared_error)
 
 from scripts.utility import (load_ml_model, load_ensemble_weights, load_predictions, save_predictions)
-from scripts.model import (MLModels, RNN, IsotonicCalibrator, LOESS)
+from scripts.model import (MLModels, RNN, IsotonicCalibrator, LOESSModel, PolynomialModel)
+from scripts.config import (model_tuning_param, bayesopt_param)
 
 import torch
 import torch.nn as nn
@@ -54,7 +55,7 @@ class Train:
         """
         return best_param
         
-    def _bayesopt(self, algorithm, eval_func, hyperparam_config, optim_config, **kwargs):
+    def _bayesopt(self, algorithm, eval_func, hyperparam_config, optim_config, filename='', **kwargs):
         """Conduct bayesian optimization, a sequential search framework 
         for finding optimal hyperparameters using bayes theorem
         """
@@ -66,8 +67,9 @@ class Train:
         logging.info(f'Best param: {best_param}')
 
         # Save the best hyperparameters
-        param_filename = f'{self.output_path}/best_params/{algorithm}_best_param.pkl'
-        with open(param_filename, 'wb') as file:    
+        if not filename: filename = f'{algorithm}_best_param'
+        savepath = f'{self.output_path}/best_params/{filename}.pkl'
+        with open(savepath, 'wb') as file:    
             pickle.dump(best_param, file)
 
         return best_param
@@ -128,7 +130,8 @@ class TrainML(Train):
         return best_param
 
     def bayesopt(self, algorithm, random_state=42):
-        optim_config, hyperparam_config = self.ml.model_tuning_config[algorithm]
+        hyperparam_config = model_tuning_param[algorithm]
+        optim_config = bayesopt_param[algorithm]
         evaluate_function = partial(self.bo_evaluate, algorithm=algorithm)
         return self._bayesopt(algorithm, evaluate_function, hyperparam_config, optim_config, random_state=random_state)
     
@@ -199,13 +202,6 @@ class SeqData(TensorDataset):
 class TrainRNN(Train):
     def __init__(self, dataset, output_path):
         super().__init__(dataset, output_path)
-        self.optim_config = {'init_points': 3, 'n_iter': 70}
-        self.hyperparam_config = {'batch_size': (8, 512),
-                                  'learning_rate': (0.0001, 0.01),
-                                  'hidden_size': (10, 200),
-                                  'hidden_layers': (1, 5),
-                                  'dropout': (0.0, 0.9),
-                                  'model': (0.0, 1.0)}
         self.n_features -= 1 # -1 for ikn
         self.train_dataset = self.transform_to_tensor_dataset(*self.data_splits['Train'])
         self.valid_dataset = self.transform_to_tensor_dataset(*self.data_splits['Valid'])
@@ -459,8 +455,9 @@ class TrainRNN(Train):
         return np.mean(auc_score)
     
     def bayesopt(self, algorithm='RNN', random_state=42):
-        return self._bayesopt(algorithm, self.bo_evaluate, self.hyperparam_config, 
-                              self.optim_config, random_state=random_state)
+        hyperparam_config = model_tuning_param[algorithm]
+        optim_config = bayesopt_param[algorithm]
+        return self._bayesopt(algorithm, self.bo_evaluate, hyperparam_config, optim_config, random_state=random_state)
     
     def tune_and_train(self, algorithm='RNN', run_bayesopt=True, run_training=True, run_calibration=True, 
                        calibrate_pred=True, save_preds=True):
@@ -515,9 +512,7 @@ class TrainENS(Train):
         self.models = list(preds[self.splits[0]].keys())
         # make sure each split contains the same models
         assert all(list(preds[split].keys()) == self.models for split in self.splits)
-        
-        self.optim_config = {'init_points': 4, 'n_iter': 30}
-        self.hyperparam_config = {alg: (0, 1) for alg in self.models}
+
         self.calibrator = IsotonicCalibrator(self.target_types)
         
     def bo_evaluate(self, split='Valid', **kwargs):
@@ -527,6 +522,9 @@ class TrainENS(Train):
         return roc_auc_score(Y, pred_prob) # mean (macro-mean) of auroc scores of all target types
     
     def bayesopt(self, algorithm='ENS', random_state=42):
+        hyperparam_config = model_tuning_param[algorithm]
+        hyperparam_config = {alg: config for alg, config in hyperparam_config.items() if alg in self.models}
+        optim_config = bayesopt_param[algorithm]
         return self._bayesopt(algorithm, self.bo_evaluate, self.hyperparam_config, self.optim_config, random_state=random_state)
     
     def predict(self, split, ensemble_weights=None):
@@ -565,40 +563,88 @@ class TrainENS(Train):
             self.calibrator.load_model(self.output_path, algorithm)
 
         self.store_prediction(calibrated=calibrate_pred)
-        
-class TrainLOESS(Train):
-    def __init__(self, dataset, output_path, base_col, task_type='classification'):
-        if task_type == 'classification':
-            self.bo_eval_func = roc_auc_score
-        elif task_type == 'regression':
-            self.bo_eval_func = mean_squared_error
-        else:
-            raise ValueError('task_type must be either classification or regression')
+
+# Train Baseline Model
+class TrainBaselineModel(Train):
+    def __init__(self, dataset, output_path, base_col, algorithm, task_type='classification'):
         super().__init__(dataset, output_path)
+        bo_eval_funcs = {'classification': roc_auc_score, 'regression': mean_squared_error}
+        self.bo_eval_func = bo_eval_funcs[task_type]
         self.col = base_col
-        self.hyperparam_config = {'span': (0.01, 1)}
-        self.optim_config = {'init_points': 3, 'n_iter': 15}
+        self.algorithm = algorithm
+        self.task_type = task_type
         self.data_splits = {split: (X[self.col], Y) for split, (X, Y) in self.data_splits.items()}
         
     def bo_evaluate(self, **kwargs):
+        kwargs = self.convert_param_types(kwargs)
         model = self.train_model(**kwargs)
+        if model is None: return 0
         pred, Y = self.predict(model, split='Valid', ci=False)
         return self.bo_eval_func(Y, pred) # mean (macro-mean) of scores of all target types
 
-    def bayesopt(self, algorithm='LOESS', random_state=42, verbose=2):
-        return self._bayesopt(algorithm, self.bo_evaluate, self.hyperparam_config, self.optim_config, 
-                              random_state=random_state, verbose=verbose)
+    def bayesopt(self, filename='', random_state=42, verbose=2):
+        hyperparam_config = model_tuning_param[self.algorithm]
+        optim_config = bayesopt_param[self.algorithm]
+        return self._bayesopt(self.algorithm, self.bo_evaluate, hyperparam_config, optim_config, 
+                              filename=filename, random_state=random_state, verbose=verbose)
     
     def train_model(self, **param):
-        model = LOESS(**param)
-        model.fit(*self.data_splits['Train'])
-        return model
+        raise NotImplementedError
 
-    def predict(self, model, split='Test', ci=True):
+    def predict(self, model, split='Test', ci=True, **kwargs):
         X, Y = self.data_splits[split]
         if ci:
-            output = model.predict_with_confidence_interval(X) # output = (preds, ci_lower, ci_upper)
+            x_train, y_train = self.data_splits['Train']
+            output = model.predict_with_confidence_interval(X, x_train=x_train, y_train=y_train) # output = (preds, ci_lower, ci_upper)
             return (pd.DataFrame(item, index=Y.index) for item in output), Y
         else:
             pred = model.predict(X)
             return pd.DataFrame(pred, index=Y.index), Y
+        
+class TrainLOESSModel(TrainBaselineModel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_observations = 13000
+        
+    def train_model(self, **param):
+        # LOESS can only handle X max observations before crashing during prediction
+        X, Y = self.data_splits['Train']
+        if len(Y) > self.max_observations:
+            Y = Y.sample(n=self.max_observations, random_state=42)
+            X = X.loc[Y.index]
+            
+        model = LOESSModel(**param)
+        try:
+            model.fit(X, Y)
+        except ValueError as e:
+            if str(e) == "b'svddc failed in l2fit.'":
+                logging.info('Caught error svddc failed in l2fit. Returning None')
+                return None
+            elif 'There are other near singularities as well' in str(e):
+                logging.info('Encountered near singularities. Returning None')
+                return None
+            else: 
+                raise e
+                
+        return model
+    
+class TrainPolynomialModel(TrainBaselineModel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_observations = 13000
+        
+    def convert_param_types(self, best_param):
+        for param in ['degree', 'n_knots']:
+            if param in best_param:
+                best_param[param] = int(best_param[param])
+
+        best_param = {'PLY': {k: v for k,v in best_param.items() if k not in model_tuning_param['LR']},
+                      'REG': {k: v for k,v in best_param.items() if k in model_tuning_param['LR']}}
+        if self.task_type == 'regression': best_param['REG']['alpha'] = best_param['REG'].pop('C')
+
+        return best_param
+        
+    def train_model(self, **param):
+        model = PolynomialModel(algorithm=self.algorithm, task_type=self.task_type, **param)
+        model.fit(*self.data_splits['Train'])
+        return model

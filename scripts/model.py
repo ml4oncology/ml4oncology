@@ -14,24 +14,27 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
+import tqdm
 import pickle
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_packed_sequence
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.multioutput import MultiOutputClassifier
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 from sklearn.isotonic import IsotonicRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures, SplineTransformer
 from xgboost import XGBClassifier
 from skmisc.loess import loess
 from bayes_opt import BayesianOptimization
 
-from scripts.config import (nn_solvers, nn_activations, calib_param, calib_param_logistic)
-from scripts.utility import (load_ml_model)
+from scripts.config import (calib_param, calib_param_logistic)
+from scripts.utility import (load_ml_model, bootstrap_sample)
 
 class MLModels:
     """Machine Learning Models
@@ -42,29 +45,6 @@ class MLModels:
                        "XGB": XGBClassifier, # Extreme Gradient Boostring
                        "RF": RandomForestClassifier,
                        "NN": MLPClassifier} # Multilayer perceptron (aka neural network)
-        
-        self.model_tuning_config = {'LR': [{'init_points': 3, 'n_iter': 10}, 
-                                           {'C': (0.0001, 1)}],
-                                    'XGB': [{'init_points': 5, 'n_iter': 25}, 
-                                            {'learning_rate': (0.001, 0.1),
-                                             'n_estimators': (50, 200),
-                                             'max_depth': (3, 7),
-                                             'gamma': (0, 1),
-                                             'reg_lambda': (0, 1)}],
-                                    'RF': [{'init_points': 3, 'n_iter': 20}, 
-                                           {'n_estimators': (50, 200),
-                                            'max_depth': (3, 7),
-                                            'max_features': (0.01, 1)}],
-                                    # NN is actually deep learning, but whatever lol
-                                    'NN': [{'init_points': 5, 'n_iter': 50}, 
-                                           {'learning_rate_init': (0.0001, 0.1),
-                                            'batch_size': (64, 512),
-                                            'momentum': (0,1),
-                                            'alpha': (0,1),
-                                            'first_layer_size': (16, 256),
-                                            'second_layer_size': (16, 256),
-                                            'solver': (0, len(nn_solvers)-0.0001),
-                                            'activation': (0, len(nn_activations)-0.0001)}]}
     
     def get_LR_model(self, C=1.0, max_iter=100):
         params = {'C': C, 
@@ -191,30 +171,107 @@ class IsotonicCalibrator:
                     raise e
         result = np.array(result).T
         return pd.DataFrame(result, columns=pred_prob.columns, index=pred_prob.index)
-    
-class LOESS:
-    """Locally estimated scatterplot smoothing model
-    Used as a baseline model in which a single predictor/variable/column is used to predict a target
+
+# Baseline Models
+class BaselineModel:
+    """
+    Baseline model in which a single predictor/variable/column is used to predict a target
     """
     def __init__(self, **params):
         self.params = params
         self.models = {}
         self.target_types = []
         
+    def _fit(self, x, y):
+        raise NotImplementedError
+        
+    def _predict(self, model, x):
+        raise NotImplementedError
+        
+    def _predict_with_confidence_interval(self, model, x, **kwargs):
+        raise NotImplementedError
+        
     def fit(self, x, Y):
         for target_type, y in Y.iteritems():
-            self.models[target_type] = loess(x, y, **self.params)
-            self.models[target_type].fit()
+            self.models[target_type] = self._fit(x, y)
         self.target_types = Y.columns.tolist()
         
     def predict(self, x):
-        preds = {target_type: self.models[target_type].predict(x).values for target_type in self.target_types}
+        preds = {target_type: self._predict(self.models[target_type], x) for target_type in self.target_types}
         return preds
     
-    def predict_with_confidence_interval(self, x):
+    def predict_with_confidence_interval(self, x, **kwargs):
         preds, ci_lower, ci_upper = {}, {}, {}
-        for target_type in self.target_types:
-            pred = self.models[target_type].predict(x, stderror=True)
-            ci = pred.confidence(0.05)
-            preds[target_type], ci_lower[target_type], ci_upper[target_type] = pred.values, ci.lower, ci.upper
+        for tt in self.target_types:
+            output = self._predict_with_confidence_interval(tt, x, **kwargs)
+            preds[tt], ci_lower[tt], ci_upper[tt] = output
         return preds, ci_lower, ci_upper
+    
+class LOESSModel(BaselineModel):
+    """
+    LOESS: Locally estimated scatterplot smoothing model
+    """
+    def _fit(self, x, y):
+        model = loess(x, y, **self.params)
+        model.fit()
+        return model
+
+    def _predict(self, model, x):
+        return model.predict(x).values
+    
+    def _predict_with_confidence_interval(self, target_type, x):
+        model = self.models[target_type]
+        pred = model.predict(x, stderror=True)
+        ci = pred.confidence(0.05)
+        return pred.values, ci.lower, ci.upper
+    
+class PolynomialModel(BaselineModel):
+    """
+    Supported algorithms:
+    - SPLINE: B-spline basis functions (piecewise polynomials)
+    - POLY: pure polynomials
+    """
+    def __init__(self, algorithm, task_type, **params):
+        super().__init__(**params)
+        poly_models = {'SPLINE': SplineTransformer, 'POLY': PolynomialFeatures}
+        reg_models = {'regression': Ridge, 'classification': LogisticRegression}
+        self.poly_model = poly_models[algorithm]
+        self.reg_model = reg_models[task_type]
+        self.task_type = task_type
+        
+    def _format(self, x):
+        if len(x.shape) == 1: x = np.expand_dims(x, axis=1)
+        return x
+        
+    def _fit(self, x, y):
+        model = make_pipeline(self.poly_model(**self.params['PLY']), self.reg_model(**self.params['REG']))
+        model.fit(self._format(x), y)
+        return model
+    
+    def _predict(self, model, x):
+        if self.task_type == 'regression':
+            return model.predict(self._format(x))
+        else:
+            return model.predict_proba(self._format(x))[:, 1]
+    
+    def _compute_confidence_interval(self, x, x_train, y_train, n_bootstraps=1000):
+        ci_preds = []
+        for random_seed in tqdm.tqdm(range(n_bootstraps)):
+            Y = bootstrap_sample(y_train, random_seed)
+            X = x_train.loc[Y.index]
+            model = self._fit(X, Y)
+            pred = self._predict(model, x)
+            ci_preds.append(pred)
+        return np.array(ci_preds)
+    
+    def _predict_with_confidence_interval(self, target_type, x, x_train=None, y_train=None):
+        """
+        For spline and poly algorithm, confidence interval is calculated by permuting the data used to 
+        originally train the model, retraining the model, recomputing the prediction for x,
+        and taking the 2.5% and 97.5% quantiles of each prediction for sample n in x
+        """
+        model = self.models[target_type]
+        pred =  self._predict(model, x)
+        ci_preds = self._compute_confidence_interval(x, x_train, y_train[target_type])
+        lower, upper = np.percentile(ci_preds, [2.5, 97.5], axis=0).round(3)
+        return pred, lower, upper

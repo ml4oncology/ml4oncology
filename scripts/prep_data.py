@@ -35,8 +35,10 @@ class PrepData:
     Prepare the data for model training
     """
     def __init__(self):
+        self.event_dates = pd.DataFrame() # store the event dates (keep it separate from the main output data)
         self.observation_cols = observation_cols
         self.symptom_cols = symptom_cols
+        self.datetime_cols = ['visit_date'] + [f'{col}_survey_date' for col in symptom_cols]
         self.imp_obs = None # observation imputer
         self.imp_ee = None # esas ecog imputer
         self.scaler = None # normalizer
@@ -59,10 +61,11 @@ class PrepData:
         return df
     
     def fill_missing_feature(self, df):
+        cols = df.columns
         for col in ['line_of_therapy', 'num_prior_EDs', 'num_prior_Hs']:
-            if col in df.columns: df[col] = df[col].fillna(0)
+            if col in cols: df[col] = df[col].fillna(0)
         for col in ['days_since_last_chemo', 'chemo_interval']:
-            if col in df.columns: df[col] = df[col].fillna(df[col].max())
+            if col in cols: df[col] = df[col].fillna(df[col].max())
         return df
     
     def drop_features_with_high_missingness(self, df, missing_thresh, verbose=False):
@@ -70,7 +73,9 @@ class PrepData:
         exclude_cols = nmissing.index[nmissing['Missing (%)'] > missing_thresh].tolist()
         if verbose: logging.info(f'Dropping the following features for missingness over {missing_thresh}%: {exclude_cols}')
         self.observation_cols = list(set(self.observation_cols) - set(exclude_cols))
-        self.symptom_cols = list(set(self.symptom_cols) - set(exclude_cols))
+        for col in set(self.symptom_cols) & set(exclude_cols): 
+            self.symptom_cols.remove(col)
+            self.datetime_cols.remove(f'{col}_survey_date')
         return df.drop(columns=exclude_cols)
     
     def clip_outliers(self, data, cols=None, lower_percentile=0.01, upper_percentile=0.99):
@@ -240,6 +245,39 @@ class PrepData:
         Y_train, Y_valid, Y_test = self.convert_labels(Y_train), self.convert_labels(Y_valid), self.convert_labels(Y_test)
         
         return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
+    
+    def prepare_features(self, df, drop_cols=None, missing_thresh=None, include_first_date=False, reduce_sparsity=False, verbose=True):
+        """
+        Args:
+            missing_thresh (int or None): remove features with over ``missing_thresh``% missing values (e.g. 80% missing values)
+            include_first_date (bool): include first ever visit date for each patient
+        """
+        if drop_cols is None: drop_cols = []
+            
+        # convert visit date feature to cyclical features
+        df = self.get_visit_date_feature(df, include_first_date=include_first_date)
+        
+        # fill null values with 0 or max value
+        df = self.fill_missing_feature(df)
+        
+        if reduce_sparsity:
+            # reduce sparse matrix by replacing rare col entries with less than 6 patients with 'Other'
+            cols = ['regimen', 'curr_morph_cd', 'curr_topog_cd']
+            df = replace_rare_col_entries(df, cols, verbose=verbose)
+    
+        # save the date columns before dropping them
+        for col in self.datetime_cols: 
+            self.event_dates[col] = pd.to_datetime(df[col])
+        
+        # drop features and date columns
+        df = df.drop(columns=drop_cols+self.datetime_cols)
+        if missing_thresh is not None: 
+            df = self.drop_features_with_high_missingness(df, missing_thresh, verbose=verbose)
+        
+        # create features for missing entries
+        df = self.get_missingness_feature(df)
+        
+        return df
 
     def get_label_distribution(self, Y_train, Y_valid=None, Y_test=None, save_path=''):
         dists, cols = [], []
@@ -267,7 +305,7 @@ class PrepDataCYTO(PrepData):
         self.main_dir = f'{root_path}/{cyto_folder}'
         self.transfusion_cols = ['H_hemoglobin_transfusion_date', 'H_platelet_transfusion_date', 
                                  'ED_hemoglobin_transfusion_date', 'ED_platelet_transfusion_date']
-        self.datetime_cols = self.transfusion_cols + ['visit_date', 'next_visit_date']
+        self.datetime_cols += self.transfusion_cols + ['next_visit_date']
         self.chemo_dtypes = {col: str for col in self.transfusion_cols + ['curr_morph_cd', 'lhin_cd']}
     
     def extra_norm_cols(self):
@@ -285,22 +323,17 @@ class PrepDataCYTO(PrepData):
         df['regimen'] = chemo_df['regimen']
         df['chemo_interval'] = chemo_df['chemo_interval']
         cycle_lengths = dict(chemo_df[['regimen', 'cycle_length']].values)
-        result = {}
+        result, indices = [], []
         for regimen, regimen_group in tqdm.tqdm(df.groupby(['regimen'])):
             cycle_length = int(cycle_lengths[regimen])
             for chemo_interval, group in regimen_group.groupby(['chemo_interval']):
                 # forward fill blood counts from a days before to the day after administration
                 day = int(min(chemo_interval, cycle_length)) # get the min between actual vs expected days until next chemo
-                if day == max_day:
-                    ffill_window = range(day-2, day+1)
-                    end = day
-                else:  
-                    ffill_window = range(day-1,day+2)
-                    end = day+1
-                group['target_blood_count'] = numpy_ffill(group[ffill_window])
-                result.update(group['target_blood_count'].to_dict())
-        df['target_blood_count'] = pd.Series(result)
-        
+                ffill_window = range(day-2, day+1) if day == max_day else range(day-1,day+2)
+                result += numpy_ffill(group[ffill_window]).tolist()
+                indices += group.index.tolist()
+        df.loc[indices, 'target_blood_count'] = result
+
         mask = df['baseline_blood_count'].notnull() & df['target_blood_count'].notnull()
         df = df[mask]
         return df
@@ -316,38 +349,7 @@ class PrepDataCYTO(PrepData):
         data = {blood_type: data[blood_type].loc[keep_indices] for blood_type in blood_types}
         return data
     
-    def load_data(self):
-        df = pd.read_csv(f'{self.main_dir}/data/model_data.csv', dtype=self.chemo_dtypes)
-        for col in self.datetime_cols: df[col] = pd.to_datetime(df[col])
-        return df
-    
-    def get_data(self, include_first_date=False, missing_thresh=None, verbose=False):
-        # extract and organize data for model input and target labels
-        """
-        NBC - neutrophil blood count
-        HBC - hemoglobin blood count
-        PBC - platelet blood count
-
-        input:                               -->        MODEL         -->            target:
-        symptoms, body functionality,                                                NBC on next admin
-        laboratory test, HB/PB transfusion, GF given,                                HBC on next admin
-        chemo length, chemo cycle, days since starting chemo,                        PBC on next admin
-        regimen, visit month, immediate new regimen,
-        line of therapy, intent of systemic treatment, 
-        local health network, age, sex, immigrant, 
-        english speaker, body surface area,
-        cancer type/location, features missingness
-        
-        Args:
-            include_first_date (bool): include first ever visit date for each patient
-        """
-        # extract data
-        chemo_df = self.load_data()
-        main_blood_count_data = self.get_main_blood_count_data(chemo_df)
-        df = chemo_df.loc[main_blood_count_data['neutrophil'].index] # indices are same for all blood types
-        for blood_type, blood_count_data in main_blood_count_data.items():
-            df[f'target_{blood_type}_count'] = blood_count_data['target_blood_count']
-
+    def impute_growth_factor(self, df, verbose=False):
         # impute growth factor feature per regimen 
         # if majority of sessions where patients over 65 taking regimen X takes growth factor, 
         # set all sessions of regimen X as taking growth factor
@@ -358,8 +360,9 @@ class PrepDataCYTO(PrepData):
         df.loc[df['regimen'].isin(impute_regimens), 'ODBGF_given'] = True
         if verbose: logging.info(f"All sessions for the regimens {impute_regimens.tolist()} will assume " +
                                   "growth factors were administered")
-
-        # get blood transfusion features
+        return df
+    
+    def process_blood_transfusion(self, df, verbose=False):
         for col in self.transfusion_cols:
             bt = col.split('_')[1]
             new_col = f"{bt}_transfusion"
@@ -379,21 +382,42 @@ class PrepDataCYTO(PrepData):
             if verbose: logging.info(f"{mask.sum()} sessions will be labeled as positive for low {bt} blood count " +
                                      f"regardless of actual target {bt} blood count")
             df.loc[mask, f'target_{bt}_count'] = 0
+        return df
+    
+    def load_data(self):
+        df = pd.read_csv(f'{self.main_dir}/data/model_data.csv', dtype=self.chemo_dtypes)
+        for col in self.datetime_cols: df[col] = pd.to_datetime(df[col])
+        return df
+    
+    def get_data(self, verbose=False, **kwargs):
+        # extract and organize data for model input and target labels
+        """
+        NBC - neutrophil blood count
+        HBC - hemoglobin blood count
+        PBC - platelet blood count
 
-        # convert visit date feature to cyclical features
-        df = self.get_visit_date_feature(df, include_first_date=include_first_date)
+        input:                               -->        MODEL         -->            target:
+        symptoms, body functionality,                                                NBC on next admin
+        laboratory test, HB/PB transfusion, GF given,                                HBC on next admin
+        chemo length, chemo cycle, days since starting chemo,                        PBC on next admin
+        regimen, visit month, immediate new regimen,
+        line of therapy, intent of systemic treatment, 
+        local health network, age, sex, immigrant, 
+        english speaker, body surface area,
+        cancer type/location, features missingness
         
-        # fill null values with 0
-        df = self.fill_missing_feature(df)
-        
-        drop_cols = ['visit_date', 'next_visit_date', 'chemo_interval'] + self.transfusion_cols
-        df = df.drop(columns=drop_cols)
-        if missing_thresh is not None: 
-            df = self.drop_features_with_high_missingness(df, missing_thresh, verbose=verbose)
-        
-        # create features for missing entries
-        df = self.get_missingness_feature(df)
-
+        Args:
+            **kwargs (dict): the parameters of PrepData.prepare_features
+        """
+        # extract data
+        chemo_df = self.load_data()
+        main_blood_count_data = self.get_main_blood_count_data(chemo_df)
+        df = chemo_df.loc[main_blood_count_data['neutrophil'].index] # indices are same for all blood types
+        for blood_type, blood_count_data in main_blood_count_data.items():
+            df[f'target_{blood_type}_count'] = blood_count_data['target_blood_count']
+        df = self.impute_growth_factor(df, verbose=verbose)
+        df = self.process_blood_transfusion(df, verbose=verbose)
+        df = self.prepare_features(df, drop_cols=['chemo_interval'], **kwargs)
         return df
     
     def convert_labels(self, target):
@@ -422,7 +446,6 @@ class PrepDataEDHD(PrepData):
             self.main_dir = f'{root_path}/{acu_folder}'
         elif self.adverse_event == 'death':
             self.main_dir = f'{root_path}/{death_folder}'
-        self.event_dates = pd.DataFrame() # store the event dates (keep it separate from the main output data)
     
     def extra_norm_cols(self):
         return ['num_prior_EDs', 'num_prior_Hs',
@@ -436,7 +459,12 @@ class PrepDataEDHD(PrepData):
         return df
 
     def get_event_data(self, df, target_keyword, event='H', create_targets=True):
-        event_dates = self.load_event_data(event=event)
+        if self.event_dates.empty:
+            # intialize the indices of self.event_dates, which stores all dates (chemo visit, survey dates, etc)
+            self.event_dates['index'] = df.index
+            self.event_dates = self.event_dates.set_index('index')
+            
+        event_dates = self.load_event_data(event=event) # ED/H event dates
         event_cause_cols = event_map[event]['event_cause_cols']
 
         # create the features - number of days since previous event occured, their causes, 
@@ -508,7 +536,7 @@ class PrepDataEDHD(PrepData):
         # self.test_visit_dates_sorted(df)  
         return df
     
-    def get_data(self, target_keyword, missing_thresh=None, exclude_zero_observation_visits=False, verbose=False):
+    def get_data(self, target_keyword, drop_no_obs_visits=False, verbose=False, **kwargs):
         """
         input:                               -->        MODEL         -->            target:
         symptoms, body functionality,                                                D Events within next 3-x days
@@ -524,12 +552,10 @@ class PrepDataEDHD(PrepData):
         features missingness
         
         Args:
-            missing_thresh (int or None): remove features with over ``missing_thresh``% missing values (e.g. 80% missing values)
-            exclude_zero_observation_visits (bool): remove chemo visits with no blood work/labaratory test observations
+            drop_no_obs_visits (bool): remove chemo visits with no blood work/labaratory test observations
+            **kwargs (dict): the parameters of PrepData.prepare_features
         """
         df = self.load_data()
-        self.event_dates['visit_date'] = df['visit_date'] # store the chemo visit dates (will be dropped from df later)
-        
         if self.adverse_event == 'acu':
             # get event features and targets
             for event in ['H', 'ED']: 
@@ -547,27 +573,12 @@ class PrepDataEDHD(PrepData):
             df = self.get_death_data(df, target_keyword)
         
         # remove sessions where no observations were measured
-        if exclude_zero_observation_visits:
+        if drop_no_obs_visits:
             mask = df[observation_cols].isnull().all(axis=1)
+            logging.info(f'Removing {sum(mask)} sessions where no lab tests were measured')
             df = df[~mask]
-            
-        # fill null values with 0, max value, or most frequent value
-        df = self.fill_missing_feature(df)
-
-        # reduce sparse matrix by replacing rare col entries with less than 6 patients with 'Other'
-        cols = ['regimen', 'curr_morph_cd', 'curr_topog_cd']
-        df = replace_rare_col_entries(df, cols, verbose=verbose)
         
-        # convert visit date features as cyclical features
-        df = self.get_visit_date_feature(df)
-        
-        # Drop columns
-        df = df.drop(columns=['visit_date'])
-        if missing_thresh is not None: 
-            df = self.drop_features_with_high_missingness(df, missing_thresh, verbose=verbose)
-            
-        # create features for missing entries
-        df = self.get_missingness_feature(df)
+        df = self.prepare_features(df, verbose=verbose, **kwargs)
             
         return df
 
@@ -585,7 +596,7 @@ class PrepDataCAN(PrepData):
             raise ValueError('advese_event must be either aki (acute kidney injury) or ckd (chronic kidney disease)')
         self.adverse_event = adverse_event
         self.main_dir = f'{root_path}/{can_folder}'
-        self.datetime_cols = ['visit_date', 'next_visit_date']
+        self.datetime_cols += ['next_visit_date']
     
     def extra_norm_cols(self):
         return ['cisplatin_dosage', 'baseline_eGFR']
@@ -661,7 +672,7 @@ class PrepDataCAN(PrepData):
         for col in self.datetime_cols: df[col] = pd.to_datetime(df[col])
         return df
 
-    def get_data(self, include_first_date=False, missing_thresh=None, verbose=False):
+    def get_data(self, verbose=False, **kwargs):
         # extract and organize data for model input and target labels
         """
         input:                               -->        MODEL         -->            target:
@@ -673,19 +684,13 @@ class PrepDataCAN(PrepData):
         local health network, age, sex, immigrant, 
         english speaker, body surface area,
         cancer type/location, features missingness
+        
+        Args:
+            **kwargs (dict): the parameters of PrepData.prepare_features
         """
         df = self.load_data()
         df = self.get_creatinine_data(df, verbose=verbose)
-        df = self.get_visit_date_feature(df, include_first_date=include_first_date) # convert visit date features as cyclical features
-        df = self.fill_missing_feature(df) # fill null values with 0
-    
-        df = df.drop(columns=self.datetime_cols+['chemo_interval'])
-        if missing_thresh is not None: 
-            df = self.drop_features_with_high_missingness(df, missing_thresh, verbose=verbose)
-        
-        # create features for missing entries
-        df = self.get_missingness_feature(df)
-            
+        df = self.prepare_features(df, drop_cols=['chemo_interval'], verbose=verbose, **kwargs)
         return df
     
     def convert_labels(self, target):

@@ -192,7 +192,7 @@ train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration
 # # Train ENS Model 
 # Find Optimal Ensemble Weights
 
-# In[96]:
+# In[13]:
 
 
 # combine rnn and ml predictions
@@ -204,7 +204,7 @@ del preds_rnn
 train_ens = TrainENS(dataset, output_path, preds)
 
 
-# In[97]:
+# In[14]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -212,7 +212,7 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # # Evaluate Models
 
-# In[98]:
+# In[15]:
 
 
 eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
@@ -322,154 +322,110 @@ subgroup_performance_plot(df, target_type='30d Mortality', subgroups=subgroups,
 
 # # Scratch Notes
 
+# ## Kaplan Meier Curve and Lifeline Plot
+
+# In[23]:
+
+
+from scripts.visualize import plot_lifeline, plot_km_curve
+from scripts.survival import compute_survival
+
+
+# In[17]:
+
+
+event_dates = prep.event_dates
+event_dates['ikn'] = model_data['ikn']
+df = compute_survival(event_dates)
+
+
+# In[18]:
+
+
+plot_lifeline(df, n=100) # 100 patients
+
+
+# In[19]:
+
+
+plot_km_curve(df.sample(n=100, random_state=2)) # TESTING TESTING
+
+
+# In[20]:
+
+
+plot_km_curve(df)
+
+
 # ## Treatment Recommender System
 
-# In[156]:
+# In[41]:
 
 
-def get_subgroup(eval_models, name, regimens, cancer_codes, cancer_col='curr_topog_cd', 
-                 palliatative_intent=True, first_treatment_course=True, use_test_split=True):
-    df = eval_models.orig_data 
-    if use_test_split:
-        df = df.loc[eval_models.labels['Test'].index]
-    
-    df = df[df[cancer_col].isin(cancer_codes)]
-    print(f'{len(df)} sessions for {name}')
-    
-    if palliatative_intent:
-        df = df[df['intent_of_systemic_treatment'] == 'P']
-        print(f'{len(df)} sessions for palliative intent')
-        
-    if first_treatment_course:
-        df = df[df['chemo_cycle'] == 1]
-        print(f'{len(df)} sessions for first treatment course')
-        
-    print(f'\nRegimen counts: \n{df["regimen"].value_counts()}\n')
-    
-    df = df[df['regimen'].isin(regimens)]
-    print(f'{len(df)} sessions for regimens: {regimens}')
-    
-    return df
+from scripts.survival import get_subgroup, get_recommendation, evaluate_recommendation
 
-def get_recommendation(train, index, regimens, algorithm='XGB', target_type='30d Mortality', use_test_split=True):
-    """Get treatment/regimen recommendation based on minimizing risk of death
-    """
-    model = load_ml_model(train.output_path, algorithm)
-    idx = train.target_types.index(target_type)
-    
-    # set up model input
-    if use_test_split:
-        X, _ = train.data_splits['Test']
-    else:
-        X = pd.concat([X[X.index.isin(index)] for X, _ in train.data_splits.values()])
-    X = X.loc[index]
-    cols = X.columns
-    regimen_cols = cols[cols.str.contains('regimen')]
-    X[regimen_cols] = 0
 
-    # get predictions for each regimen 
-    results = {}
-    for regimen in regimens:
-        col = f'regimen_{regimen}'
-        X[col] = 1 # assign all patients to this regimen
-        pred = model.predict_proba(X)
-        pred = pred[idx][:, 1]
-        results[regimen] = pred
-        X[col] = 0 # reset
-    results = pd.DataFrame(results, index=X.index)
-    
-    # recommend regimens that resulted in lower predicted risk of death (or death within x days)
-    recommended_regimens = results.idxmin(axis=1)
-    return recommended_regimens
+# In[42]:
 
-def evaluate_recommendation(event_dates, cancer_df, recommended_regimens):
-    """
-    Evaluate recommendation based on median survival time of groups that 
-    aligned with recommendation and did not align with recommendation
-    """
-    mask = cancer_df['regimen'] == recommended_regimens
-    follows_recommendation = cancer_df[mask]
-    against_recommendation = cancer_df[~mask]
-    
-    # Mortality value counts
-    mvc = pd.DataFrame([follows_recommendation['Mortality'].value_counts(), 
-                        against_recommendation['Mortality'].value_counts()], index=['Follows Reco', 'Against Reco'])
-    mvc.columns = ['Dead', 'Alive/Censored']
-    print(f'{mvc}\n')
-    
-    for name, group in {'following': follows_recommendation, 'against': against_recommendation}.items():
-        dates = event_dates.loc[group.index]
-        survival_time = dates['D_date'] - dates['visit_date']
-        print(f'Median survival time for group {name} recommendation: {survival_time.median().days} days')
+
+df = model_data # all data 
+test_df = model_data.loc[Y_test.index] # test split data
 
 
 # ### Pancreas cancer (C25), Palliative Intent (P), First Treatment Course, GEMCNPAC(W) vs FOLFIRINOX/MFOLFIRINOX
 
-# In[157]:
+# In[43]:
 
 
 regimens = ['gemcnpac(w)', 'folfirinox']
 panc_cancer_codes = ['C25']
-panc_cancer = get_subgroup(eval_models, name='pancreas cancer', regimens=regimens, cancer_codes=panc_cancer_codes, use_test_split=True)
-
-
-# In[158]:
-
-
-recommended_regimens = get_recommendation(train_ens, index=panc_cancer.index, regimens=regimens, use_test_split=True)
-recommended_regimens.value_counts()
-
-
-# In[159]:
-
-
+panc_cancer = get_subgroup(test_df, name='pancreas cancer', regimens=regimens, cancer_codes=panc_cancer_codes)
+recommended_regimens = get_recommendation(train_ens, panc_cancer)
 evaluate_recommendation(prep.event_dates, panc_cancer, recommended_regimens)
 
 
-# ### Melanoma (872-879), Palliative Intent (P), First Treatment Course, NIVI+IPIL vs NIVL
+# ### Melanoma (872-879), Palliative Intent (P), First Treatment Course, NIVL+IPIL vs NIVL
 
-# In[164]:
+# In[44]:
 
 
+"""
+Thoughts: probably hard for the model to find a distinguishable pattern 
+          between patient data for NIVL and NIVL+IPIL, since they have very similar treatment regimen
+"""
 melanoma_codes = [f'87{i}' for i in range(2,10)]
 regimens = ['nivl', 'nivl+ipil']
-melanoma = get_subgroup(eval_models, name='melanoma', regimens=regimens, cancer_codes=melanoma_codes, 
-                        cancer_col='curr_morph_cd', use_test_split=False)
-
-
-# In[166]:
-
-
-recommended_regimens = get_recommendation(train_ens, index=melanoma.index, regimens=regimens, use_test_split=False)
-recommended_regimens.value_counts()
-
-
-# In[167]:
-
-
+melanoma = get_subgroup(test_df, name='melanoma', regimens=regimens, cancer_codes=melanoma_codes, cancer_col='curr_morph_cd')
+recommended_regimens = get_recommendation(train_ens, melanoma)
 evaluate_recommendation(prep.event_dates, melanoma, recommended_regimens)
 
 
 # ### Renal Cancer (C64, C65), Palliative Intent (P), First Treatment Course, NIVI+IPIL vs AXIT+PEMB
-# - uh oh too little data
 
-# In[169]:
+# In[45]:
 
 
+"""
+Thoughts: only 10 observations for axit+pemb, not enough data
+"""
 renal_cancer_codes = ['C64', 'C65']
 regimens = ['nivl+ipil', 'axit+pemb']
-renal_cancer = get_subgroup(eval_models, name='renal cancer', regimens=regimens, cancer_codes=renal_cancer_codes, use_test_split=False)
+renal_cancer = get_subgroup(df, name='renal cancer', regimens=regimens, cancer_codes=renal_cancer_codes)
+recommended_regimens = get_recommendation(train_ens, renal_cancer)
+evaluate_recommendation(prep.event_dates, renal_cancer, recommended_regimens)
 
 
 # ### Stomach Cancer (C16), ECX vs ECF vs FOLFOX vs FOLFIRI
 
-# In[172]:
+# In[50]:
 
 
-stomach_cancer_codes = ['16']
-regimens = ['ecx', 'ecf', 'folfox', 'folfiri']
-renal_cancer = get_subgroup(eval_models, name='stomach cancer', regimens=regimens, cancer_codes=stomach_cancer_codes, 
-                            palliatative_intent=False, first_treatment_course=False, use_test_split=False)
+stomach_cancer_codes = ['C16']
+regimens = ['ecx', 'ecf', 'folfiri'] # 'folfox' DOES NOT EXIST
+stomach_cancer = get_subgroup(test_df, name='stomach cancer', regimens=regimens, cancer_codes=stomach_cancer_codes, 
+                              palliatative_intent=False, first_treatment_course=False)
+recommended_regimens = get_recommendation(train_ens, stomach_cancer)
+evaluate_recommendation(prep.event_dates, stomach_cancer, recommended_regimens)
 
 
 # In[ ]:

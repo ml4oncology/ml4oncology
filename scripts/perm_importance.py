@@ -253,29 +253,29 @@ def main(pm, algorithm='ENS', permute_group=False):
 def main_cyto(permute_group=False):
     output_path = f'{root_path}/{cyto_folder}/models'
     pm = PermImportanceCYTO(output_path)
-    main(pm, algorithm='ENS', permute_group=permute_group)
+    main(pm, permute_group=permute_group)
 
 def main_acu(days=30, permute_group=False):
     output_path = f'{root_path}/{acu_folder}/models/within_{days}_days'
     pm = PermImportanceEDHD(output_path, adverse_event='acu', days=days)
-    main(pm, algorithm='ENS', permute_group=permute_group)
+    main(pm, permute_group=permute_group)
     
 def main_death(permute_group=False):
     output_path = f'{root_path}/{death_folder}/models'
     pm = PermImportanceEDHD(output_path, adverse_event='death')
-    main(pm, algorithm='ENS', permute_group=permute_group)
+    main(pm, permute_group=permute_group)
         
 def main_caaki(permute_group=False):
     adverse_event = 'aki'
     output_path = f'{root_path}/{can_folder}/models/{adverse_event.upper()}'
     pm = PermImportanceCAN(output_path, adverse_event)
-    main(pm, algorithm='XGB', permute_group=permute_group)
+    main(pm, permute_group=permute_group)
     
 def main_cackd(permute_group=False):
     adverse_event = 'ckd'
     output_path = f'{root_path}/{can_folder}/models/{adverse_event.upper()}'
     pm = PermImportanceCAN(output_path, adverse_event)
-    main(pm, algorithm='XGB', permute_group=permute_group)
+    main(pm, permute_group=permute_group)
     
 if __name__ == '__main__':
     main_events = {'CYTO': main_cyto, # Cytopenia

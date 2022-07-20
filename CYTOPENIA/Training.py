@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[2]:
+# In[5]:
 
 
 import os
@@ -49,7 +49,7 @@ from scripts.train import (TrainML, TrainRNN, TrainENS)
 from scripts.evaluate import (Evaluate)
 
 
-# In[3]:
+# In[6]:
 
 
 # config
@@ -60,45 +60,45 @@ initialize_folders(output_path)
 
 # # Prepare Data for Model Training
 
-# In[4]:
+# In[7]:
 
 
 # Preparing Data for Model Input
 prep = PrepDataCYTO()
 
 
-# In[5]:
+# In[8]:
 
 
 model_data = prep.get_data(include_first_date=True, verbose=True)
 model_data
 
 
-# In[6]:
+# In[9]:
 
 
 sorted(model_data.columns.tolist())
 
 
-# In[7]:
+# In[10]:
 
 
 model_data['first_visit_date'].dt.year.value_counts()
 
 
-# In[8]:
+# In[11]:
 
 
 get_nunique_entries(model_data)
 
 
-# In[9]:
+# In[12]:
 
 
 get_nmissing(model_data, verbose=True)
 
 
-# In[10]:
+# In[13]:
 
 
 model_data = prep.get_data(include_first_date=True, missing_thresh=75, verbose=True)
@@ -110,27 +110,27 @@ for blood_type, blood_info in blood_types.items():
     print(f"Number of unique patients that had {blood_info['cytopenia_name']} before treatment session: {N}")
 
 
-# In[11]:
+# In[14]:
 
 
 model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
 clip_thresholds
 
 
-# In[12]:
+# In[15]:
 
 
 # NOTE: any changes to X_train, X_valid, etc will also be seen in dataset
 dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), split_date=split_date)
 
 
-# In[13]:
+# In[16]:
 
 
 prep.get_label_distribution(Y_train, Y_valid, Y_test)
 
 
-# In[14]:
+# In[17]:
 
 
 # number of blood tranfusion occurences between visit date and next visit date
@@ -148,7 +148,7 @@ result.astype(int)
 
 # # Train ML Models
 
-# In[16]:
+# In[15]:
 
 
 pd.set_option('display.max_columns', None)
@@ -238,7 +238,7 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
 
 
-# In[36]:
+# In[18]:
 
 
 baseline_cols = ['regimen'] + [f'baseline_{bt}_count' for bt in blood_types]
@@ -246,7 +246,7 @@ kwargs = {'get_baseline': True, 'baseline_cols': baseline_cols, 'display_ci': Tr
 eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[37]:
+# In[19]:
 
 
 eval_models.plot_curves(curve_type='pr', legend_location='lower left', figsize=(12,18))
@@ -268,7 +268,7 @@ data_characteristic_summary(eval_models, save_dir=f'{output_path}/tables', parti
 
 # ## Feature Characteristics
 
-# In[34]:
+# In[20]:
 
 
 feature_summary(eval_models, prep, target_keyword='target_', save_dir=f'{output_path}/tables').head(60)
@@ -301,11 +301,11 @@ eval_models.operating_points(algorithm='ENS', points=desired_precisions, metric=
 get_ipython().system('python scripts/perm_importance.py --adverse-event CYTO')
 
 
-# In[18]:
+# In[20]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('XGB', eval_models.target_types, output_path, figsize=(6,15), top=10, importance_by='feature', 
+importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,15), top=10, importance_by='feature', 
                 padding={'pad_x0': 2.6}, colors=['#1f77b4', '#ff7f0e', '#2ca02c'])
 
 
@@ -344,6 +344,14 @@ for blood_type, blood_info in blood_types.items():
     print(f'Displaying subgroup performance for {target_type}')
     subgroup_performance_plot(df, target_type=target_type, subgroups=subgroups, padding=padding,
                               figsize=(12,24), save=True, save_dir=f'{output_path}/figures')
+
+
+# ## Decision Curve Plot
+
+# In[23]:
+
+
+eval_models.plot_decision_curve_analysis('ENS', xlim=(-0.05, 1.05))
 
 
 # ## Randomized Individual Patient Performance
@@ -508,3 +516,72 @@ summary_df
 from scripts.utility import get_nmissing_by_splits
 missing = get_nmissing_by_splits(model_data, eval_models.labels)
 missing.sort_values(by=(f'Test (N={len(Y_test)})', 'Missing (N)'), ascending=False)
+
+
+# ## LOESS Baseline Model
+
+# In[31]:
+
+
+from sklearn.preprocessing import StandardScaler
+from scripts.train import TrainLOESSModel, TrainPolynomialModel
+from scripts.evaluate import EvaluateBaselineModel
+
+
+# In[32]:
+
+
+def loess_pipeline(dataset, orig_data, output_path, blood_type='neutrophil', algorithm='LOESS', split='Test', task_type='regression'):
+    Trains = {'LOESS': TrainLOESSModel, 'SPLINE': TrainPolynomialModel, 'POLY': TrainPolynomialModel}
+    Train = Trains[algorithm]
+    base_col = f'baseline_{blood_type}_count'
+    X_train, X_valid, X_test, Y_train, Y_valid, Y_test = dataset
+    reg_task = task_type == 'regression'
+    if reg_task: 
+        name = f'Before Next Treatment {blood_type.title()} Count'
+        best_param_filename = f'{algorithm}_regressor_best_param'
+        cols = [f'target_{blood_type}_count']
+        Y_train, Y_valid, Y_test =  orig_data.loc[X_train.index, cols], orig_data.loc[X_valid.index, cols], orig_data.loc[X_test.index, cols]
+        scaler = StandardScaler()
+        Y_train[:] = scaler.fit_transform(Y_train)
+        Y_valid[:], Y_test[:] = scaler.transform(Y_valid), scaler.transform(Y_test)
+    else:
+        name = blood_types[blood_type]['cytopenia_name']
+        best_param_filename = ''
+        cols = [name]
+        Y_train, Y_valid, Y_test = Y_train[cols], Y_valid[cols], Y_test[cols]
+    dataset = (X_train, X_valid, X_test, Y_train, Y_valid, Y_test)
+        
+    print(f'Training {algorithm} for {name}')
+    train = Train(dataset, output_path, base_col=base_col, algorithm=algorithm, task_type=task_type)
+    best_param = train.bayesopt(filename=best_param_filename, verbose=0)
+    model = train.train_model(**best_param)
+
+    print(f'Evaluating {algorithm} for {name}')
+    (preds, preds_min, preds_max), Y = train.predict(model, split=split)
+    
+    if reg_task:
+        preds[:] = scaler.inverse_transform(preds)
+        preds_min[:] = scaler.inverse_transform(preds_min)
+        preds_max[:] = scaler.inverse_transform(preds_max)
+        fig, ax = plt.subplots(figsize=(6,6))
+
+    predictions, labels = {split: {algorithm: preds}}, {split: Y}
+    eval_loess = EvaluateBaselineModel(base_col=train.col, preds_min=preds_min, preds_max=preds_max, 
+                                       output_path=output_path, preds=predictions, labels=labels, orig_data=orig_data.loc[Y.index])
+
+    if reg_task:
+        eval_loess.plot_loess(ax, algorithm, target_type=cols[0], split=split)
+        filename = f'{output_path}/figures/baseline/{cols[0]}_{algorithm}.jpg'
+        plt.savefig(filename, bbox_inches='tight', dpi=300)
+        ax.set_title(name)
+    else:
+        eval_loess.all_plots(algorithm=algorithm)
+
+
+# In[33]:
+
+
+for task_type in ['regression', 'classification']:
+    for blood_type in tqdm.tqdm(blood_types):
+        loess_pipeline(dataset, model_data, output_path, blood_type=blood_type, task_type=task_type)

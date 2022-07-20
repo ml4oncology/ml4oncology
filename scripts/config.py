@@ -16,10 +16,10 @@ TERMS OF USE:
 """
 # Paths
 root_path = 'XXXXX'
-share_path = 'XXXXX'
-sas_folder = 'XXXXX'
-sas_folder2 = 'XXXXX'
-regiments_folder = 'XXXXX'
+share_path = 'XXXXXX'
+sas_folder = 'XXXXXX'
+sas_folder2 = 'XXXXXXX'
+regiments_folder = 'XXXXXXX'
 cyto_folder = 'CYTOPENIA' # Cytopenia folder = 'CYTOPENIA'
 acu_folder = 'PROACCT' # Acute care use folder = 'PROACCT' (PRediction of Acute Care use during Cancer Treatment)
 can_folder = 'CAN' # Cisplatin-associated nephrotoxicity folder = 'CAN'
@@ -220,15 +220,6 @@ immigration_cols = ['ikn', 'is_immigrant', 'speaks_english']
 diag_cols = [f'dx10code{i}' for i in range(1, 11)]
 event_main_cols = ['ikn', 'arrival_date', 'depart_date']
 
-# Model Training
-# categorical hyperparam options
-nn_solvers = ['adam', 'sgd']
-nn_activations = ['tanh', 'relu', 'logistic']
-
-# calibration params
-calib_param = {'method': 'isotonic', 'cv': 3}
-calib_param_logistic = {'method': 'sigmoid', 'cv': 3}
-
 # Diagnostic Codes
 # fever and infection (INFX)
 fever_codes = ['R508', 'R509']
@@ -375,3 +366,56 @@ SCr_rise_threshold2 = 353.68 # umol/L (4.0mg/dL)
 # glomerular filtration rate (eGFR) - https://www.kidney.org/professionals/kdoqi/gfr_calculator/formula
 eGFR_params = {'F': {'K': 0.7, 'a': -0.241, 'multiplier': 1.012}, # Female
                'M': {'K': 0.9, 'a': -0.302, 'multiplier': 1.0}} # Male
+
+# Model Training
+# model param options
+nn_solvers = ['adam', 'sgd']
+nn_activations = ['tanh', 'relu', 'logistic']
+
+# calibration params
+calib_param = {'method': 'isotonic', 'cv': 3}
+calib_param_logistic = {'method': 'sigmoid', 'cv': 3}
+
+# model tuning params
+model_tuning_param = {'LR': {'C': (0.0001, 1)},
+                      'XGB': {'learning_rate': (0.001, 0.1),
+                              'n_estimators': (50, 200),
+                              'max_depth': (3, 7),
+                              'gamma': (0, 1),
+                              'reg_lambda': (0, 1)},
+                      'RF': {'n_estimators': (50, 200),
+                             'max_depth': (3, 7),
+                             'max_features': (0.01, 1)},
+                      'NN': {'learning_rate_init': (0.0001, 0.1),
+                             'batch_size': (64, 512),
+                             'momentum': (0,1),
+                             'alpha': (0,1),
+                             'first_layer_size': (16, 256),
+                             'second_layer_size': (16, 256),
+                             'solver': (0, len(nn_solvers)-0.0001),
+                             'activation': (0, len(nn_activations)-0.0001)},
+                      'RNN': {'batch_size': (8, 512),
+                              'learning_rate': (0.0001, 0.01),
+                              'hidden_size': (10, 200),
+                              'hidden_layers': (1, 5),
+                              'dropout': (0.0, 0.9),
+                              'model': (0.0, 1.0)},
+                      'ENS': {alg: (0, 1) for alg in ['LR', 'XGB', 'RF', 'NN', 'RNN']},
+                      # Baseline Models
+                      'LOESS': {'span': (0.01, 1)},
+                      'SPLINE': {'n_knots': (2,10), 
+                                 'degree': (2,6),
+                                 'C': (0.0001, 1)},
+                      'POLY': {'degree': (2,6),
+                               'C': (0.0001, 1)}}
+                                 
+bayesopt_param = {'LR': {'init_points': 3, 'n_iter': 10}, 
+                  'XGB': {'init_points': 5, 'n_iter': 25},
+                  'RF': {'init_points': 3, 'n_iter': 20}, 
+                  'NN': {'init_points': 5, 'n_iter': 50},
+                  'RNN': {'init_points': 3, 'n_iter': 70},
+                  'ENS': {'init_points': 4, 'n_iter': 30},
+                  # Baseline Models
+                  'LOESS': {'init_points': 3, 'n_iter': 10},
+                  'SPLINE': {'init_points': 3, 'n_iter': 20},
+                  'POLY': {'init_points': 3, 'n_iter': 15}}

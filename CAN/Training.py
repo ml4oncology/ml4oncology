@@ -17,7 +17,7 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[3]:
+# In[1]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[4]:
+# In[2]:
 
 
 import os
@@ -36,7 +36,6 @@ import pandas as pd
 pd.options.mode.chained_assignment = None
 import numpy as np
 import matplotlib.pyplot as plt
-from collections import defaultdict
 
 from scripts.config import (root_path, can_folder, split_date, SCr_rise_threshold)
 from scripts.utility import (initialize_folders, load_predictions, 
@@ -49,7 +48,7 @@ from scripts.train import (TrainML, TrainRNN, TrainENS)
 from scripts.evaluate import (Evaluate)
 
 
-# In[5]:
+# In[3]:
 
 
 processes = 64
@@ -59,7 +58,7 @@ main_dir = f'{root_path}/{can_folder}'
 
 # # Acute Kidney Injury
 
-# In[6]:
+# In[4]:
 
 
 adverse_event = 'aki'
@@ -69,45 +68,45 @@ initialize_folders(output_path)
 
 # ## Prepare Data for Model Training
 
-# In[7]:
+# In[5]:
 
 
 # Preparing Data for Model Input
 prep = PrepDataCAN(adverse_event=adverse_event)
 
 
-# In[8]:
+# In[6]:
 
 
 model_data = prep.get_data(include_first_date=True, verbose=True)
 model_data
 
 
-# In[9]:
+# In[7]:
 
 
 most_common_by_category(model_data, category='regimen', with_respect_to='patients', top=10)
 
 
-# In[10]:
+# In[8]:
 
 
 sorted(model_data.columns.tolist())
 
 
-# In[11]:
+# In[9]:
 
 
 get_nunique_entries(model_data)
 
 
-# In[12]:
+# In[10]:
 
 
 get_nmissing(model_data)
 
 
-# In[13]:
+# In[11]:
 
 
 model_data = prep.get_data(include_first_date=True, missing_thresh=80, verbose=True)
@@ -118,14 +117,14 @@ N = model_data.loc[mask, 'ikn'].nunique()
 print(f"Number of unique patients that had Acute Kidney Injury (AKI) " +      f"within 28 days or right before treatment session: {N}")
 
 
-# In[14]:
+# In[12]:
 
 
 model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
 clip_thresholds
 
 
-# In[15]:
+# In[13]:
 
 
 kwargs = {'target_keyword': target_keyword, 'split_date': split_date}
@@ -133,7 +132,7 @@ kwargs = {'target_keyword': target_keyword, 'split_date': split_date}
 dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), **kwargs)
 
 
-# In[16]:
+# In[14]:
 
 
 prep.get_label_distribution(Y_train, Y_valid, Y_test)
@@ -184,7 +183,7 @@ train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration
 
 # ## Train ENS Model 
 
-# In[17]:
+# In[15]:
 
 
 # combine rnn and ml predictions
@@ -196,7 +195,7 @@ del preds_rnn
 train_ens = TrainENS(dataset, output_path, preds)
 
 
-# In[18]:
+# In[16]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -204,13 +203,13 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # ## Evaluate Models
 
-# In[19]:
+# In[17]:
 
 
 eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
 
 
-# In[20]:
+# In[18]:
 
 
 baseline_cols = ['regimen', 'baseline_eGFR']
@@ -241,7 +240,7 @@ data_characteristic_summary(eval_models, save_dir=f'{output_path}/tables', parti
 
 # ### Feature Characteristic
 
-# In[26]:
+# In[18]:
 
 
 feature_summary(eval_models, prep, target_keyword=target_keyword, save_dir=f'{output_path}/tables').head(60)
@@ -249,47 +248,47 @@ feature_summary(eval_models, prep, target_keyword=target_keyword, save_dir=f'{ou
 
 # ### Threshold Op Points
 
-# In[27]:
+# In[19]:
 
 
 pred_thresholds = np.arange(0, 1.01, 0.05)
-thresh_df = eval_models.operating_points(algorithm='XGB', points=pred_thresholds, metric='threshold')
+thresh_df = eval_models.operating_points(algorithm='ENS', points=pred_thresholds, metric='threshold')
 thresh_df
 
 
 # ### All the Plots
 
-# In[23]:
+# In[24]:
 
 
-eval_models.all_plots_for_single_target(algorithm='XGB', target_type='AKI', save=True)
+eval_models.all_plots_for_single_target(algorithm='ENS', target_type='AKI', save=True)
 
 
-# ### XGB most important features
+# ### Most important features
 
-# In[34]:
+# In[25]:
 
 
 get_ipython().system('python scripts/perm_importance.py --adverse-event CAAKI')
 
 
-# In[35]:
+# In[26]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('XGB', eval_models.target_types, output_path, figsize=(6,5), top=10, importance_by='feature', padding={'pad_x0': 2.7})
+importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,5), top=10, importance_by='feature', padding={'pad_x0': 2.7})
 
 
 # ### Performance on Subgroups
 
-# In[36]:
+# In[27]:
 
 
-df = subgroup_performance_summary('XGB', eval_models, pred_thresh=0.1, display_ci=False, load_ci=False, save_ci=False)
+df = subgroup_performance_summary('ENS', eval_models, pred_thresh=0.1, display_ci=False, load_ci=False, save_ci=False)
 df # @ pred threshold = 0.1
 
 
-# In[37]:
+# In[28]:
 
 
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
@@ -303,10 +302,10 @@ subgroup_performance_plot(df, target_type='AKI', subgroups=subgroups, padding=pa
 
 # ### Decision Curve Plot
 
-# In[39]:
+# In[29]:
 
 
-eval_models.plot_decision_curve_analysis('XGB')
+eval_models.plot_decision_curve_analysis('ENS')
 
 
 # In[41]:
@@ -317,7 +316,7 @@ get_hyperparameters(output_path)
 
 # # Chronic Kidney Disease
 
-# In[24]:
+# In[4]:
 
 
 adverse_event = 'ckd'
@@ -327,7 +326,7 @@ initialize_folders(output_path)
 
 # ## Prepare Data for Model Training
 
-# In[25]:
+# In[5]:
 
 
 prep = PrepDataCAN(adverse_event=adverse_event)
@@ -344,7 +343,7 @@ kwargs = {'target_keyword': target_keyword, 'split_date': split_date}
 dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), **kwargs)
 
 
-# In[26]:
+# In[6]:
 
 
 prep.get_label_distribution(Y_train, Y_valid, Y_test)
@@ -394,7 +393,7 @@ train_rnn.tune_and_train(run_bayesopt=False, run_training=True, run_calibration=
 
 # ## Train ENS Model 
 
-# In[28]:
+# In[7]:
 
 
 # combine rnn and ml predictions
@@ -406,7 +405,7 @@ del preds_rnn
 train_ens = TrainENS(dataset, output_path, preds)
 
 
-# In[30]:
+# In[8]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -414,13 +413,13 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # ## Evaluate Models
 
-# In[31]:
+# In[9]:
 
 
 eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
 
 
-# In[32]:
+# In[36]:
 
 
 baseline_cols = ['regimen', 'baseline_eGFR']
@@ -428,7 +427,7 @@ kwargs = {'get_baseline': True, 'baseline_cols': baseline_cols, 'display_ci': Tr
 eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[55]:
+# In[37]:
 
 
 eval_models.plot_curves(curve_type='pr', legend_location='upper right', figsize=(12,18))
@@ -451,7 +450,7 @@ data_characteristic_summary(eval_models, save_dir=f'{output_path}/tables', parti
 
 # ### Feature Characteristic
 
-# In[57]:
+# In[25]:
 
 
 feature_summary(eval_models, prep, target_keyword=target_keyword, save_dir=f'{output_path}/tables').head(60)
@@ -459,48 +458,48 @@ feature_summary(eval_models, prep, target_keyword=target_keyword, save_dir=f'{ou
 
 # ### Threshold Op Points
 
-# In[58]:
+# In[38]:
 
 
 pred_thresholds = np.arange(0, 1.01, 0.05)
-thresh_df = eval_models.operating_points(algorithm='XGB', points=pred_thresholds, metric='threshold')
+thresh_df = eval_models.operating_points(algorithm='ENS', points=pred_thresholds, metric='threshold')
 thresh_df
 
 
 # ### All the Plots
 
-# In[59]:
+# In[39]:
 
 
-eval_models.all_plots_for_single_target(algorithm='XGB', target_type='CKD', save=True)
+eval_models.all_plots_for_single_target(algorithm='ENS', target_type='CKD', save=True)
 
 
-# ### XGB most important features
+# ### Most important features
 
-# In[60]:
+# In[40]:
 
 
 get_ipython().system('python scripts/perm_importance.py --adverse-event CACKD')
 
 
-# In[61]:
+# In[12]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('XGB', eval_models.target_types, output_path, figsize=(6,15), top=10, importance_by='feature', padding={'pad_x0': 2.7})
+importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,15), top=10, importance_by='feature', padding={'pad_x0': 2.7})
 
 
 # ### Performance on Subgroups
 
-# In[62]:
+# In[13]:
 
 
 subgroups = {'all', 'age', 'sex', 'immigrant', 'regimen', 'cancer_location', 'days_since_starting', 'ckd'}
-df = subgroup_performance_summary('XGB', eval_models, pred_thresh=0.4, subgroups=subgroups, display_ci=False, load_ci=False, save_ci=False)
+df = subgroup_performance_summary('ENS', eval_models, pred_thresh=0.4, subgroups=subgroups, display_ci=False, load_ci=False, save_ci=False)
 df # @ pred threshold = 0.4
 
 
-# In[63]:
+# In[14]:
 
 
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
@@ -514,10 +513,10 @@ subgroup_performance_plot(df, target_type='CKD', subgroups=subgroups, padding=pa
 
 # ### Decision Curve Plot
 
-# In[65]:
+# In[15]:
 
 
-eval_models.plot_decision_curve_analysis('XGB')
+eval_models.plot_decision_curve_analysis('ENS')
 
 
 # In[66]:
@@ -530,7 +529,7 @@ get_hyperparameters(output_path)
 
 # ## CKD + AKI Summaries
 
-# In[68]:
+# In[4]:
 
 
 aki_prep = PrepDataCAN(adverse_event='aki')
@@ -584,44 +583,43 @@ data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models', partitio
                             include_combordity=True, include_ckd=True, include_dialysis=True)
 
 
-# In[70]:
+# In[7]:
 
 
-feature_summary(eval_models, prep, target_keyword=target_keyword, save_dir=f'{main_dir}/models').head(60)
+feature_summary(eval_models, aki_prep, target_keyword=target_keyword, save_dir=f'{main_dir}/models').head(60)
 
 
-# ## LOESS Baseline Model
+# ## Spline Baseline Model
 
-# In[4]:
+# In[31]:
 
 
 from sklearn.preprocessing import StandardScaler
-from scripts.train import TrainLOESS
-from scripts.evaluate import EvaluateLOESS
+from scripts.train import TrainLOESSModel, TrainPolynomialModel
+from scripts.evaluate import EvaluateBaselineModel
 from scripts.visualize import get_bbox
 
 
-# In[ ]:
+# In[32]:
 
 
-get_ipython().system('mkdir {root_path}/CAN/models/AKI/figures/loess')
-get_ipython().system('mkdir {root_path}/CAN/models/CKD/figures/loess')
-
-
-# In[5]:
-
-
-def end2end_pipeline(event='ckd', algorithm='LOESS', split='Test'):
+def end2end_pipeline(event='ckd', algorithm='SPLINE', split='Test'):
     if event not in {'ckd', 'aki', 'next_eGFR'}: 
         raise ValueError('event must be either ckd, aki, or next_eGFR')
-    name = event.upper()
+    Trains = {'LOESS': TrainLOESSModel, 'SPLINE': TrainPolynomialModel, 'POLY': TrainPolynomialModel}
+    Train = Trains[algorithm]
+    base_col = 'baseline_eGFR'
     pred_next_eGFR = event == 'next_eGFR'
     if pred_next_eGFR: 
         cols = [event]
         name = 'Next eGFR'
         event = 'ckd'
-        algorithm = 'LOESS_regressor'
-    task_type = 'regression' if pred_next_eGFR else 'classification'
+        best_param_filename = f'{algorithm}_regressor_best_param'
+        task_type = 'regression'
+    else:
+        name = event.upper()
+        best_param_filename = ''
+        task_type = 'classification'
     
     prep = PrepDataCAN(adverse_event=event)
     data = prep.get_data(include_first_date=True, missing_thresh=80)
@@ -639,14 +637,14 @@ def end2end_pipeline(event='ckd', algorithm='LOESS', split='Test'):
 
         dataset = (X_train, X_valid, X_test, Y_train, Y_valid, Y_test)
         
-    print(f'Training LOESS for {name}')
+    print(f'Training {algorithm} for {name}')
     output_path = f'{main_dir}/models/{event.upper()}'
-    train = TrainLOESS(dataset, output_path, base_col='baseline_eGFR', task_type=task_type)
-    best_param = train.bayesopt(algorithm=algorithm, verbose=0)
+    train = Train(dataset, output_path, base_col=base_col, algorithm=algorithm, task_type=task_type)
+    best_param = train.bayesopt(filename=best_param_filename, verbose=0)
     model = train.train_model(**best_param)
 
-    print(f'Evaluating LOESS for {name}')
-    (preds, preds_min, preds_max), Y = train.predict(model, split='Test')
+    print(f'Evaluating {algorithm} for {name}')
+    (preds, preds_min, preds_max), Y = train.predict(model, split=split)
     
     if pred_next_eGFR:
         preds[:] = scaler.inverse_transform(preds)
@@ -662,38 +660,38 @@ def end2end_pipeline(event='ckd', algorithm='LOESS', split='Test'):
         df = data if regimen == 'ALL' else data[data['regimen'] == regimen]
         idxs = df.index
 
-        predictions, labels = {'Test': {'LOESS': preds.loc[idxs]}},  {'Test': Y.loc[idxs]}
-        eval_loess = EvaluateLOESS(base_col=train.col, preds_min=preds_min.loc[idxs], preds_max=preds_max.loc[idxs], 
-                                   output_path=output_path, preds=predictions, labels=labels, orig_data=df)
+        predictions, labels = {split: {algorithm: preds.loc[idxs]}},  {split: Y.loc[idxs]}
+        eval_loess = EvaluateBaselineModel(base_col=train.col, preds_min=preds_min.loc[idxs], preds_max=preds_max.loc[idxs], 
+                                           output_path=output_path, preds=predictions, labels=labels, orig_data=df)
         
         if pred_next_eGFR:
-            eval_loess.plot_loess(axes[i], 'LOESS', 'next_eGFR', split='Test')
+            eval_loess.plot_loess(axes[i], algorithm, cols[0], split=split)
 
-            filename = f'{output_path}/figures/loess/next_eGFR_{regimen}.jpg'
+            filename = f'{output_path}/figures/baseline/{cols[0]}_{regimen}_{algorithm}.jpg'
             fig.savefig(filename, bbox_inches=get_bbox(axes[i], fig), dpi=300) 
             axes[i].set_title(regimen)
         else:
-            print(f'LOESS plot for regimen {regimen}')
-            eval_loess.all_plots(filename=regimen)
+            print(f'{algorithm} plot for regimen {regimen}')
+            eval_loess.all_plots(algorithm=algorithm, filename=f'{regimen}_{algorithm}')
     
     if pred_next_eGFR:
-        filename = f'{output_path}/figures/loess/next_eGFR.jpg'
+        filename = f'{output_path}/figures/baseline/{cols[0]}_{algorithm}.jpg'
         plt.savefig(filename, bbox_inches='tight', dpi=300)
 
 
-# In[6]:
+# In[23]:
 
 
 end2end_pipeline(event='ckd')
 
 
-# In[7]:
+# In[28]:
 
 
 end2end_pipeline(event='aki')
 
 
-# In[8]:
+# In[33]:
 
 
 end2end_pipeline(event='next_eGFR')
@@ -807,45 +805,3 @@ missing.sort_values(by=(f'Test (N={len(Y_test)})', 'Missing (N)'), ascending=Fal
 # check CKD
 missing = get_nmissing_by_splits(model_data, train_ens.labels)
 missing.sort_values(by=(f'Test (N={len(Y_test)})', 'Missing (N)'), ascending=False)
-
-
-# ## LOESS Calibrator
-
-# In[21]:
-
-
-from scripts.evaluate import plot_loess_calib
-from scripts.visualize import get_bbox
-
-
-# In[22]:
-
-
-# AKI
-fig = plt.figure(figsize=(12,6))
-target_type = 'AKI'
-train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=False) 
-for idx, alg in enumerate(['ENS', 'XGB']):
-    ax = fig.add_subplot(1,2,idx+1)
-    plot_loess_calib(ax, train_ens, alg, target_type=target_type)
-    filename = f'{output_path}/figures/loess/{alg}_calib_{target_type}.jpg'
-    fig.savefig(filename, bbox_inches=get_bbox(ax, fig), dpi=300) 
-    ax.set_title(alg)
-
-
-# In[32]:
-
-
-# CKD
-fig = plt.figure(figsize=(12,6))
-target_type = 'CKD'
-train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=False) 
-for idx, alg in enumerate(['ENS', 'XGB']):
-    ax = fig.add_subplot(1,2,idx+1)
-    plot_loess_calib(ax, train_ens, alg, target_type=target_type)
-    filename = f'{output_path}/figures/loess/{alg}_calib_{target_type}.jpg'
-    fig.savefig(filename, bbox_inches=get_bbox(ax, fig), dpi=300) 
-    ax.set_title(alg)
-
-
-# In[ ]:

@@ -746,13 +746,12 @@ def esas_worker(partition):
         for idx, chemo_row in chemo_group.iterrows():
             visit_date = chemo_row['visit_date']
             # even if survey date is like a month ago, we will be forward filling the entries to the visit date
-            esas_most_recent = esas_group[esas_group['surveydate'] < visit_date]
-            if not esas_most_recent.empty:
-                symptoms = list(esas_most_recent['symptom'].unique())
-                for symptom in symptoms:
-                    esas_specific_symptom = esas_most_recent[esas_most_recent['symptom'] == symptom]
-                    # last item is always the last observed grade (we've already sorted by date)
-                    result.append((idx, symptom, esas_specific_symptom['severity'].iloc[-1]))
+            esas_before_chemo = esas_group[esas_group['surveydate'] <= visit_date]
+            if not esas_before_chemo.empty:
+                for symptom, esas_symptom in esas_before_chemo.groupby('symptom'):
+                    # last item is always the last observed response (we've already sorted by date)
+                    esas_symptom = esas_symptom.iloc[-1]
+                    result.append([idx, symptom, esas_symptom['severity'], esas_symptom['surveydate']])
     return result
 
 def get_esas_responses(chemo_df, esas, processes=16):
@@ -770,15 +769,19 @@ def get_esas_responses(chemo_df, esas, processes=16):
 
 def postprocess_esas_responses(esas_df):
     esas_df = esas_df.sort_values(by=['index', 'symptom', 'severity'])
-
-    # remove duplicates - keep the more severe entry
-    # TODO: remove duplicates by using surveydate
-    mask = esas_df[['index', 'symptom']].duplicated(keep='last')
-    logging.warning(f'{sum(mask)} duplicate entries among total {len(esas_df)} entries')
-    esas_df = esas_df[~mask]
-
-    # make each symptom its own column, with severity as its entry value
-    esas_df = esas_df.pivot(index='index', columns='symptom')['severity']
+    
+    # assert no duplicates
+    mask = esas_df[['index', 'symptom']].duplicated()
+    assert(not any(mask))
+    
+    # make each symptom its own column 
+    # will be a mutillevel column with severity and survey date at the 1st level, and symptoms at the 2nd level
+    esas_df = esas_df.pivot(index='index', columns='symptom')
+    # flatten the multilevel to one level
+    severity = esas_df['severity']
+    survey_date = esas_df['survey_date']
+    survey_date.columns += '_survey_date'
+    esas_df = pd.concat([severity, survey_date], axis=1)
     
     return esas_df
 
@@ -808,10 +811,11 @@ def body_functionality_worker(partition, dataset='ecog'):
         bf_group = bf_df[bf_df['ikn'] == ikn]
         for idx, chemo_row in chemo_group.iterrows():
             visit_date = chemo_row['visit_date']
-            bf_most_recent = bf_group[bf_group['surveydate'] < visit_date]
-            if not bf_most_recent.empty:
+            bf_before_chemo = bf_group[bf_group['surveydate'] <= visit_date]
+            if not bf_before_chemo.empty:
                 # last item is always the last observed grade (we've already sorted by date)
-                result.append((idx, bf_most_recent[f'{dataset}_grade'].iloc[-1]))
+                bf_most_recent = bf_before_chemo.iloc[-1]
+                result.append((idx, bf_most_recent[f'{dataset}_grade'], bf_most_recent['surveydate']))
     return result
 
 # Blood Transfusions

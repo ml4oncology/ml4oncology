@@ -20,6 +20,7 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from xgboost import plot_tree
+from lifelines import KaplanMeierFitter
 from sklearn import tree
 from scripts.config import (root_path, cyto_folder, cytopenia_gradings, blood_types)
 from scripts.utility import (load_ml_model, get_clean_variable_names)
@@ -384,4 +385,42 @@ def subgroup_performance_plot(df, target_type='ACU', subgroups=None,
                              bbox_inches=get_bbox(axes[i], fig, **padding), dpi=300) 
     if save: 
         plt.savefig(f'{save_dir}/subgroup_performance/{target_type}.jpg', bbox_inches='tight', dpi=300)
+    plt.show()
+    
+# Survival Analysis
+def plot_lifeline(surv_df, n=100):
+    obs = surv_df.sample(n=n, random_state=1).reset_index(drop=True)
+    fig = plt.figure(figsize=(12,12))
+    for y, row in obs.iterrows():
+        _, start, end, status = row
+        if status == 0: # alive/censored
+            plt.hlines(y, start, end, color='C0')
+            plt.plot(end, y, marker='d', color='C0')
+        else: # dead
+            plt.hlines(y, start, end, color='C1')
+            plt.plot(end, y, marker='o', color='C1')
+        plt.xlabel('Time')
+        plt.ylabel('Patient Index')
+        plt.gca().invert_yaxis()
+
+def plot_km_curve(surv_df):
+    """
+    Plot Kaplan Meier Curve
+    - probability (survival function output) that a subject will survive up to time t vs time
+    """
+    duration = (surv_df['end'] - surv_df['start']).dt.days
+    status = surv_df['status']
+
+    kmf = KaplanMeierFitter()
+    kmf.fit(duration, status)
+
+    ci = kmf.confidence_interval_survival_function_
+    ts = ci.index
+    low, high = ci.values.T
+
+    fig = plt.figure(figsize=(6,6))
+    plt.fill_between(ts, low, high, alpha=0.3)
+    kmf.survival_function_.plot(ax=plt.gca(), legend=None)
+    plt.ylabel('Survival Probability')
+    plt.xlabel('Days')
     plt.show()
