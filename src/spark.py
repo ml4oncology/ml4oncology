@@ -28,7 +28,7 @@ from difflib import SequenceMatcher
 from pyspark.sql import SparkSession
 from pyspark.sql.window import Window
 from pyspark.sql.functions import (col, substring, length, expr, collect_set, row_number, to_date, to_timestamp)
-from scripts.config import (root_path, olis_cols)
+from src.config import (root_path, olis_cols)
 
 # Helper functions
 def clean_string(df, cols):

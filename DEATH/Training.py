@@ -17,7 +17,7 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[33]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -26,29 +26,31 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[2]:
+# In[34]:
 
 
-import os
-import tqdm
 import pandas as pd
 pd.options.mode.chained_assignment = None
+pd.set_option('display.max_columns', 150)
+pd.set_option('display.max_rows', 150)
 import numpy as np
-import pickle
-from collections import defaultdict
 import matplotlib.pyplot as plt
+import seaborn as sns
 
-from scripts.utility import (initialize_folders, load_predictions,
-                             get_nunique_entries, get_nmissing, 
-                             data_characteristic_summary, feature_summary, subgroup_performance_summary)
-from scripts.visualize import (importance_plot, subgroup_performance_plot)
-from scripts.config import (root_path, death_folder)
-from scripts.prep_data import (PrepDataEDHD)
-from scripts.train import (TrainML, TrainRNN, TrainENS)
-from scripts.evaluate import (Evaluate)
+from src.preprocess import (filter_ohip_data, process_ohip_data)
+from src.utility import (twolevel, initialize_folders, load_predictions,
+                         get_nunique_entries, get_nmissing, 
+                         time_to_target_after_alarm, time_to_alarm_after_service)
+from src.summarize import (data_characteristic_summary, feature_summary, 
+                           subgroup_performance_summary, serivce_request_summary)
+from src.visualize import (importance_plot, subgroup_performance_plot, service_request_plot)
+from src.config import (root_path, death_folder, split_date)
+from src.prep_data import (PrepDataEDHD)
+from src.train import (TrainML, TrainRNN, TrainENS)
+from src.evaluate import (Evaluate)
 
 
-# In[3]:
+# In[35]:
 
 
 # config
@@ -64,62 +66,48 @@ initialize_folders(output_path, extra_folders=['figures/important_groups'])
 # In[4]:
 
 
-# Prepare Data for Model Input
 prep = PrepDataEDHD(adverse_event='death')
+model_data = prep.get_data(target_keyword, treatment_intent=['P'], verbose=True)
+model_data
 
 
 # In[5]:
 
 
-model_data = prep.get_data(target_keyword, verbose=True)
-model_data
+sorted(model_data.columns.tolist())
 
 
 # In[6]:
 
 
-sorted(model_data.columns.tolist())
+get_nunique_entries(model_data)
 
 
 # In[7]:
 
 
-get_nunique_entries(model_data)
+get_nmissing(model_data, verbose=True)
 
 
 # In[8]:
 
 
-get_nmissing(model_data, verbose=True)
-
-
-# In[9]:
-
-
-model_data = prep.get_data(target_keyword, missing_thresh=80, verbose=True)
+model_data = prep.get_data(target_keyword, missing_thresh=75, treatment_intent=['P'], verbose=True)
 print(f"Size of model_data: {model_data.shape}")
 print(f"Number of unique patients: {model_data['ikn'].nunique()}")
 N = model_data.loc[model_data['30d Mortality'], 'ikn'].nunique()
 print(f"Number of unique patients that died within 30 days after a treatment session: {N}")
 
 
-# In[10]:
-
-
-model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
-clip_thresholds.columns = clip_thresholds.columns.str.replace('baseline_', '').str.replace('_count', '')
-clip_thresholds
-
-
-# In[11]:
+# In[9]:
 
 
 # NOTE: any changes to X_train, X_valid, etc will also be seen in dataset
-kwargs = {'target_keyword': target_keyword}
+kwargs = {'target_keyword': target_keyword, 'split_date': split_date}
 dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), **kwargs)
 
 
-# In[12]:
+# In[10]:
 
 
 prep.get_label_distribution(Y_train, Y_valid, Y_test)
@@ -127,29 +115,23 @@ prep.get_label_distribution(Y_train, Y_valid, Y_test)
 
 # # Train ML Models
 
-# In[14]:
-
-
-pd.set_option('display.max_columns', None)
-
-
-# In[15]:
+# In[13]:
 
 
 # Initialize Training class
 train_ml = TrainML(dataset, output_path, n_jobs=processes)
 
 
-# In[18]:
+# In[15]:
 
 
 skip_alg = []
-train_ml.tune_and_train(run_bayesopt=False, run_training=False, save_preds=True, skip_alg=skip_alg)
+train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True, skip_alg=skip_alg)
 
 
 # # Train RNN Model
 
-# In[14]:
+# In[130]:
 
 
 # Include ikn to the input data 
@@ -161,38 +143,27 @@ X_test['ikn'] = model_data['ikn']
 train_rnn = TrainRNN(dataset, output_path)
 
 
-# In[17]:
+# In[157]:
 
 
 # Distrubution of the sequence lengths in the training set
 dist_seq_lengths = X_train.groupby('ikn').apply(len)
-fig = plt.figure(figsize=(15, 3))
-plt.hist(dist_seq_lengths, bins=100)
-plt.grid()
-plt.show()
+dist_seq_lengths = dist_seq_lengths.clip(upper=dist_seq_lengths.quantile(q=0.999))
+fig, ax = plt.subplots(figsize=(15, 3))
+ax.grid(zorder=0)
+sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
 
 
-# In[18]:
+# In[19]:
 
 
-# A closer look at the samples of sequences with length 1 to 21
-fig = plt.figure(figsize=(15, 3))
-plt.hist(dist_seq_lengths[dist_seq_lengths < 21], bins=20)
-plt.grid()
-plt.xticks(range(1, 21))
-plt.show()
-
-
-# In[50]:
-
-
-train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration=False, save_preds=True)
+train_rnn.tune_and_train(run_bayesopt=False, run_training=True, run_calibration=True, save_preds=True)
 
 
 # # Train ENS Model 
 # Find Optimal Ensemble Weights
 
-# In[13]:
+# In[11]:
 
 
 # combine rnn and ml predictions
@@ -204,7 +175,7 @@ del preds_rnn
 train_ens = TrainENS(dataset, output_path, preds)
 
 
-# In[14]:
+# In[12]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -212,24 +183,23 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # # Evaluate Models
 
-# In[15]:
+# In[13]:
 
 
 eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
 
 
-# In[101]:
+# In[14]:
 
 
-kwargs = {'get_baseline': True, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False, 
-          'baseline_cols': ['regimen', 'intent_of_systemic_treatment']}
+kwargs = {'get_baseline': True, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False}
 eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[102]:
+# In[18]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_location='lower left', figsize=(12,18))
+eval_models.plot_curves(curve_type='pr', legend_location='upper right', figsize=(12,18))
 eval_models.plot_curves(curve_type='roc', legend_location='lower right', figsize=(12,18))
 eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,18)) # cumulative distribution function of model prediction
 eval_models.plot_calibs(legend_location='upper left', figsize=(12,18)) 
@@ -240,7 +210,7 @@ eval_models.plot_calibs(legend_location='upper left', figsize=(12,18))
 
 # ## Study Characteristics
 
-# In[103]:
+# In[19]:
 
 
 data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models/tables')
@@ -248,7 +218,7 @@ data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models/tables')
 
 # ## Feature Characteristics
 
-# In[104]:
+# In[20]:
 
 
 feature_summary(eval_models, prep, target_keyword, save_dir=f'{main_dir}/models/tables').head(60)
@@ -256,7 +226,7 @@ feature_summary(eval_models, prep, target_keyword, save_dir=f'{main_dir}/models/
 
 # ## Threshold Operating Points
 
-# In[110]:
+# In[21]:
 
 
 pred_thresholds = np.arange(0.05, 0.51, 0.05)
@@ -265,7 +235,7 @@ thresh_df = eval_models.operating_points(algorithm='ENS', points=pred_thresholds
 thresh_df
 
 
-# ## Ensemble Most Important Features/Feature Groups
+# ## Most Important Features/Feature Groups
 
 # In[ ]:
 
@@ -273,159 +243,169 @@ thresh_df
 get_ipython().system('python scripts/perm_importance.py --adverse-event DEATH')
 
 
-# In[119]:
+# In[15]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,30), top=10, importance_by='feature', padding={'pad_x0': 4.0})
+importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,30), top=10, importance_by='feature', padding={'pad_x0': 4.0})
 
 
-# In[126]:
+# In[16]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,30), top=10, importance_by='group', padding={'pad_x0': 1.2})
+importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,30), top=10, importance_by='group', padding={'pad_x0': 1.2})
 
 
 # ## Performance on Subgroups
 
-# In[132]:
+# In[22]:
 
 
 df = subgroup_performance_summary('ENS', eval_models, pred_thresh=0.2, display_ci=False, load_ci=False, save_ci=False)
 df
 
 
+# ## Decision Curve Plot
+
+# In[23]:
+
+
+result = eval_models.plot_decision_curve_analysis('ENS')
+result['30d Mortality'].tail(n=100)
+
+
 # ## 30 day Mortality
 
-# ### Ensemble All the Plots
+# ### All the Plots
 
-# In[128]:
-
-
-eval_models.all_plots_for_single_target(algorithm='ENS', target_type='30d Mortality', calib_ci=False)
+# In[24]:
 
 
-# ### Ensemble Subgroup Performance Plot
-
-# In[134]:
+eval_models.all_plots_for_single_target(algorithm='ENS', target_event='30d Mortality', calib_ci=False)
 
 
-subgroups = ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Regimen', 'Days Since Starting Regimen']
+# ### Subgroup Performance Plot
+
+# In[25]:
+
+
+groupings = {'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Neighborhood Income Quintile'],
+             'Treatment': ['Entire Test Cohort', 'Regimen', 'Cancer Location', 'Days Since Starting Regimen']}
 padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
-subgroup_performance_plot(df, target_type='30d Mortality', subgroups=subgroups, 
-                          padding=padding, figsize=(12,24), save=True, save_dir=f'{output_path}/figures')
+for name, subgroups in groupings.items():
+    subgroup_performance_plot(df, target_event='30d Mortality', subgroups=subgroups, padding=padding,
+                              figsize=(12,24), save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}')
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
 # Event Rate = 0.15 means true alarms occur 15% of the time
 
 
-# # Scratch Notes
+# ## 365 day Mortality
 
-# ## Kaplan Meier Curve and Lifeline Plot
+# ### Time to Death After First Alarm
 
-# In[23]:
-
-
-from scripts.visualize import plot_lifeline, plot_km_curve
-from scripts.survival import compute_survival
+# In[146]:
 
 
-# In[17]:
+pred_thresh = 0.5
+time_to_death = time_to_target_after_alarm(eval_models, prep.event_dates,
+                                           target_event='365d Mortality', target_date_col='D_date', 
+                                           split='Test', algorithm='ENS', pred_thresh=pred_thresh)
+fig, ax = plt.subplots(figsize=(10, 4))
+ax.grid(zorder=0)
+sns.histplot(time_to_death, ax=ax, zorder=2)
+ax.set(xlabel='Days', title=f'Time to Death After Risk Prediction > {pred_thresh}')
+plt.show()
 
 
-event_dates = prep.event_dates
-event_dates['ikn'] = model_data['ikn']
-df = compute_survival(event_dates)
-
+# # Palliative Consultation Service Analysis
 
 # In[18]:
 
 
-plot_lifeline(df, n=100) # 100 patients
+# Sensitivity Analysis: Get Service Request Summary of Only Billing Codes A945 and C945 
+# Extract and Preprocess the OHIP Data
+ohip = pd.read_csv(f'{root_path}/data/ohip.csv')
+ohip = filter_ohip_data(ohip)
+ohip = ohip[ohip['feecode'].isin(['A945', 'C945'])]
+ohip['ikn'] = ohip['ikn'].astype(int)
+# Process the OHIP Data
+df = prep.event_dates[['visit_date']]
+df['ikn'] = model_data['ikn']
+event_dates = process_ohip_data(df, ohip)
 
 
-# In[19]:
+# ## Summary of All Billing Codes
+
+# In[29]:
 
 
-plot_km_curve(df.sample(n=100, random_state=2)) # TESTING TESTING
+# By Sessions
+summary = serivce_request_summary(eval_models, prep.event_dates, target_event='365d Mortality', 
+                                  thresholds=[0.1, 0.25, 0.5], by_patients=False)
+service_request_plot(summary)
+summary
 
 
-# In[20]:
+# In[30]:
 
 
-plot_km_curve(df)
+# By Patients
+summary = serivce_request_summary(eval_models, prep.event_dates, target_event='365d Mortality', 
+                                  thresholds=[0.1, 0.25, 0.5], by_patients=True)
+service_request_plot(summary)
+summary
 
 
-# ## Treatment Recommender System
+# ## Summary of C945 & A945 Billing Codes
 
-# In[41]:
-
-
-from scripts.survival import get_subgroup, get_recommendation, evaluate_recommendation
+# In[31]:
 
 
-# In[42]:
+# By Sessions
+summary = serivce_request_summary(eval_models, event_dates, target_event='365d Mortality', 
+                                  thresholds=[0.1, 0.25, 0.5], days_ago=365*5, by_patients=False)
+service_request_plot(summary)
+summary
 
 
-df = model_data # all data 
-test_df = model_data.loc[Y_test.index] # test split data
+# In[32]:
 
 
-# ### Pancreas cancer (C25), Palliative Intent (P), First Treatment Course, GEMCNPAC(W) vs FOLFIRINOX/MFOLFIRINOX
-
-# In[43]:
-
-
-regimens = ['gemcnpac(w)', 'folfirinox']
-panc_cancer_codes = ['C25']
-panc_cancer = get_subgroup(test_df, name='pancreas cancer', regimens=regimens, cancer_codes=panc_cancer_codes)
-recommended_regimens = get_recommendation(train_ens, panc_cancer)
-evaluate_recommendation(prep.event_dates, panc_cancer, recommended_regimens)
+# By Patients
+summary = serivce_request_summary(eval_models, event_dates, target_event='365d Mortality', 
+                                  thresholds=[0.1, 0.25, 0.5], days_ago=365*5, by_patients=True)
+service_request_plot(summary)
+summary
 
 
-# ### Melanoma (872-879), Palliative Intent (P), First Treatment Course, NIVL+IPIL vs NIVL
+# ## Time to Alarm After Palliative Consultation Service (C945 & A945 Billing Codes)
+# Most recent service prior to treatment session
 
-# In[44]:
-
-
-"""
-Thoughts: probably hard for the model to find a distinguishable pattern 
-          between patient data for NIVL and NIVL+IPIL, since they have very similar treatment regimen
-"""
-melanoma_codes = [f'87{i}' for i in range(2,10)]
-regimens = ['nivl', 'nivl+ipil']
-melanoma = get_subgroup(test_df, name='melanoma', regimens=regimens, cancer_codes=melanoma_codes, cancer_col='curr_morph_cd')
-recommended_regimens = get_recommendation(train_ens, melanoma)
-evaluate_recommendation(prep.event_dates, melanoma, recommended_regimens)
+# In[26]:
 
 
-# ### Renal Cancer (C64, C65), Palliative Intent (P), First Treatment Course, NIVI+IPIL vs AXIT+PEMB
-
-# In[45]:
-
-
-"""
-Thoughts: only 10 observations for axit+pemb, not enough data
-"""
-renal_cancer_codes = ['C64', 'C65']
-regimens = ['nivl+ipil', 'axit+pemb']
-renal_cancer = get_subgroup(df, name='renal cancer', regimens=regimens, cancer_codes=renal_cancer_codes)
-recommended_regimens = get_recommendation(train_ens, renal_cancer)
-evaluate_recommendation(prep.event_dates, renal_cancer, recommended_regimens)
+# Cumulative Distribution of Months from Service Date to First Risk of Target Event
+time_to_alarm = time_to_alarm_after_service(eval_models, event_dates, target_event='365d Mortality', 
+                                            split='Test', algorithm='ENS', pred_thresh=0.5)
+fig, ax = plt.subplots(figsize=(8, 8))
+N = len(time_to_alarm)
+ax.plot(time_to_alarm,  np.arange(N) / float(N))
+ax.set(xlabel='Months', ylabel="Cumulative Proportion of Patients",
+       title=f'Time to First Alarm After A945/C945 Palliative Consultation Service')
+plt.show()
 
 
-# ### Stomach Cancer (C16), ECX vs ECF vs FOLFOX vs FOLFIRI
+# # Scratch Notes
 
-# In[50]:
+# ## Hyperparameters
+
+# In[26]:
 
 
-stomach_cancer_codes = ['C16']
-regimens = ['ecx', 'ecf', 'folfiri'] # 'folfox' DOES NOT EXIST
-stomach_cancer = get_subgroup(test_df, name='stomach cancer', regimens=regimens, cancer_codes=stomach_cancer_codes, 
-                              palliatative_intent=False, first_treatment_course=False)
-recommended_regimens = get_recommendation(train_ens, stomach_cancer)
-evaluate_recommendation(prep.event_dates, stomach_cancer, recommended_regimens)
+from src.utility import get_hyperparameters
+get_hyperparameters(output_path)
 
 
 # In[ ]:

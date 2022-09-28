@@ -20,14 +20,15 @@ import os
 sys.path.append(os.getcwd())
 import pickle
 import pandas as pd
+pd.options.mode.chained_assignment = None
 import numpy as np
-from collections import defaultdict
 
-from scripts.utility import (initialize_folders, load_predictions, save_predictions)
-from scripts.config import (root_path, cyto_folder, acu_folder, can_folder, death_folder, split_date)
-from scripts.prep_data import (PrepDataEDHD, PrepDataCYTO)
-from scripts.train import (TrainML, TrainRNN, TrainENS)
-from scripts.evaluate import (Evaluate)
+from src.utility import (initialize_folders, load_predictions, save_predictions)
+from src.config import (root_path, cyto_folder, acu_folder, can_folder, death_folder, reco_folder, split_date)
+from src.prep_data import (PrepDataEDHD, PrepDataCYTO)
+from src.train import (TrainML, TrainRNN, TrainENS)
+from src.evaluate import (Evaluate)
+from src.surv.survival import TrainSurv
 
 class End2EndPipeline():
     def __init__(self):
@@ -68,68 +69,90 @@ class End2EndPipeline():
         return score_df
     
     def run(self, run_bayesopt=False, run_training=True):
-        self.tune_and_train(rnn=False, run_bayesopt=run_bayesopt, run_training=run_training)
-        self.tune_and_train(rnn=True, run_bayesopt=run_bayesopt, run_training=run_training)
+        if run_bayesopt or run_training:
+            self.tune_and_train(rnn=False, run_bayesopt=run_bayesopt, run_training=run_training)
+            self.tune_and_train(rnn=True, run_bayesopt=run_bayesopt, run_training=run_training)
         self.compute_ensemble(run_bayesopt=True, run_calibration=True)
         score_df = self.evaluate()
         return score_df
-
-class End2EndPipelineEDHD(End2EndPipeline):
-    def __init__(self, adverse_event='acu', days=30):
-        self.adverse_event = adverse_event
+    
+class End2EndPipelinePROACCT(End2EndPipeline):
+    def __init__(self, days=30):
         self.days = days
         super().__init__()
         
     def get_output_path(self):
-        if self.adverse_event == 'acu':
-            output_path = f'{root_path}/{acu_folder}/models/within_{self.days}_days'
-        elif self.adverse_event == 'death':
-            output_path = f'{root_path}/{death_folder}/models'
-        else:
-            raise ValueError('adverse event must be either acu or death')
-        return output_path
+        return f'{root_path}/{acu_folder}/models/within_{self.days}_days'
         
     def get_data_splits(self):
-        target_keywords = {'acu': f'_within_{self.days}days', 'death': 'Mortality'}
-        target_keyword = target_keywords[self.adverse_event]
-        prep = PrepDataEDHD(adverse_event=self.adverse_event)
+        target_keyword = f'_within_{self.days}days'
+        prep = PrepDataEDHD(adverse_event='acu')
         model_data = prep.get_data(target_keyword, missing_thresh=80)
-        model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
         X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), target_keyword=target_keyword)
         print(prep.get_label_distribution(Y_train, Y_valid, Y_test))
-        if self.adverse_event == 'acu':
-            Y_train.columns = Y_train.columns.str.replace(target_keyword, '')
-            Y_valid.columns = Y_valid.columns.str.replace(target_keyword, '')
-            Y_test.columns = Y_test.columns.str.replace(target_keyword, '')
+        Y_train.columns = Y_train.columns.str.replace(target_keyword, '')
+        Y_valid.columns = Y_valid.columns.str.replace(target_keyword, '')
+        Y_test.columns = Y_test.columns.str.replace(target_keyword, '')
         X_train['ikn'], X_valid['ikn'], X_test['ikn'] = model_data['ikn'], model_data['ikn'], model_data['ikn']
         return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
     
     def run(self, run_bayesopt=False, run_training=True):
         initialize_folders(self.output_path, extra_folders=['figures/important_groups', 'figures/rnn_train_performance'])
-        if not run_bayesopt and self.adverse_event == 'acu' and self.days != 30:
+        if not run_bayesopt and self.days != 30:
             # copy best parameters from 'within 30 days' models
             for alg in ['LR', 'NN', 'RF', 'XGB', 'RNN']:
                 shutil.copyfile(f'{self.output_path.replace(str(self.days), "30")}/best_params/{alg}_best_param.pkl', 
                                 f'{self.output_path}/best_params/{alg}_best_param.pkl')
         score_df = super().run(run_bayesopt=run_bayesopt, run_training=run_training)
         return score_df
+    
+class End2EndPipelineDEATH(End2EndPipeline):
+    def get_output_path(self):
+        return f'{root_path}/{death_folder}/models'
+        
+    def get_data_splits(self):
+        target_keyword = 'Mortality'
+        prep = PrepDataEDHD(adverse_event='death')
+        model_data = prep.get_data(target_keyword, missing_thresh=75, treatment_intent=['P'])
+        X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), 
+                                                                             target_keyword=target_keyword, split_date=split_date)
+        print(prep.get_label_distribution(Y_train, Y_valid, Y_test))
+        X_train['ikn'], X_valid['ikn'], X_test['ikn'] = model_data['ikn'], model_data['ikn'], model_data['ikn']
+        return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
 
 class End2EndPipelineCYTO(End2EndPipeline):
-    def __init__(self):
-        super().__init__()
-        
     def get_output_path(self):
         return f'{root_path}/{cyto_folder}/models'
         
     def get_data_splits(self):
         prep = PrepDataCYTO()
-        model_data = prep.get_data(include_first_date=True, missing_thresh=75)
-        model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
-        X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), split_date=split_date)
+        model_data = prep.get_data(missing_thresh=75)
+        dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), split_date=split_date)
         print(prep.get_label_distribution(Y_train, Y_valid, Y_test))
         X_train['ikn'], X_valid['ikn'], X_test['ikn'] = model_data['ikn'], model_data['ikn'], model_data['ikn']
-        return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
+        return dataset
+    
+class End2EndPipelineSurv:
+    def __init__(self):
+        self.main_dir = f'{root_path}/{reco_folder}'
+        self.output_path = f'{self.main_dir}/models'
+        
+        filename = f'{self.main_dir}/data/final_dataset.pkl'
+        with open(filename, 'rb') as file:
+            dataset = pickle.load(file)
+            
+        filename = f'{self.main_dir}/data/propensity_score.pkl'
+        with open(filename, 'rb') as file:
+            propensity = pickle.load(file)
+            
+        matching_module = {name: df.columns.tolist() for name, df in propensity.items()}
+        
+        self.args = (dataset, self.output_path, matching_module)
+        
+    def run(self, run_bayesopt=True, run_training=True):
+        train_surv = TrainSurv(*self.args)
+        train_surv.tune_and_train(run_bayesopt=run_bayesopt, run_training=run_training)
 
 if __name__ == '__main__':
-    pipeline = End2EndPipelineEDHD(adverse_event='death')
+    pipeline = End2EndPipelinePROACCT()
     pipeline.run(run_bayesopt=True, run_training=True)

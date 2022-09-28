@@ -32,9 +32,12 @@ get_ipython().run_line_magic('autoreload', '2')
 import numpy as np
 import pandas as pd
 pd.options.mode.chained_assignment = None
+from pyspark.sql import SparkSession
 
-from scripts.config import (root_path, acu_folder, death_folder, y3_cols)
-from scripts.preprocess import (clean_string, filter_y3_data)
+from src.spark import clean_string as spark_clean_string
+from src.config import (root_path, acu_folder, death_folder, max_chemo_date, y3_cols)
+from src.utility import (clean_string)
+from src.preprocess import (filter_y3_data, filter_ohip_data, process_ohip_data)
 
 
 # In[3]:
@@ -60,10 +63,13 @@ get_ipython().system('cp $acu_folder/data/ED_dates.csv $death_folder/data/ED_dat
 # In[5]:
 
 
-filepath = f'{output_path}/data/model_data.csv'
-model_data = pd.read_csv(filepath, dtype=str)
-model_data['visit_date'] = pd.to_datetime(model_data['visit_date'])
+main_filepath = f'{output_path}/data/model_data.csv'
+chemo_df = pd.read_csv(main_filepath, dtype=str)
+chemo_df['visit_date'] = pd.to_datetime(chemo_df['visit_date'])
+print(f"NSessions: {len(chemo_df)}. NPatients: {chemo_df['ikn'].nunique()}")
 
+
+# ### Include death date features
 
 # In[6]:
 
@@ -71,20 +77,49 @@ model_data['visit_date'] = pd.to_datetime(model_data['visit_date'])
 y3 = pd.read_csv(f'{root_path}/data/y3.csv')
 y3 = filter_y3_data(y3, include_death=True)
 y3 = y3[['ikn', 'D_date']]
-model_data = model_data[model_data['ikn'].isin(y3['ikn'])]
-model_data = pd.merge(model_data, y3, on='ikn', how='left')
-model_data = model_data.set_index('index')
-model_data.to_csv(filepath, index_label='index')
+chemo_df = chemo_df[chemo_df['ikn'].isin(y3['ikn'])]
+chemo_df = pd.merge(chemo_df, y3, on='ikn', how='left')
+print(f"NSessions: {len(chemo_df)}. NPatients: {chemo_df['ikn'].nunique()}")
 
+
+# ### Include last seen date features
 
 # In[7]:
 
 
-# Update ED/H dates
+chemo_df['last_seen_date'] = chemo_df['D_date']
+chemo_df['last_seen_date'] = chemo_df['last_seen_date'].fillna(max_chemo_date)
+
+
+# ### Include features from OHIP database
+# Get Physician Billing Codes for Palliative Consultation Service
+
+# In[8]:
+
+
+# Extract and Preprocess the OHIP Data
+ohip = pd.read_csv(f'{root_path}/data/ohip.csv')
+ohip = filter_ohip_data(ohip)
+
+# Process the OHIP Data
+chemo_df = process_ohip_data(chemo_df, ohip)
+
+
+# In[9]:
+
+
+chemo_df.to_csv(main_filepath, index=False)
+
+
+# ### Update ED/H dates
+
+# In[10]:
+
+
 for event in ['ED', 'H']:
     filepath = f'{output_path}/data/{event}_dates.csv'
     event_dates = pd.read_csv(filepath, dtype=str)
-    event_dates = event_dates[event_dates['chemo_idx'].isin(model_data.index)]
+    event_dates = event_dates[event_dates['chemo_idx'].isin(chemo_df['index'])]
     event_dates.to_csv(filepath, index=False)
 
 

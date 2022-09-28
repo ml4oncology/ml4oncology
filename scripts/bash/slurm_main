@@ -5,7 +5,9 @@
 #SBATCH --mem 128G
 module load apps/anaconda/3
 source activate myenv
-python scripts/perm_importance.py --adverse-event CYTO
+python scripts/slurm_program.py
+python scripts/perm_importance.py --adverse-event ACU
+python scripts/perm_importance.py --adverse-event ACU --permute-group
 
 # ##############################
 # Template1

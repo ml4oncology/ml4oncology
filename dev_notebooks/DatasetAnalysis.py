@@ -33,8 +33,8 @@ import pandas as pd
 pd.set_option('display.max_rows', 100)
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (min, max, count, to_date, to_timestamp, col, when, countDistinct)
-from scripts.config import (root_path, all_observations)
-from scripts.spark import (clean_string)
+from src.config import (root_path, all_observations)
+from src.spark import (clean_string)
 
 
 # In[3]:
@@ -80,13 +80,13 @@ olis = olis.withColumnRenamed('value_recommended_d', 'value')
 # In[8]:
 
 
-get_ipython().run_cell_magic('time', '', 'olis.select(min(date_col), max(date_col), count(date_col)).show()')
+get_ipython().run_cell_magic('time', '', 'olis.select(min(date_col), max(date_col), count(date_col)).show()\n')
 
 
 # In[8]:
 
 
-get_ipython().run_cell_magic('time', '', "# Get simple description of the data grouped by observation code\nobservation_counts = olis.groupBy(code_col).agg(min(date_col).alias('MinDate'),\n                                                max(date_col).alias('MaxDate'),\n                                                count(date_col).alias('TotalCount'), \n                                                count(when(col('value').isNull(),True)).alias('MissingValueCount'),\n                                                countDistinct('ikn').alias('TotalPatientCount')\n                                               ).orderBy(code_col)\nobservation_counts = observation_counts.replace(mapping)\nsize = observation_counts.count()\nprint(f'{size} unique observation codes')\nobservation_counts.show(size, truncate=False)")
+get_ipython().run_cell_magic('time', '', "# Get simple description of the data grouped by observation code\nobservation_counts = olis.groupBy(code_col).agg(min(date_col).alias('MinDate'),\n                                                max(date_col).alias('MaxDate'),\n                                                count(date_col).alias('TotalCount'), \n                                                count(when(col('value').isNull(),True)).alias('MissingValueCount'),\n                                                countDistinct('ikn').alias('TotalPatientCount')\n                                               ).orderBy(code_col)\nobservation_counts = observation_counts.replace(mapping)\nsize = observation_counts.count()\nprint(f'{size} unique observation codes')\nobservation_counts.show(size, truncate=False)\n")
 
 
 # In[9]:

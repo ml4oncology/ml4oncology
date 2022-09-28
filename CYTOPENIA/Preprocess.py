@@ -17,7 +17,7 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[2]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[2]:
+# In[3]:
 
 
 import os
@@ -38,33 +38,33 @@ import numpy as np
 import matplotlib.pyplot as plt
 from functools import partial
 
-from scripts.config import (root_path, sas_folder, cyto_folder, blood_types, all_observations, event_map)
-from scripts.spark import (preprocess_olis_data)
-from scripts.preprocess import (split_and_parallelize, clean_string, group_observations,
-                                load_chemo_df, load_included_regimens, 
-                                filter_systemic_data, process_systemic_data, 
-                                filter_y3_data, process_cancer_and_demographic_data,
-                                filter_immigration_data, process_immigration_data,
-                                olis_worker, postprocess_olis_data,
-                                filter_esas_data, get_esas_responses, postprocess_esas_responses,
-                                filter_body_functionality_data, body_functionality_worker,
-                                filter_blood_transfusion_data, blood_transfusion_worker, 
-                                extract_blood_transfusion_data, postprocess_blood_transfusion_data)
-
-
-# In[3]:
-
-
-get_ipython().system('ls $sas_folder')
+from src.config import (root_path, sas_folder, cyto_folder, blood_types, all_observations, event_map)
+from src.spark import (preprocess_olis_data)
+from src.utility import (load_chemo_df, load_included_regimens, 
+                         split_and_parallelize, clean_string, group_observations)
+from src.preprocess import (filter_systemic_data, process_systemic_data, 
+                            filter_y3_data, process_cancer_and_demographic_data,
+                            filter_immigration_data, process_immigration_data,
+                            olis_worker, postprocess_olis_data,
+                            filter_esas_data, get_esas_responses, postprocess_esas_responses,
+                            filter_body_functionality_data, body_functionality_worker,
+                            filter_blood_transfusion_data, blood_transfusion_worker, 
+                            extract_blood_transfusion_data, postprocess_blood_transfusion_data)
 
 
 # In[4]:
 
 
-get_ipython().system('du -h $sas_folder/olis.sas7bdat $sas_folder/systemic.sas7bdat $sas_folder/y3.sas7bdat')
+get_ipython().system('ls $sas_folder')
 
 
 # In[5]:
+
+
+get_ipython().system('du -h $sas_folder/olis.sas7bdat $sas_folder/systemic.sas7bdat $sas_folder/y3.sas7bdat')
+
+
+# In[6]:
 
 
 # config
@@ -76,7 +76,7 @@ if not os.path.exists(f'{main_dir}/data'):
 
 # # Selected Regimens
 
-# In[6]:
+# In[7]:
 
 
 regimens = load_included_regimens(criteria='cytotoxic')
@@ -92,7 +92,7 @@ regimens_renamed
 
 # ### Include features from systemic (chemo) dataset
 
-# In[7]:
+# In[19]:
 
 
 systemic = pd.read_csv(f'{root_path}/data/systemic.csv')
@@ -103,7 +103,7 @@ print(f"Number of unique regiments = {systemic['regimen'].nunique()}")
 print(f"Chemotherapy Cohort from {systemic['visit_date'].min()} to {systemic['visit_date'].max()}")
 
 
-# In[8]:
+# In[20]:
 
 
 systemic = process_systemic_data(systemic, cycle_length_mapping)
@@ -113,7 +113,7 @@ print(f"Number of patients = {systemic['ikn'].nunique()}")
 print(f"Number of unique regiments = {systemic['regimen'].nunique()}")
 
 
-# In[9]:
+# In[21]:
 
 
 systemic = pd.read_csv(f'{main_dir}/data/systemic.csv', dtype={'ikn': str})
@@ -122,7 +122,7 @@ for col in ['visit_date', 'next_visit_date']: systemic[col] = pd.to_datetime(sys
 
 # ### Include features from y3 (cancer and demographic) dataset
 
-# In[10]:
+# In[22]:
 
 
 col_arrangement = ['ikn', 'regimen', 'visit_date', 'next_visit_date', 'chemo_interval', 'days_since_starting_chemo', 'days_since_last_chemo', 
@@ -130,7 +130,7 @@ col_arrangement = ['ikn', 'regimen', 'visit_date', 'next_visit_date', 'chemo_int
                    'curr_morph_cd', 'curr_topog_cd', 'age', 'sex', 'body_surface_area']
 
 
-# In[11]:
+# In[23]:
 
 
 # Extract and Preprocess the Y3 Data
@@ -140,7 +140,7 @@ print(f"Number of patients in y3 = {y3['ikn'].nunique()}")
 print(f"Number of patients in y3 and systemic = {y3['ikn'].isin(systemic['ikn']).sum()}")
 
 
-# In[12]:
+# In[24]:
 
 
 # Process the Y3 and Systemic Data
@@ -152,9 +152,20 @@ print(f"Number of female patients = {chemo_df.loc[chemo_df['sex'] == 'F', 'ikn']
 print(f"Number of male patients = {chemo_df.loc[chemo_df['sex'] == 'M', 'ikn'].nunique()}")
 
 
+# ### Include features from income dataset
+
+# In[25]:
+
+
+income = pd.read_csv(f'{root_path}/data/income.csv')
+income = clean_string(income, ['ikn', 'incquint'])
+income = income.rename(columns={'incquint': 'neighborhood_income_quintile'})
+chemo_df = pd.merge(chemo_df, income, on='ikn', how='left')
+
+
 # ### Include features from immigration dataset
 
-# In[13]:
+# In[30]:
 
 
 # Extract and Preprocess the Immigration Data
@@ -177,10 +188,10 @@ print(f"Number of rows now: {len(chemo_df)}")
 print(f"Number of patients now: {chemo_df['ikn'].nunique()}")
 
 
-# In[10]:
+# In[32]:
 
 
-get_ipython().run_cell_magic('time', '', "# Preprocess the Raw OLIS Data using PySpark\npreprocess_olis_data(f'{main_dir}/data', set(chemo_df['ikn']))")
+get_ipython().run_cell_magic('time', '', "# Preprocess the Raw OLIS Data using PySpark\npreprocess_olis_data(f'{main_dir}/data', set(chemo_df['ikn']))\n")
 
 
 # In[8]:
@@ -198,22 +209,24 @@ result = pd.DataFrame(result, columns=['observation_code', 'chemo_idx', 'days_af
 result.to_csv(f'{main_dir}/data/olis2.csv', index=False)
 
 
-# In[9]:
+# In[8]:
 
 
 # Process the Olis Features
 olis_df = pd.read_csv(f'{main_dir}/data/olis2.csv')
-mapping, missing_df = postprocess_olis_data(chemo_df, olis_df, observations=all_observations, days_range=range(-5,max_cycle_length+1))
+chemo_df, mapping, missing_df = postprocess_olis_data(chemo_df, olis_df, 
+                                                      observations=all_observations, 
+                                                      days_range=range(-5,max_cycle_length+1))
 missing_df
 
 
-# In[10]:
+# In[24]:
 
 
 # group together obs codes with same obs name
 freq_map = olis_df['observation_code'].value_counts()
 grouped_observations = group_observations(all_observations, freq_map)
-
+# save the main blood type measurements as a time series from day X to day Y after treatment for each session
 for blood_type in blood_types:
     obs_codes = grouped_observations[blood_type]
     for i, obs_code in enumerate(obs_codes):
@@ -224,7 +237,7 @@ for blood_type in blood_types:
 
 # ### Include features from esas (symptom questionnaire) dataset
 
-# In[19]:
+# In[11]:
 
 
 # Preprocess the Questionnaire Data
@@ -233,17 +246,17 @@ esas = filter_esas_data(esas, chemo_df['ikn'])
 esas.to_csv(f'{main_dir}/data/esas.csv', index=False)
 
 
-# In[20]:
+# In[12]:
 
 
 # Extract the Questionnaire Features
 esas = pd.read_csv(f'{main_dir}/data/esas.csv', dtype=str)
 result = get_esas_responses(chemo_df, esas, processes=processes)
-result = pd.DataFrame(result, columns=['index', 'symptom', 'severity'])
+result = pd.DataFrame(result, columns=['index', 'symptom', 'severity', 'survey_date'])
 result.to_csv(f'{main_dir}/data/esas2.csv', index=False)
 
 
-# In[11]:
+# In[9]:
 
 
 # Process the Questionnaire Responses
@@ -256,7 +269,7 @@ chemo_df = chemo_df.join(esas_df, how='left') # ALT WAY: pd.merge(chemo_df, esas
 
 # ### Include features from ecog and prfs (body functionality grade) dataset
 
-# In[22]:
+# In[14]:
 
 
 for dataset in ['ecog', 'prfs']:
@@ -268,17 +281,18 @@ for dataset in ['ecog', 'prfs']:
     filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(bf['ikn'])] # filter out patients not in dataset
     worker = partial(body_functionality_worker, dataset=dataset)
     result = split_and_parallelize((filtered_chemo_df, bf), worker, processes=processes)
-    result = pd.DataFrame(result, columns=['index', f'{dataset}_grade'])
+    result = pd.DataFrame(result, columns=['index', f'{dataset}_grade', 'survey_date'])
     result.to_csv(f'{main_dir}/data/{dataset}.csv', index=False)
 
 
-# In[12]:
+# In[10]:
 
 
 for dataset in ['ecog', 'prfs']:
     # Process the results
     bf = pd.read_csv(f'{main_dir}/data/{dataset}.csv')
     bf = bf.set_index('index')
+    bf = bf.rename(columns={'survey_date': f'{dataset}_grade_survey_date'})
 
     # put result in chemo_df
     chemo_df = chemo_df.join(bf, how='left') # ALT WAY: pd.merge(chemo_df, ecog, left_index=True, right_index=True, how='left')
@@ -287,7 +301,7 @@ for dataset in ['ecog', 'prfs']:
 # ### Include blood transfusion features from dad and nacrs dataset 
 # (hospitalization and ED visits where blood tranfusion was administered)
 
-# In[24]:
+# In[16]:
 
 
 for event in ['H', 'ED']:
@@ -302,7 +316,7 @@ for event in ['H', 'ED']:
         chunk.to_csv(f"{main_dir}/data/{database_name}_transfusion.csv", header=header, mode=mode, index=False)
 
 
-# In[13]:
+# In[11]:
 
 
 for event in ['H', 'ED']:
@@ -316,35 +330,35 @@ for event in ['H', 'ED']:
 # ### Include odb_growth factor features
 # odb - ontario drug benefit
 
-# In[14]:
+# In[12]:
 
 
 def filter_odb_data(odb, chemo_ikns):
-    # organize and format columns
     odb = clean_string(odb, ['ikn'])
     odb['servdate'] = pd.to_datetime(odb['servdate'])
-    
-    # filter patients not in chemo_df
-    odb = odb[odb['ikn'].isin(chemo_ikns)]
-    
-    # sort by date
-    odb = odb.sort_values(by='servdate')
-    
+    odb = odb[odb['ikn'].isin(chemo_ikns)]  # filter patients not in chemo_df
+    odb = odb.sort_values(by='servdate')  # sort by date
     return odb
 
 def odb_worker(partition):
+    """
+    Finds the indices where patients recieved growth factor within 5 days before to 5 days after chemo visit.
+    This does not affect label leakage, as provision of growth factor is planned beforehand.
+    """
     chemo_df, odb_df = partition
     result = set()
     for ikn, chemo_group in chemo_df.groupby('ikn'):
         odb_group = odb_df[odb_df['ikn'] == ikn]
         for i, odb_row in odb_group.iterrows():
             servdate = odb_row['servdate']
-            mask = (servdate <= chemo_group['next_visit_date']) & (servdate >= chemo_group['visit_date'])
+            earliest_date = chemo_group['visit_date'] + pd.Timedelta('-5days')
+            latest_date = chemo_group['visit_date'] + pd.Timedelta('5days')
+            mask = (servdate <= latest_date) & (servdate >= earliest_date)
             result.update(chemo_group[mask].index)
     return result
 
 
-# In[27]:
+# In[13]:
 
 
 # Extract and Preprocess ODB Growth Factor Administration Events During Chemotherapy
@@ -355,7 +369,7 @@ result = split_and_parallelize((filtered_chemo_df, odb), odb_worker)
 np.save(f'{main_dir}/data/odb_indices.npy', result)
 
 
-# In[15]:
+# In[14]:
 
 
 # Process the ODB Growth Factor Administration Events
@@ -364,7 +378,7 @@ chemo_df['ODBGF_given'] = False
 chemo_df.loc[indices, 'ODBGF_given'] = True
 
 
-# In[16]:
+# In[15]:
 
 
 chemo_df.to_csv(f'{main_dir}/data/model_data.csv', index=False)
@@ -427,136 +441,3 @@ plt.fill(np.concatenate([x, x[::-1]]),
          alpha=0.5, fc='b', ec='None', label="95% confidence interval"
          )
 plt.legend()
-
-
-# ## Include Fever from ED/H Visits
-# For predicting febrile neutropenia
-# 
-# Arbitrary Time Window: If ED/H visit for Fever occured anytime between 2 days before to 2 days after 
-# any neutrophil count measurement was taken between index date (aka prev_visit) and next chemo date (aka visit_date)<br>
-
-# In[150]:
-
-
-from scripts.config import (event_map, fever_codes, diag_cols)
-from scripts.prep_data import (PrepDataCYTO)
-from scripts.preprocess import (clean_string)
-
-
-# In[141]:
-
-
-def get_fever_visit_indices(partition, delta=2):
-    """
-    if patient needed to go to Emergency Department/Hospital for fever 
-    anytime between 2 days after visit date to 2 days after next chemo visit date (visit_date)
-    """
-    chemo_df, E = partition
-    result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
-        arrival_date = E.loc[E['ikn'] == ikn, 'arrival_date']
-        for chemo_idx, chemo_row in chemo_group.iterrows():
-            earliest_date = chemo_row['visit_date'] + pd.Timedelta(f'{delta} days')
-            latest_date = chemo_row['next_visit_date'] + pd.Timedelta(f'{delta} days')
-            if arrival_date.between(earliest_date, latest_date).any():
-                result.append(chemo_idx)
-    return result
-
-def get_febrile_neutropenia_indices(partition, delta=2):
-    """
-    if patient needed to go to Emergency Department/Hospital for fever 
-    anytime between between 2 days before to 2 days after any neutrophil count measurement was taken 
-    between 4 days after visit date and next visit date
-    AND neutrophil count was below 1.5
-    """
-    chemo_df, E = partition
-    result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
-        arrival_date = E.loc[E['ikn'] == ikn, 'arrival_date']
-        for chemo_idx, chemo_row in chemo_group.iterrows():
-            chemo_interval = int(min(28, chemo_row['chemo_interval']))
-            blood_counts = chemo_row.loc[range(4, chemo_interval+1)]
-            blood_counts = blood_counts[blood_counts.notnull()]
-            if blood_counts.empty: 
-                continue
-            for blood_day, blood_count in blood_counts.items():
-                earliest_date = chemo_row['visit_date'] + pd.Timedelta(f'{blood_day-delta} days')
-                latest_date = chemo_row['visit_date'] + pd.Timedelta(f'{blood_day+delta} days')
-                if (blood_count < blood_types['neutrophil']['cytopenia_threshold'] and 
-                    arrival_date.between(earliest_date, latest_date).any()):
-                    result.append(chemo_idx)
-    return result
-
-
-# In[142]:
-
-
-for event in ['H', 'ED']:
-    database_name = event_map[event]['database_name']
-    arr_date_col, dep_date_col = event_map[event]['date_col_name']
-    df = pd.read_csv(f'{root_path}/data/{database_name}.csv', dtype=str) 
-    df = clean_string(df, ['ikn'] + diag_cols)
-    df['arrival_date'] = pd.to_datetime(df[arr_date_col])
-    df = df[df['arrival_date'].notnull()]
-    
-    # only keep ED/H visits due to fever
-    mask = False
-    for diag_col in diag_cols:
-        mask |= df[diag_col].isin(fever_codes)
-    df = df[mask]
-    
-    df = df[df['ikn'].isin(chemo_df['ikn'])] # filter away patients not in chemo dataframe
-    df = df[['ikn', 'arrival_date']] # keep only selected columns
-    df = df.drop_duplicates() # drop duplicates
-    df.to_csv(f'{main_dir}/data/{event}_fever.csv', index=False)
-
-
-# In[143]:
-
-
-neutrophil_df = pd.read_csv(f'{main_dir}/data/neutrophil.csv')
-neutrophil_df.columns = neutrophil_df.columns.astype(int)
-chemo_df = load_chemo_df(main_dir)
-chemo_df = pd.concat([chemo_df, neutrophil_df], axis=1)
-chemo_df['fever'] = False
-chemo_df['febrile_neutropenia'] = False
-
-
-# In[144]:
-
-
-for event in ['H', 'ED']:
-    df = pd.read_csv(f'{main_dir}/data/{event}_fever.csv', dtype=str)
-    df['arrival_date'] = pd.to_datetime(df['arrival_date'])
-    filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(df['ikn'])]
-    indices = split_and_parallelize((filtered_chemo_df, df), get_fever_visit_indices)
-    chemo_df.loc[indices, 'fever'] = True
-    indices = split_and_parallelize((filtered_chemo_df, df), get_febrile_neutropenia_indices)
-    chemo_df.loc[indices, 'febrile_neutropenia'] = True
-
-
-# In[145]:
-
-
-pd.DataFrame([chemo_df['fever'].value_counts(), chemo_df['febrile_neutropenia'].value_counts()]).T
-
-
-# In[151]:
-
-
-prep = PrepDataCYTO()
-model_data = prep.get_data(include_first_date=True, verbose=False)
-model_data = prep.regression_to_classification(model_data)
-model_data['febrile_neutropenia'] = chemo_df['febrile_neutropenia']
-pd.DataFrame([model_data['febrile_neutropenia'].value_counts(), model_data['Neutropenia'].value_counts()]).T
-
-
-# In[152]:
-
-
-split_date = '2017-06-30'
-train, valid, test = prep.split_data(prep.dummify_data(model_data), split_date=split_date, convert_to_float=False)
-(X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = train, valid, test
-pd.DataFrame([X_train['febrile_neutropenia'].value_counts(), 
-              X_valid['febrile_neutropenia'].value_counts(), 
-              X_test['febrile_neutropenia'].value_counts()], index=['Train', 'Valid', 'Test']).T

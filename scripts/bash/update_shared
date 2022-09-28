@@ -1,8 +1,12 @@
 SHARE_PATH=XXXXX
-cp bash/* $SHARE_PATH/bash
 cp scripts/*.py $SHARE_PATH/scripts
+cp -r scripts/bash $SHARE_PATH/scripts
+cp src/*.py $SHARE_PATH/src
+cp -r src/surv $SHARE_PATH/src
+cp test/*.py $SHARE_PATH/test
 cp dev_notebooks/*.ipynb $SHARE_PATH/dev_notebooks
 cp PROACCT/*.ipynb $SHARE_PATH/PROACCT
 cp CYTOPENIA/*.ipynb $SHARE_PATH/CYTOPENIA
 cp CAN/*.ipynb $SHARE_PATH/CAN
 cp DEATH/*.ipynb $SHARE_PATH/DEATH
+cp TRREKO/*.ipynb $SHARE_PATH/TRREKO

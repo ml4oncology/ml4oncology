@@ -35,18 +35,18 @@ pd.options.mode.chained_assignment = None
 import numpy as np
 from functools import partial
 
-from scripts.config import (root_path, acu_folder, event_map)
-from scripts.spark import (preprocess_olis_data)
-from scripts.preprocess import (split_and_parallelize,
-                                load_chemo_df, load_included_regimens, 
-                                filter_systemic_data, process_systemic_data,
-                                filter_y3_data, process_cancer_and_demographic_data, 
-                                filter_immigration_data, process_immigration_data,
-                                observation_worker, postprocess_olis_data,
-                                filter_esas_data, get_esas_responses, postprocess_esas_responses,
-                                filter_body_functionality_data, body_functionality_worker,
-                                filter_event_data, extract_event_dates,
-                                get_inpatient_indices)
+from src.config import (root_path, acu_folder, event_map)
+from src.spark import (preprocess_olis_data)
+from src.utility import (load_chemo_df, load_included_regimens, 
+                         split_and_parallelize, clean_string)
+from src.preprocess import (filter_systemic_data, process_systemic_data,
+                            filter_y3_data, process_cancer_and_demographic_data, 
+                            filter_immigration_data, process_immigration_data,
+                            observation_worker, postprocess_olis_data,
+                            filter_esas_data, get_esas_responses, postprocess_esas_responses,
+                            filter_body_functionality_data, body_functionality_worker,
+                            filter_event_data, extract_event_dates,
+                            get_inpatient_indices)
 
 
 # In[3]:
@@ -73,24 +73,24 @@ regimens_renamed
 # ### Include features from systemic (chemo) dataset
 # NOTE: ikn is the encoded ontario health insurance plan (OHIP) number of a patient. All ikns are valid (all patients have valid OHIP) in systemic.csv per the valikn column
 
-# In[5]:
-
-
-systemic = pd.read_csv(f'{root_path}/data/systemic.csv')
-systemic = filter_systemic_data(systemic, regimens, exclude_dins=False, verbose=True)
-
-
 # In[6]:
+
+
+get_ipython().run_cell_magic('time', '', "systemic = pd.read_csv(f'{root_path}/data/systemic.csv')\nsystemic = filter_systemic_data(systemic, regimens, exclude_dins=False, verbose=True)\n")
+
+
+# In[7]:
 
 
 systemic = process_systemic_data(systemic, method='one-per-week')
 systemic.to_csv(f'{output_path}/data/systemic.csv', index=False)
+print(f"Number of chemo treatments = {len(systemic)}")
 print(f"Number of patients = {systemic['ikn'].nunique()}")
 print(f"Number of unique regiments = {systemic['regimen'].nunique()}")
 print(f"Chemotherapy Cohort from {systemic['visit_date'].min()} to {systemic['visit_date'].max()}")
 
 
-# In[7]:
+# In[8]:
 
 
 systemic = pd.read_csv(f'{output_path}/data/systemic.csv', dtype={'ikn': str})
@@ -99,7 +99,7 @@ systemic['visit_date'] = pd.to_datetime(systemic['visit_date'])
 
 # ### Include features from y3 (cancer and demographic) dataset
 
-# In[8]:
+# In[9]:
 
 
 col_arrangement = ['ikn', 'regimen', 'visit_date', 'days_since_starting_chemo', 'days_since_last_chemo', 'chemo_cycle', 
@@ -107,7 +107,7 @@ col_arrangement = ['ikn', 'regimen', 'visit_date', 'days_since_starting_chemo', 
                    'curr_morph_cd', 'curr_topog_cd', 'age', 'sex', 'body_surface_area']
 
 
-# In[9]:
+# In[10]:
 
 
 # Extract and Preprocess the Y3 Data
@@ -117,7 +117,7 @@ print(f"Number of patients in y3 = {y3['ikn'].nunique()}")
 print(f"Number of patients in y3 and systemic = {y3['ikn'].isin(systemic['ikn']).sum()}")
 
 
-# In[10]:
+# In[11]:
 
 
 # Process the Y3 and Systemic Data
@@ -129,9 +129,20 @@ print(f"Number of female patients = {chemo_df.loc[chemo_df['sex'] == 'F', 'ikn']
 print(f"Number of male patients = {chemo_df.loc[chemo_df['sex'] == 'M', 'ikn'].nunique()}")
 
 
+# ### Include features from income dataset
+
+# In[12]:
+
+
+income = pd.read_csv(f'{root_path}/data/income.csv')
+income = clean_string(income, ['ikn', 'incquint'])
+income = income.rename(columns={'incquint': 'neighborhood_income_quintile'})
+chemo_df = pd.merge(chemo_df, income, on='ikn', how='left')
+
+
 # ### Include features from immigration dataset
 
-# In[11]:
+# In[13]:
 
 
 # Extract and Preprocess the Immigration Data
@@ -153,10 +164,10 @@ print(f"Number of rows now: {len(chemo_df)}")
 print(f"Number of patients now: {chemo_df['ikn'].nunique()}")
 
 
-# In[28]:
+# In[ ]:
 
 
-get_ipython().run_cell_magic('time', '', "# Preprocess the Raw OLIS Data using PySpark\npreprocess_olis_data(f'{output_path}/data', set(chemo_df['ikn']))")
+get_ipython().run_cell_magic('time', '', "# Preprocess the Raw OLIS Data using PySpark\npreprocess_olis_data(f'{output_path}/data', set(chemo_df['ikn']))\n")
 
 
 # In[6]:
@@ -171,19 +182,19 @@ result = pd.DataFrame(result, columns=['observation_code', 'chemo_idx', 'days_af
 result.to_csv(f'{output_path}/data/olis2.csv', index=False)
 
 
-# In[7]:
+# In[6]:
 
 
 # Process the OLIS Features
 olis_df = pd.read_csv(f'{output_path}/data/olis2.csv')
-mapping, missing_df = postprocess_olis_data(chemo_df, olis_df, days_range=range(-5,1))
+chemo_df, mapping, missing_df = postprocess_olis_data(chemo_df, olis_df, days_range=range(-5,1))
 missing_df
 
 
 # ### Include features from esas (questionnaire) dataset
 # Interesting Observation: Chunking is MUCH faster than loading and operating on the whole ESAS dataset
 
-# In[64]:
+# In[8]:
 
 
 # Preprocess the Questionnaire Data
@@ -192,13 +203,14 @@ esas = filter_esas_data(esas, chemo_df['ikn'])
 esas.to_csv(f'{output_path}/data/esas.csv', index=False)
 
 
-# In[65]:
+# In[7]:
 
 
 # Extract the Questionnaire Features
 esas = pd.read_csv(f'{output_path}/data/esas.csv', dtype=str)
+esas['surveydate'] = pd.to_datetime(esas['surveydate'])
 result = get_esas_responses(chemo_df, esas, processes=processes)
-result = pd.DataFrame(result, columns=['index', 'symptom', 'severity'])
+result = pd.DataFrame(result, columns=['index', 'symptom', 'severity', 'survey_date'])
 result.to_csv(f'{output_path}/data/esas2.csv', index=False)
 
 
@@ -215,7 +227,7 @@ chemo_df = chemo_df.join(esas_df, how='left') # ALT WAY: pd.merge(chemo_df, esas
 
 # ### Include features from ecog and prfs (body functionality grade) dataset
 
-# In[67]:
+# In[9]:
 
 
 for dataset in ['ecog', 'prfs']:
@@ -227,23 +239,24 @@ for dataset in ['ecog', 'prfs']:
     filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(bf['ikn'])] # filter out patients not in dataset
     worker = partial(body_functionality_worker, dataset=dataset)
     result = split_and_parallelize((filtered_chemo_df, bf), worker, processes=processes)
-    result = pd.DataFrame(result, columns=['index', f'{dataset}_grade'])
+    result = pd.DataFrame(result, columns=['index', f'{dataset}_grade', 'survey_date'])
     result.to_csv(f'{output_path}/data/{dataset}.csv', index=False)
 
 
-# In[9]:
+# In[10]:
 
 
 for dataset in ['ecog', 'prfs']:
     # Process the results
     bf = pd.read_csv(f'{output_path}/data/{dataset}.csv')
     bf = bf.set_index('index')
+    bf = bf.rename(columns={'survey_date': f'{dataset}_grade_survey_date'})
 
     # put result in chemo_df
     chemo_df = chemo_df.join(bf, how='left') # ALT WAY: pd.merge(chemo_df, ecog, left_index=True, right_index=True, how='left')
 
 
-# In[10]:
+# In[11]:
 
 
 chemo_df.to_csv(f'{output_path}/data/model_data.csv', index_label='index')
@@ -251,7 +264,7 @@ chemo_df.to_csv(f'{output_path}/data/model_data.csv', index_label='index')
 
 # ## Get ED/H Events from dad and nacrs dataset
 
-# In[7]:
+# In[12]:
 
 
 for event in ['H', 'ED']:
@@ -262,7 +275,7 @@ for event in ['H', 'ED']:
     event_df.to_csv(f'{output_path}/data/{database_name}.csv', index=False)
 
 
-# In[8]:
+# In[13]:
 
 
 for event in ['H', 'ED']:
@@ -275,7 +288,7 @@ for event in ['H', 'ED']:
 
 # ### Extra - Find errorneous inpatients
 
-# In[74]:
+# In[14]:
 
 
 dad = pd.read_csv(f'{output_path}/data/dad.csv', dtype=str)
@@ -283,3 +296,6 @@ for col in ['arrival_date', 'depart_date']: dad[col] = pd.to_datetime(dad[col])
 filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(dad['ikn'])] # filter out patients not in dataset
 indices = split_and_parallelize((filtered_chemo_df, dad), get_inpatient_indices, processes=processes)
 np.save(f'{output_path}/data/inpatient_indices.npy', indices)
+
+
+# In[ ]:

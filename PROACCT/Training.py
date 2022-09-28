@@ -31,17 +31,20 @@ get_ipython().run_line_magic('autoreload', '2')
 
 import pandas as pd
 pd.options.mode.chained_assignment = None
+pd.set_option('display.max_columns', 150)
+pd.set_option('display.max_rows', 150)
 import numpy as np
+import seaborn as sns
 import matplotlib.pyplot as plt
 
-from scripts.utility import (initialize_folders, load_predictions,
-                             get_nunique_entries, get_nmissing, 
-                             data_characteristic_summary, feature_summary, subgroup_performance_summary)
-from scripts.visualize import (importance_plot, subgroup_performance_plot)
-from scripts.config import (root_path, acu_folder)
-from scripts.prep_data import (PrepDataEDHD)
-from scripts.train import (TrainML, TrainRNN, TrainENS)
-from scripts.evaluate import (Evaluate)
+from src.utility import (initialize_folders, load_predictions,
+                         get_nunique_entries, get_nmissing)
+from src.summarize import (data_characteristic_summary, feature_summary, subgroup_performance_summary)
+from src.visualize import (importance_plot, subgroup_performance_plot)
+from src.config import (root_path, acu_folder)
+from src.prep_data import (PrepDataEDHD)
+from src.train import (TrainML, TrainRNN, TrainENS)
+from src.evaluate import (Evaluate)
 
 
 # In[3]:
@@ -61,38 +64,33 @@ initialize_folders(output_path, extra_folders=['figures/important_groups'])
 # In[4]:
 
 
-# Prepare Data for Model Input
 prep = PrepDataEDHD(adverse_event='acu')
+model_data = prep.get_data(target_keyword, verbose=True)
+model_data
 
 
 # In[5]:
 
 
-model_data = prep.get_data(target_keyword, verbose=True)
-model_data
+sorted(model_data.columns.tolist())
 
 
 # In[6]:
 
 
-sorted(model_data.columns.tolist())
+get_nunique_entries(model_data)
 
 
 # In[7]:
 
 
-get_nunique_entries(model_data)
+get_nmissing(model_data, verbose=True)
 
 
 # In[8]:
 
 
-get_nmissing(model_data, verbose=True)
-
-
-# In[9]:
-
-
+prep = PrepDataEDHD(adverse_event='acu') # need to reset
 model_data = prep.get_data(target_keyword, missing_thresh=80, verbose=True)
 print(f"Size of model_data: {model_data.shape}")
 print(f"Number of unique patients: {model_data['ikn'].nunique()}")
@@ -100,15 +98,7 @@ N = model_data.loc[model_data['ACU_within_30days'], 'ikn'].nunique()
 print(f"Number of unique patients that had ACU within 30 days after a treatment session: {N}")
 
 
-# In[10]:
-
-
-model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
-clip_thresholds.columns = clip_thresholds.columns.str.replace('baseline_', '').str.replace('_count', '')
-clip_thresholds
-
-
-# In[11]:
+# In[9]:
 
 
 # NOTE: any changes to X_train, X_valid, etc will also be seen in dataset
@@ -116,13 +106,13 @@ kwargs = {'target_keyword': target_keyword}
 dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), **kwargs)
 
 
-# In[12]:
+# In[10]:
 
 
 prep.get_label_distribution(Y_train, Y_valid, Y_test)
 
 
-# In[13]:
+# In[11]:
 
 
 Y_train.columns = Y_train.columns.str.replace(target_keyword, '')
@@ -131,12 +121,6 @@ Y_test.columns = Y_test.columns.str.replace(target_keyword, '')
 
 
 # # Train ML Models
-
-# In[37]:
-
-
-pd.set_option('display.max_columns', None)
-
 
 # In[140]:
 
@@ -154,7 +138,7 @@ train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True, 
 
 # # Train RNN Model
 
-# In[14]:
+# In[16]:
 
 
 # Include ikn to the input data 
@@ -166,26 +150,15 @@ X_test['ikn'] = model_data['ikn']
 train_rnn = TrainRNN(dataset, output_path)
 
 
-# In[15]:
+# In[19]:
 
 
 # Distrubution of the sequence lengths in the training set
 dist_seq_lengths = X_train.groupby('ikn').apply(len)
-fig = plt.figure(figsize=(15, 3))
-plt.hist(dist_seq_lengths, bins=100)
-plt.grid()
-plt.show()
-
-
-# In[16]:
-
-
-# A closer look at the samples of sequences with length 1 to 21
-fig = plt.figure(figsize=(15, 3))
-plt.hist(dist_seq_lengths[dist_seq_lengths < 21], bins=20)
-plt.grid()
-plt.xticks(range(1, 21))
-plt.show()
+dist_seq_lengths = dist_seq_lengths.clip(upper=dist_seq_lengths.quantile(q=0.999))
+fig, ax = plt.subplots(figsize=(15, 3))
+ax.grid(zorder=0)
+sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
 
 
 # In[17]:
@@ -197,7 +170,7 @@ train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration
 # # Train ENS Model 
 # Find Optimal Ensemble Weights
 
-# In[14]:
+# In[12]:
 
 
 # combine rnn and ml predictions
@@ -209,7 +182,7 @@ del preds_rnn
 train_ens = TrainENS(dataset, output_path, preds)
 
 
-# In[15]:
+# In[ ]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -217,23 +190,23 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # # Evaluate Models
 
-# In[16]:
+# In[ ]:
 
 
 eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
 
 
-# In[22]:
+# In[21]:
 
 
-kwargs = {'get_baseline': True, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False}
+kwargs = {'get_baseline': True, 'display_ci': True, 'load_ci': True, 'save_ci': True, 'verbose': False}
 eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[23]:
+# In[22]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_location='lower left', figsize=(12,18), save=False)
+eval_models.plot_curves(curve_type='pr', legend_location='upper right', figsize=(12,18), save=False)
 eval_models.plot_curves(curve_type='roc', legend_location='lower right', figsize=(12,18), save=False)
 eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,18), save=False) # cumulative distribution function of model prediction
 eval_models.plot_calibs(legend_location='upper left', figsize=(12,18), save=False) 
@@ -252,7 +225,7 @@ data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models')
 
 # ## Feature Characteristics
 
-# In[132]:
+# In[23]:
 
 
 feature_summary(eval_models, prep, target_keyword, save_dir=f'{main_dir}/models').head(60)
@@ -281,14 +254,14 @@ get_ipython().system('python scripts/perm_importance.py --adverse-event ACU')
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,50), top=10, importance_by='feature', padding={'pad_x0': 4.0})
+importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,50), top=10, importance_by='feature', padding={'pad_x0': 4.0})
 
 
 # In[18]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,50), top=10, importance_by='group', padding={'pad_x0': 1.2})
+importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,50), top=10, importance_by='group', padding={'pad_x0': 1.2})
 
 
 # ## Performance on Subgroups
@@ -302,10 +275,22 @@ df
 
 # ## Decision Curve Plot
 
-# In[141]:
+# In[37]:
 
 
-eval_models.plot_decision_curve_analysis('ENS', padding={'pad_x0': 1.0})
+result = eval_models.plot_decision_curve_analysis('ENS', padding={'pad_x0': 1.0})
+
+
+# In[61]:
+
+
+# find threshold range where net benefit for system is better than treat all and treat none (aka 0)
+thresh_range = {}
+for target_event, df in result.items():
+    mask = df['System'] > df['All'].clip(0)
+    thresh = df.loc[mask, 'Threshold']
+    thresh_range[target_event] = (thresh.min(), thresh.max())
+pd.DataFrame(thresh_range, index=['Threshold Min', 'Threshold Max']).T
 
 
 # ## ACU
@@ -315,7 +300,7 @@ eval_models.plot_decision_curve_analysis('ENS', padding={'pad_x0': 1.0})
 # In[26]:
 
 
-eval_models.all_plots_for_single_target(algorithm='ENS', target_type='ACU')
+eval_models.all_plots_for_single_target(algorithm='ENS', target_event='ACU')
 
 
 # ### Subgroup Performance Plot
@@ -323,9 +308,12 @@ eval_models.all_plots_for_single_target(algorithm='ENS', target_type='ACU')
 # In[136]:
 
 
-subgroups = ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Regimen', 'Days Since Starting Regimen']
+groupings = {'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Neighborhood Income Quintile'],
+             'Treatment': ['Entire Test Cohort', 'Regimen', 'Cancer Location', 'Days Since Starting Regimen']}
 padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
-subgroup_performance_plot(df, subgroups=subgroups, padding=padding, figsize=(12,24), save=True, save_dir=f'{output_path}/figures')
+for name, subgroups in groupings.items():
+    subgroup_performance_plot(df, target_event='ACU', subgroups=subgroups, padding=padding,
+                              figsize=(12,24), save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}')
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
 # Event Rate = 0.15 means true alarms occur 15% of the time
@@ -385,7 +373,7 @@ result
 # In[71]:
 
 
-eval_brooks_model.all_plots_for_single_target(algorithm='BRK', target_type='H', split='Test',
+eval_brooks_model.all_plots_for_single_target(algorithm='BRK', target_event='H', split='Test',
                                               n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
 
 
@@ -393,7 +381,7 @@ eval_brooks_model.all_plots_for_single_target(algorithm='BRK', target_type='H', 
 
 
 points = np.arange(0.05, 0.51, 0.05)
-eval_brooks_model.operating_points('BRK', points, metric='threshold', target_types=['H'], split='Test', save=False)
+eval_brooks_model.operating_points('BRK', points, metric='threshold', target_events=['H'], split='Test', save=False)
 
 
 # ### Compare with ENS
@@ -401,7 +389,7 @@ eval_brooks_model.operating_points('BRK', points, metric='threshold', target_typ
 # In[73]:
 
 
-eval_brooks_model.all_plots_for_single_target(algorithm='ENS', target_type='H', split='Test',
+eval_brooks_model.all_plots_for_single_target(algorithm='ENS', target_event='H', split='Test',
                                               n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
 
 
@@ -409,7 +397,7 @@ eval_brooks_model.all_plots_for_single_target(algorithm='ENS', target_type='H', 
 
 
 points = np.arange(0.05, 0.51, 0.05)
-eval_brooks_model.operating_points('ENS', points, metric='threshold', target_types=['H'], split='Test', save=False)
+eval_brooks_model.operating_points('ENS', points, metric='threshold', target_events=['H'], split='Test', save=False)
 
 
 # ## Hyperparameters
@@ -417,5 +405,5 @@ eval_brooks_model.operating_points('ENS', points, metric='threshold', target_typ
 # In[16]:
 
 
-from scripts.utility import get_hyperparameters
+from src.utility import get_hyperparameters
 get_hyperparameters(output_path, days=days)

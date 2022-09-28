@@ -19,9 +19,9 @@ import os
 sys.path.append(os.getcwd())
 import pandas as pd
 
-from scripts.config import (root_path, sas_folder2)
-from scripts.preprocess import (sas_to_csv)
-from scripts.spark import (extract_observation_units)
+from src.config import (root_path, sas_folder2)
+from src.preprocess import (sas_to_csv)
+from src.spark import (extract_observation_units)
                                 
 def main():
     # Please Refer to datadictionary.ices.on.ca
@@ -39,6 +39,8 @@ def main():
     sas_to_csv('odb_growth_factors') # ODB - Ontario Drug Benefit
     sas_to_csv('cohort_upd_17jan2022', new_name='combordity') # combordity
     sas_to_csv('dialysis_ohip', transfer_date='20220509') # dialysis
+    sas_to_csv('cohort_ohip', new_name='ohip', folder=sas_folder2) # OHIP: Ontario Health Insurance Plan database
+    sas_to_csv('cohort_incq', new_name='income', folder=sas_folder2) # neighborhood income quintile database
     
     # Extra - extract olis units
     extract_observation_units()

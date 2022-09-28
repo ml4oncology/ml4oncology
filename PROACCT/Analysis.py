@@ -33,54 +33,40 @@ import tqdm
 import pandas as pd
 pd.options.mode.chained_assignment = None
 import numpy as np
+import seaborn as sns
 import matplotlib.pyplot as plt
 
-from scripts.utility import (get_pearson_matrix)
-from scripts.visualize import (pearson_plot)
-from scripts.config import (root_path, regiments_folder, acu_folder, y3_cols)
-from scripts.preprocess import (clean_string)
-from scripts.prep_data import (PrepDataEDHD)
+from src.utility import (clean_string, get_pearson_matrix)
+from src.visualize import (pearson_plot)
+from src.config import (root_path, regiments_folder, acu_folder, max_chemo_date, y3_cols, diag_cols, diag_code_mapping)
+from src.preprocess import (filter_y3_data)
+from src.prep_data import (PrepDataEDHD)
 
 
 # # Age Demographic
 
-# In[8]:
+# In[3]:
 
 
 y3 = pd.read_csv(f'{root_path}/data/y3.csv')
-y3 = y3[y3_cols+['dthdate']]
-y3 = clean_string(y3, ['sex'])
-y3 = y3[~(y3['sex'] == 'O')]
-y3['bdate'] = pd.to_datetime(y3['bdate'])
-y3['dthdate'] = pd.to_datetime(y3['dthdate'])
+y3 = filter_y3_data(y3, include_death=True)
+y3 = y3[y3['bdate'].notnull() & (y3['sex'] != 'O')]
+y3['D_date'] = pd.to_datetime(y3['D_date'].fillna(max_chemo_date)) # to get age, fill missing death date using max_chemo_date
+y3['age'] = ((y3['D_date'] - y3['bdate']).dt.days / 365).astype(int)
+y3 = y3[y3['age'].between(18, 120)] # do not include patients over 120 years old today and patients under 18
 
 
-# In[9]:
+# In[4]:
 
 
-data = y3.copy()
-today = pd.to_datetime('today')
-data['dthdate'] = data['dthdate'].fillna(today) # to get age, fill missing death date using today's date
-born = data['bdate'].dt
-died = data['dthdate'].dt
-data['age'] = died.year - born.year - ((died.month) < (born.month))
-data = data[~((data['age'] > 110) & (data['dthdate'] == today))] # do not include patients over 110 years old today
-
-
-# In[10]:
-
-
-fig = plt.figure(figsize=(15, 4))
-for sex, group in data.groupby('sex'):
-    plt.hist(group['age'], alpha=0.5, label=sex, bins=110)
-plt.xticks(range(0,110,4))
-plt.legend()
-plt.show()
+fig, ax = plt.subplots(figsize=(10, 4))
+sns.histplot(y3, x='age', hue='sex', bins=y3['age'].nunique(), ax=ax)
+plt.grid()
 
 
 # # Target within 14, 30, 90, 180, 365 days - Label Distribution
 
-# In[42]:
+# In[5]:
 
 
 def get_distribution():
@@ -95,61 +81,70 @@ def get_distribution():
         df['ACU'+target_keyword] = df['ED'+target_keyword] | df['H'+target_keyword] 
         df['TR_ACU'+target_keyword] = df['TR_ED'+target_keyword] | df['TR_H'+target_keyword] 
         target_cols = df.columns[df.columns.str.contains(target_keyword)]
-        result = prep.get_label_distribution(df[target_cols])
+        result = df[target_cols].apply(pd.value_counts).T
         result.columns = pd.MultiIndex.from_arrays([(f'{days} days', f'{days} days'), ('False', 'True')])
         result.index = result.index.str.replace(target_keyword, '')
         results.append(result)
     return pd.concat(results, axis=1)
 
 
-# In[43]:
+# In[6]:
 
 
-get_distribution()
+dist = get_distribution()
+dist
 
 
 # # Month/Year Distribution
 
-# In[58]:
+# In[7]:
+
+
+month_labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+season_mapping = {'Winter': [12,1,2], 'Spring': [3,4,5], 'Summer': [6,7,8], 'Fall': [9,10,11]}
+season_mapping = {month: season for season, months in season_mapping.items() for month in months}
+
+
+# In[8]:
 
 
 systemic = pd.read_csv(f'{root_path}/data/systemic.csv')
-systemic['visit_date'] = pd.to_datetime(systemic['visit_date'])
+visit_date = pd.to_datetime(systemic['visit_date'])
+visit_year = visit_date.dt.year
+visit_month = visit_date.dt.month
+visit_season = visit_month.map(season_mapping)
 
 
-# In[59]:
+# In[9]:
 
 
-fig = plt.figure(figsize=(15, 4))
-labels, counts = np.unique(systemic['visit_date'].dt.month, return_counts=True)
-assert all(labels == np.arange(1, 13))
-labels=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-plt.bar(labels, counts, align='center')
+fig, ax = plt.subplots(figsize=(10, 4))
+sns.countplot(x=visit_month, ax=ax)
+ax.set(xlabel='Visit Month', ylabel='Count', xticklabels=month_labels)
 plt.show()
 
 
-# In[60]:
+# In[10]:
 
 
-mapping = {'Winter': [12,1,2], 'Spring': [3,4,5], 'Summer': [6,7,8], 'Fall': [9,10,11]}
-mapping = {month: season for season, months in mapping.items() for month in months}
-labels, counts = np.unique(systemic['visit_date'].dt.month.map(mapping), return_counts=True)
-plt.bar(labels[[1, 2, 0, 3]], counts[[1, 2, 0, 3]], align='center')
+fig, ax = plt.subplots(figsize=(10, 4))
+sns.countplot(x=visit_season, ax=ax)
+ax.set(xlabel='Visit Season', ylabel='Count')
 plt.show()
 
 
-# In[61]:
+# In[11]:
 
 
-fig = plt.figure(figsize=(15, 4))
-labels, counts = np.unique(systemic['visit_date'].dt.year, return_counts=True)
-plt.bar(labels, counts, align='center')
+fig, ax = plt.subplots(figsize=(10, 4))
+sns.countplot(x=visit_year, ax=ax)
+ax.set(xlabel='Visit Year', ylabel='Count')
 plt.show()
 
 
 # # All Lab Tests
 
-# In[6]:
+# In[12]:
 
 
 data = [# Alanine Aminotransferase
@@ -302,113 +297,69 @@ data = [# Alanine Aminotransferase
 
 # # Diagnostic Codes
 
-# In[98]:
-
-
-from scripts.preprocess import clean_string
-
-
-# In[99]:
+# In[119]:
 
 
 df = pd.read_csv(f'{root_path}/data/dad.csv', dtype=str)
-print(f'Completed Loading dad Dataset')
 df = clean_string(df, diag_cols)
-raw = pd.Series(df[diag_cols].values.flatten())
-raw = raw[~raw.isnull()]
-all_diag_codes = pd.Series(raw.unique())
+df[diag_cols].head(n=10)
+
+
+# In[ ]:
+
+
+all_diag_codes = df[diag_cols].values.flatten()
+all_diag_codes = set(all_diag_codes[pd.notnull(all_diag_codes)])
 print(f"Total number of unique diag codes: {len(all_diag_codes)}")
 
 
-# In[100]:
+# In[139]:
 
 
-for cause, mapping in diag_code_mapping.items():
-    X = pd.Series(mapping)
-    codes = X[X.isin(all_diag_codes)].values.tolist()
-    print(f"Total number of {cause} codes: {len(X)}")
-    print(f"Total number of {cause} codes in dad.csv: {len(codes)}")
-    print(f'{cause} codes in dad.csv: {codes}')
+for cause, cause_specific_diag_codes in diag_code_mapping.items():
+    codes = all_diag_codes.intersection(cause_specific_diag_codes)
+    print(f"Total number of {cause} specific diagnostic codes\n" +\
+          f"- in diag_code_mapping (that I curated and made): {len(cause_specific_diag_codes)}\n" +\
+          f"- in dad.csv that also matches with the codes in diag_code_mapping: {len(codes)}")
 
 
-# In[101]:
+# In[146]:
 
 
-ALL = all_diag_codes
-ALL[ALL.str.contains('K52')]
-
-
-# In[102]:
-
-
-freq_df = pd.DataFrame(ALL.str.len().value_counts(), columns=['Frequency of code lengths']).sort_index()
+# Checking Lengths of Diagnostic Codes
+ALL = pd.Series(list(all_diag_codes))
+freq_df = pd.DataFrame(ALL.str.len().value_counts(), columns=['Count of Unique Diagnostic Codes']).sort_index()
+freq_df.index.name = 'Length of Diagnostic Code'
 freq_df
 
 
-# In[103]:
+# In[150]:
 
 
-for code in X: 
-    tmp = ALL[ALL.str.contains(code)]
-    if any(tmp.str.len() > 4):
-        break
-tmp
-
-
-# In[104]:
-
-
-complete_diag_code_mapping = {}
-for cause, diag_codes in diag_code_mapping.items():
-    complete_diag_codes = []
-    for code in diag_codes:
-        complete_diag_codes += all_diag_codes[all_diag_codes.str.contains(code)].values.tolist()
-    complete_diag_code_mapping[cause] = complete_diag_codes
-
-
-# In[105]:
-
-
-for cause, diag_codes in complete_diag_code_mapping.items():
-    mask = False
-    for diag_col in diag_cols:
-        mask |= df[diag_col].isin(diag_codes)
-    df[f'{cause}_H'] = mask
-
-
-# In[106]:
-
-
-pd.DataFrame([df['INFX_H'].value_counts(), 
-              df['GI_H'].value_counts(), 
-              df['TR_H'].value_counts()])
-
-
-# In[107]:
-
-
-df[diag_cols]
+# Checking Lengths of Diagnostic Codes with Length Greater than 5
+example_diag_code_prefix= 'A05'
+ALL[ALL.str.contains(example_diag_code_prefix)]
 
 
 # # Analyze Correlations
 
-# In[76]:
+# In[13]:
 
 
 target_keyword = '_within_30days'
 output_path = f'{root_path}/{acu_folder}/models/within_30_days'
 
 
-# In[73]:
+# In[16]:
 
 
 prep = PrepDataEDHD(adverse_event='acu')
 model_data = prep.get_data(target_keyword, missing_thresh=80)
-model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.05, upper_percentile=0.95)
-pearson_matrix = get_pearson_matrix(df, target_keyword, output_path)
+model_data = prep.clip_outliers(model_data, lower_percentile=0.05, upper_percentile=0.95)
+pearson_matrix = get_pearson_matrix(model_data, target_keyword, output_path)
 
 
-# In[77]:
+# In[17]:
 
 
 pearson_matrix = pd.read_csv(f'{output_path}/tables/pearson_matrix.csv')
@@ -416,13 +367,13 @@ pearson_matrix = pearson_matrix.set_index('index')
 pearson_matrix.style.background_gradient(cmap='Greens')
 
 
-# In[78]:
+# In[18]:
 
 
 pearson_plot(pearson_matrix, output_path)
 
 
-# In[79]:
+# In[19]:
 
 
 print("Variables with high pearson correlation to any of the targets")

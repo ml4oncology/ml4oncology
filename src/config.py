@@ -16,18 +16,21 @@ TERMS OF USE:
 """
 # Paths
 root_path = 'XXXXX'
-share_path = 'XXXXXX'
-sas_folder = 'XXXXXX'
-sas_folder2 = 'XXXXXXX'
-regiments_folder = 'XXXXXXX'
+share_path = 'XXXXX'
+sas_folder = 'XXXXX'
+sas_folder2 = 'XXXXX'
+regiments_folder = 'XXXXX'
 cyto_folder = 'CYTOPENIA' # Cytopenia folder = 'CYTOPENIA'
 acu_folder = 'PROACCT' # Acute care use folder = 'PROACCT' (PRediction of Acute Care use during Cancer Treatment)
 can_folder = 'CAN' # Cisplatin-associated nephrotoxicity folder = 'CAN'
 symp_folder = 'SYMPTOM' # Symptom Deteroriation folder = 'SYMPTOM'
 death_folder = 'DEATH' # Death folder = 'DEATH'
+reco_folder = 'TRREKO' # Recommender folder = 'TRREKO' (TReatment RECOmmender)
 
-# Date to temporally split data into developement and test cohort
-split_date = '2017-06-30'
+# Dates
+split_date = '2017-06-30' # date to temporally split data into developement and test cohort
+min_chemo_date = '2014-07-01' # beginning date of chemo cohort
+max_chemo_date = '2020-06-30' # final date of chemo cohort
 
 # Main Blood Types and Low Blood Count Thresholds
 blood_types = {'neutrophil': {'cytopenia_threshold': 1.5,  # cytopenia = low blood count
@@ -122,51 +125,105 @@ all_observations = { '1742-6': 'alanine_aminotransferase',
                      '14196-0': 'reticulocyte',
                      '2951-2': 'sodium'}
 observation_cols = [f'baseline_{observation}_count' for observation in set(all_observations.values())]
+observation_change_cols = [col.replace('count', 'change') for col in observation_cols]
 
 # Cancer Location/Cancer Type
-# TODO: remove this legacy code
-cancer_location_mapping = { 'C421': 'Bone Marrow',
-                            'C209': 'Rectum',
-                            'C341': 'Lung (Upper Lobe)',
-                            'C779': 'Lymph Node',
-                            'C569': 'Ovary',
-                            'C187': 'Colon (Sigmoid)', # sigmoid colon: last section of the bowel - the part that attaches to the rectum
-                            'C619': 'Prostate Gland',
-                            'C502': 'Breast (Upper-inner Quadrant)',
-                            'C504': 'Breast (Upper-outer Quadrant)',
-                            'C508': 'Breast (Overlapping Lesion)', # lesion: an area of tissue that has been damaged through injury/disease
-                            'C180': 'Colon (Cecum)', # cecum: pouch that forms the first part of the large intestine
-                            'C541': 'Endometrium', # mucous membrane lining the uterus
-                            'C250': 'Pancreas (Head)'}
+# legacy code
+cancer_code_specific_mapping = {'C421': 'Bone Marrow',
+                                'C209': 'Rectum',
+                                'C341': 'Lung (Upper Lobe)',
+                                'C779': 'Lymph Node',
+                                'C569': 'Ovary',
+                                'C187': 'Colon (Sigmoid)', # sigmoid colon: last section of the bowel - the part that attaches to the rectum
+                                'C619': 'Prostate Gland',
+                                'C502': 'Breast (Upper-inner Quadrant)',
+                                'C504': 'Breast (Upper-outer Quadrant)',
+                                'C508': 'Breast (Overlapping Lesion)', # lesion: an area of tissue that has been damaged through injury/disease
+                                'C180': 'Colon (Cecum)', # cecum: pouch that forms the first part of the large intestine
+                                'C541': 'Endometrium', # mucous membrane lining the uterus
+                                'C250': 'Pancreas (Head)',
+                                '81403': 'Adenocarcinoma', # originate in mucous glands inside of organs (e.g. lungs, colon, breasts)
+                                '85003': 'Breast Cancer (IDC)', # IDC: Invasive Ductal Carcinoma
+                                                               # originate in milk duct and invade breast tissue outside the duct
+                                '96803': 'Malignant Lymphoma (DLBCL)', # DLBCL: Diffuse Large B-cell Lymphoma
+                                                                      # originate  in white blood cell called lymphocytes
+                                '97323': 'Plasma Cell Cancer (MM)', # MM: Multiple Myeloma
+                                '84413': 'Ovarian/Pancreatic Cancer (SC)', # SC: Serous Cystadenocarcinoma
+                                                                          # primarily in the ovary, rarely in the pancreas
+                                '80413': 'Epithelial Cancer (Small Cell)', # primarily in the lung, sometimes in cervix, prostate, GI tract 
+                                '84803': 'Colon Cancer (MA)', # MA: Mucinous Adenocarcinoma
+                                '83803': 'Uterine Cancer (EA)', # EA: Endometrioid Adenocarcinoma
+                                '80703': 'Skin Cancer (SCC)', # SCC: Squamous Cell Carcinoma
+                                '80103': 'Epithelial Cancer (NOS)', # NOS: Not Otherwise Specified
+                                '94403': 'Brain/Spinal Cancer (GBM)', # GBM: Glioblastoma
+                                '81203': 'Tansitional Cell Cancer'} # Can occur in kidney, bladder, ureter, urethra, urachus
 
-cancer_type_mapping = {'81403': 'Adenocarcinoma', # originate in mucous glands inside of organs (e.g. lungs, colon, breasts)
-                       '85003': 'Breast Cancer (IDC)', # IDC: Invasive Ductal Carcinoma
-                                                       # originate in milk duct and invade breast tissue outside the duct
-                       '96803': 'Malignant Lymphoma (DLBCL)', # DLBCL: Diffuse Large B-cell Lymphoma
-                                                              # originate  in white blood cell called lymphocytes
-                       '97323': 'Plasma Cell Cancer (MM)', # MM: Multiple Myeloma
-                       '84413': 'Ovarian/Pancreatic Cancer (SC)', # SC: Serous Cystadenocarcinoma
-                                                                  # primarily in the ovary, rarely in the pancreas
-                       '80413': 'Epithelial Cancer (Small Cell)', # primarily in the lung, sometimes in cervix, prostate, GI tract 
-                       '84803': 'Colon Cancer (MA)', # MA: Mucinous Adenocarcinoma
-                       '83803': 'Uterine Cancer (EA)', # EA: Endometrioid Adenocarcinoma
-                       '80703': 'Skin Cancer (SCC)', # SCC: Squamous Cell Carcinoma
-                       '80103': 'Epithelial Cancer (NOS)', # NOS: Not Otherwise Specified
-                       '94403': 'Brain/Spinal Cancer (GBM)', # GBM: Glioblastoma
-                       '81203': 'Tansitional Cell Cancer'} # Can occur in kidney, bladder, ureter, urethra, urachus
-
-cancer_code_mapping = {'C16': 'Stomach',
+cancer_code_mapping = {'C00': 'Lip',
+                       'C01': 'Tongue - Base',
+                       'C02': 'Tongue - Other',
+                       'C03': 'Gum',
+                       'C04': 'Mouth - Floor',
+                       'C05': 'Palate',
+                       'C06': 'Mouth - Other',
+                       'C07': 'Parotid Gland',
+                       'C08': 'Salivary Gland - Other',
+                       'C09': 'Tonsil',
+                       'C10': 'Oropharynx',
+                       'C11': 'Nasopharynx',
+                       'C12': 'Pyriform Sinus',
+                       'C13': 'Hypopharynx',
+                       'C14': 'Pharynx - Other', # and other lip, oral cavity sites
+                       'C15': 'Esophagus',
+                       'C16': 'Stomach',
+                       'C17': 'Small Intestine',
                        'C18': 'Colon',
                        'C19': 'Rectosigmoid Junction',
                        'C20': 'Rectum',
+                       'C21': 'Anus', # and anal canal
+                       'C22': 'Liver', # and intrahepatic bile ducts
+                       'C23': 'Gallbladder',
+                       'C24': 'Biliary Tract - Other',
                        'C25': 'Pancreas',
-                       'C34': 'Lung/Bronchus',
+                       'C26': 'Digestive Organs - Other',
+                       'C30': 'Nasal Cavity', # and middle ear
+                       'C31': 'Accessory Sinuses',
+                       'C32': 'Larynx',
+                       'C33': 'Trachea',
+                       'C34': 'Lung', # and bronchus
+                       'C37': 'Thymus',
+                       'C38': 'Heart', # and mediastinum, pleura
+                       'C40': 'Bones - Limbs', # and joints, articular cartilage of limbs
+                       'C41': 'Bones - Other', # and other joints, articular cartilage sites
+                       'C44': 'Skin',
+                       'C47': 'Peripheral Nerves', # and autonomic nervous system
+                       'C48': 'Peritoneum', # and retroperitoneum
+                       'C49': 'Soft Tissue', # and connective, subcutaneous tissues
                        'C50': 'Breast', 
+                       'C51': 'Vulva',
+                       'C52': 'Vagina',
                        'C53': 'Cervix Uteri',
                        'C54': 'Corpus Uteri', # body of uterus
+                       'C55': 'Uterus',
                        'C56': 'Ovary',
+                       'C57': 'Female Genital Organ - Other',
+                       'C58': 'Placenta',
+                       'C60': 'Penis',
                        'C61': 'Prostate Gland',
+                       'C62': 'Testis',
+                       'C63': 'Male Genital Organ - Other',
+                       'C64': 'Kidney',
+                       'C65': 'Renal Pelvis',
+                       'C66': 'Ureter',
                        'C67': 'Bladder',
+                       'C68': 'Urinary Organs - Other',
+                       'C69': 'Eye', # and adnexa
+                       'C71': 'Brain',
+                       'C72': 'Spinal Cord', # and cranial nerves, central nervous system
+                       'C73': 'Thyroid Gland',
+                       'C74': 'Adrenal Gland', 
+                       'C75': 'Endocrine Gland - Other', 
+                       'C76': 'Other Sites', # any other sites that were left out
+                       'C80': 'Unknown Sites', # unknown primary sites
                        '804': 'Epithelial',
                        '807': 'Squamous Cell',
                        '814': 'Adenoma',
@@ -174,6 +231,12 @@ cancer_code_mapping = {'C16': 'Stomach',
                        '850': 'Ductal',
                        '852': 'Lobular'}
 cancer_location_exclude = ['C77', 'C42'] # exclude blood cancers
+cancer_grouping = {'Head and Neck': ['C00', 'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 
+                                     'C09', 'C10', 'C12', 'C13', 'C14', 'C32'],
+                   'Biliary': ['C23', 'C24'],
+                   'Connective Tissue': ['C40', 'C41', 'C44', 'C49'],
+                   'Uterus': ['C54', 'C55']}
+palliative_cancer_grouping = {'Colorectal': ['C18', 'C19', 'C20']} # can group together only when intent is palliative
 
 # Drugs
 din_exclude = ['02441489', '02454548', '01968017', '02485575', '02485583', '02485656', '02485591',
@@ -196,7 +259,6 @@ intent_mapping = {'A': 'adjuvant', # applied after initial treatment for cancer 
 systemic_cols = ['ikn', 'regimen', 'visit_date', 
                  'body_surface_area', # m^2
                  'intent_of_systemic_treatment',
-                 'line_of_therapy', # the nth different chemotherapy regimen taken
                 ]
 
 y3_cols = ['ikn', 'sex', 'bdate',
@@ -326,14 +388,14 @@ event_map = {'H':  {'event_name': 'hospitalization',
                     'event_cause_cols': [f'{cause}_ED' for cause in diag_code_mapping]}}
 
 # Clean Variable Names (ORDER MATTERS!)
-clean_variable_mapping = {'chemo': 'chemotherapy', 
-                          'prev': 'previous', 
-                          'baseline_': '', 
-                          'num': 'number_of', 
+clean_variable_mapping = {'baseline_': '', 
                           '_count': '',
+                          'prev': 'previous', 
+                          'num': 'number_of', 
+                          'chemo': 'chemotherapy', 
                           'lhin_cd': 'local health integration network', 
-                          'curr_topog_cd': 'cancer_location', 
-                          'curr_morph_cd': 'cancer_type', 
+                          'curr_topog_cd': 'cancer_topography_ICD-0-3', 
+                          'curr_morph_cd': 'cancer_morphology_ICD-0-3', 
                           'prfs': 'patient_reported_functional_status',
                           'eGFR': 'estimated_glomerular_filtration_rate',
                           'ODBGF': 'growth_factor',
@@ -343,17 +405,18 @@ clean_variable_mapping = {'chemo': 'chemotherapy',
                           'INFX': 'due_to_fever_and_infection', 
                           'TR': 'due_to_treatment_related', 
                           'GI': 'due_to_gastrointestinal_toxicity',
-                          'OTH': 'Other',
+                          'OTH': 'other',
                           'H': 'hospitalization', 
                           'ED': 'ED_visit'}
 
 # Variable Groupings
 # {group: keywords} - Any variables whose name contains these keywords are assigned into that group
+# NOTE: ORDER MATTERS! cisplatin_dosage gets grouped with Demographic first (because of dosAGE), then Treatment
 variable_groupings_by_keyword = {'Acute care use': 'INFX|GI|TR|prev_H|prior_H|prev_ED|prior_ED',
                                  'Cancer': 'curr_topog_cd|curr_morph_cd', 
-                                 'Demographic': 'age|body|immigrant|lhin|sex|english',
+                                 'Demographic': 'age|body|income|immigrant|lhin|sex|english|diabetes|hypertension',
                                  'Laboratory': 'baseline',
-                                 'Treatment': 'visit_month|regimen|intent|chemo|therapy|cycle',
+                                 'Treatment': 'visit_month|regimen|intent|chemo|therapy|cycle|cisplatin|given|transfusion',
                                  'Symptoms': '|'.join(symptom_cols)}
 
 # Acute Kidney Injury
@@ -413,7 +476,7 @@ bayesopt_param = {'LR': {'init_points': 3, 'n_iter': 10},
                   'XGB': {'init_points': 5, 'n_iter': 25},
                   'RF': {'init_points': 3, 'n_iter': 20}, 
                   'NN': {'init_points': 5, 'n_iter': 50},
-                  'RNN': {'init_points': 3, 'n_iter': 70},
+                  'RNN': {'init_points': 3, 'n_iter': 50},
                   'ENS': {'init_points': 4, 'n_iter': 30},
                   # Baseline Models
                   'LOESS': {'init_points': 3, 'n_iter': 10},

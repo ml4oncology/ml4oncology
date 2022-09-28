@@ -23,11 +23,11 @@ import pandas as pd
 pd.options.mode.chained_assignment = None
 import numpy as np
 
-from scripts.utility import (load_ml_model, load_ensemble_weights)
-from scripts.config import (root_path, cyto_folder, acu_folder, can_folder, death_folder,
-                            split_date, blood_types, variable_groupings_by_keyword)
-from scripts.prep_data import (PrepDataCYTO, PrepDataEDHD, PrepDataCAN)
-from scripts.train import (TrainML, TrainRNN)
+from src.utility import (load_ml_model, load_ensemble_weights)
+from src.config import (root_path, cyto_folder, acu_folder, can_folder, death_folder,
+                        split_date, blood_types, variable_groupings_by_keyword)
+from src.prep_data import (PrepDataCYTO, PrepDataEDHD, PrepDataCAN)
+from src.train import (TrainML, TrainRNN)
 
 from sklearn.metrics import roc_auc_score
 from sklearn.inspection import permutation_importance
@@ -59,7 +59,7 @@ class PermImportance:
         
         self.ikns = self.X_test.pop('ikn') # patient id column
         self.dummy_cols = self.X_test.columns
-        self.target_types = self.Y_test.columns.tolist()
+        self.target_events = self.Y_test.columns.tolist()
         self.params =  {'n_repeats': 5, 'random_state': 42}
         
         if preload:
@@ -79,11 +79,11 @@ class PermImportance:
     def load_data(self):
         raise NotImplementedError
         
-    def clean_y(self):
-        raise NotImplementedError
-        
-    def get_groupings(self):
-        raise NotImplementedError
+    def clean_y(self, Y):
+        """
+        You can overwrite this to do custom operations
+        """
+        return Y
         
     def get_data_splits(self, data, include_ikn=False):
         kwargs = {'target_keyword': self.target_keyword, 'split_date': self.split_date}
@@ -96,7 +96,6 @@ class PermImportance:
         
     def get_data(self):
         data = self.load_data()
-        data, clip_thresholds = self.prep.clip_outliers(data)
         
         # original feature data splits
         orig_data_splits = self.get_data_splits(data)
@@ -152,7 +151,7 @@ class PermImportance:
                 X = X[self.dummy_cols]
                 pred_prob = self.predict(algorithm, model, X)
                 importances.append(orig_scores - roc_auc_score(self.Y_test, pred_prob, average=None))
-            result.loc[col, self.target_types] = np.mean(importances, axis=0)
+            result.loc[col, self.target_events] = np.mean(importances, axis=0)
             logging.info(f'Successfully computed perm feature importance scores for {col}')
         result.to_csv(f'{self.output_path}/perm_importance/{algorithm}_feature_importance.csv', index_label='index')
         
@@ -166,7 +165,7 @@ class PermImportance:
         pred_prob = self.predict(algorithm, model, self.X_test)
         orig_scores = roc_auc_score(self.Y_test, pred_prob, average=None)
             
-        for group, keyword in self.get_groupings().items():
+        for group, keyword in variable_groupings_by_keyword.items():
             permute_cols = self.dummy_cols[self.dummy_cols.str.contains(keyword)]
             importances = []
             for i in range(self.params['n_repeats']):
@@ -174,7 +173,7 @@ class PermImportance:
                 X[permute_cols] = X[permute_cols].sample(frac=1, random_state=self.params['random_state']+i).set_index(X.index)
                 pred_prob = self.predict(algorithm, model, X)
                 importances.append(orig_scores - roc_auc_score(self.Y_test, pred_prob, average=None))
-            result.loc[group, self.target_types] = np.mean(importances, axis=0)
+            result.loc[group, self.target_events] = np.mean(importances, axis=0)
             logging.info(f'Successfully computed perm group importance scores for {group}')
         result.to_csv(f'{self.output_path}/perm_importance/{algorithm}_group_importance.csv', index_label='index')
             
@@ -187,34 +186,17 @@ class PermImportanceCYTO(PermImportance):
         super().__init__(output_path, split_date=split_date)
         
     def load_data(self):
-        return self.prep.get_data(include_first_date=True, missing_thresh=75)
+        return self.prep.get_data(missing_thresh=75)
     
-    def clean_y(self, Y):
-        return Y
-    
-    def get_groupings(self):
-        return variable_groupings_by_keyword
-    
-class PermImportanceEDHD(PermImportance):
+class PermImportancePROACCT(PermImportance):
     """
+    Permutation importance for acute care use (ED/H)
     ED - Emergency Department visits
     H - Hospitalizations
-    D - Death
-    
-    Permutation importance for acute care use (ED/H) or death (D)
     """
-    def __init__(self, output_path, adverse_event='acu', days=None):
-        self.adverse_event = adverse_event
-        if self.adverse_event not in {'acu', 'death'}: 
-            raise ValueError('advese_event must be either acu (acute case use) or death')
-        
-        if self.adverse_event == 'acu':
-            if days is None: raise ValueError('days can not be None for target acu')
-            self.target_keyword = f'_within_{days}days'
-        elif self.adverse_event == 'death':
-            self.target_keyword = 'Mortality'
-            
-        self.prep = PrepDataEDHD(self.adverse_event)
+    def __init__(self, output_path, days=30):
+        self.target_keyword = f'_within_{days}days'
+        self.prep = PrepDataEDHD('acu')
         super().__init__(output_path)
     
     def load_data(self):
@@ -224,8 +206,14 @@ class PermImportanceEDHD(PermImportance):
         Y.columns = Y.columns.str.replace(self.target_keyword, '')
         return Y
     
-    def get_groupings(self):
-        return variable_groupings_by_keyword
+class PermImportanceDEATH(PermImportance):
+    def __init__(self, output_path):
+        self.target_keyword = 'Mortality'    
+        self.prep = PrepDataEDHD('death')
+        super().__init__(output_path, split_date=split_date)
+    
+    def load_data(self):
+        return self.prep.get_data(self.target_keyword, missing_thresh=75, treatment_intent=['P'])
     
 class PermImportanceCAN(PermImportance):
     """Permutation importance for cisplatin-induced nephrotoxicity
@@ -236,13 +224,7 @@ class PermImportanceCAN(PermImportance):
         super().__init__(output_path, split_date=split_date)
         
     def load_data(self):
-        return self.prep.get_data(include_first_date=True, missing_thresh=80)
-    
-    def clean_y(self, Y):
-        return Y
-    
-    def get_groupings(self):
-        return variable_groupings_by_keyword
+        return self.prep.get_data(missing_thresh=80)
 
 def main(pm, algorithm='ENS', permute_group=False):
     if permute_group:
@@ -257,12 +239,12 @@ def main_cyto(permute_group=False):
 
 def main_acu(days=30, permute_group=False):
     output_path = f'{root_path}/{acu_folder}/models/within_{days}_days'
-    pm = PermImportanceEDHD(output_path, adverse_event='acu', days=days)
+    pm = PermImportancePROACCT(output_path, days=days)
     main(pm, permute_group=permute_group)
     
 def main_death(permute_group=False):
     output_path = f'{root_path}/{death_folder}/models'
-    pm = PermImportanceEDHD(output_path, adverse_event='death')
+    pm = PermImportanceDEATH(output_path)
     main(pm, permute_group=permute_group)
         
 def main_caaki(permute_group=False):

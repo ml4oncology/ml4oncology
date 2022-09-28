@@ -36,17 +36,17 @@ pd.options.mode.chained_assignment = None
 import numpy as np
 from functools import partial
 
-from scripts.config import (root_path, regiments_folder, can_folder, all_observations)
-from scripts.spark import (preprocess_olis_data)
-from scripts.preprocess import (split_and_parallelize, 
-                                load_included_regimens, load_chemo_df,
-                                filter_systemic_data, filter_by_drugs, process_systemic_data,
-                                filter_y3_data, process_cancer_and_demographic_data, 
-                                filter_immigration_data, process_immigration_data, filter_combordity_data, 
-                                filter_dialysis_data, process_dialysis_data,
-                                olis_worker, closest_measurement_worker, postprocess_olis_data,
-                                filter_esas_data, get_esas_responses, postprocess_esas_responses,
-                                filter_body_functionality_data, body_functionality_worker)
+from src.config import (root_path, regiments_folder, can_folder, all_observations)
+from src.spark import (preprocess_olis_data)
+from src.utility import (load_included_regimens, load_chemo_df,
+                         split_and_parallelize, clean_string)
+from src.preprocess import (filter_systemic_data, filter_by_drugs, process_systemic_data,
+                            filter_y3_data, process_cancer_and_demographic_data, 
+                            filter_immigration_data, process_immigration_data, filter_combordity_data, 
+                            filter_dialysis_data, process_dialysis_data,
+                            olis_worker, closest_measurement_worker, postprocess_olis_data,
+                            filter_esas_data, get_esas_responses, postprocess_esas_responses,
+                            filter_body_functionality_data, body_functionality_worker)
 
 
 # In[3]:
@@ -75,7 +75,7 @@ regimens_renamed
 
 # ### Include features from systemic (chemo) dataset
 
-# In[8]:
+# In[5]:
 
 
 systemic = pd.read_csv(f'{root_path}/data/systemic.csv')
@@ -86,7 +86,7 @@ print(f"Chemotherapy Cohort from {systemic['visit_date'].min()} to {systemic['vi
 print(f"Size of data = {len(systemic)}")
 
 
-# In[9]:
+# In[6]:
 
 
 systemic = filter_by_drugs(systemic, drug='cisplatin', verbose=True)
@@ -94,7 +94,7 @@ print(f"Number of patients = {systemic['ikn'].nunique()}")
 print(f"Size of data = {len(systemic)}")
 
 
-# In[10]:
+# In[7]:
 
 
 systemic = process_systemic_data(systemic)
@@ -104,7 +104,7 @@ print(f"Number of unique regiments = {systemic['regimen'].nunique()}")
 print(f"Size of data = {len(systemic)}")
 
 
-# In[7]:
+# In[8]:
 
 
 systemic = pd.read_csv(f'{main_dir}/data/systemic.csv', dtype={'ikn': str})
@@ -132,7 +132,7 @@ print(f"Size of data {len(systemic)}")
 
 # ### Include features from y3 (cancer and demographic) dataset
 
-# In[8]:
+# In[9]:
 
 
 col_arrangement = ['ikn', 'regimen', 'visit_date', 'next_visit_date', 'chemo_interval', 'days_since_starting_chemo', 'days_since_last_chemo', 
@@ -140,7 +140,7 @@ col_arrangement = ['ikn', 'regimen', 'visit_date', 'next_visit_date', 'chemo_int
                    'curr_morph_cd', 'curr_topog_cd', 'age', 'sex', 'body_surface_area', 'cisplatin_dosage']
 
 
-# In[9]:
+# In[10]:
 
 
 # Extract and Preprocess the Y3 Data
@@ -150,7 +150,7 @@ print(f"Number of patients in y3 = {y3['ikn'].nunique()}")
 print(f"Number of patients in y3 and systemic = {y3['ikn'].isin(systemic['ikn']).sum()}")
 
 
-# In[10]:
+# In[11]:
 
 
 # Process the Y3 and Systemic Data
@@ -162,9 +162,20 @@ print(f"Number of female patients = {chemo_df.loc[chemo_df['sex'] == 'F', 'ikn']
 print(f"Number of male patients = {chemo_df.loc[chemo_df['sex'] == 'M', 'ikn'].nunique()}")
 
 
+# ### Include features from income dataset
+
+# In[14]:
+
+
+income = pd.read_csv(f'{root_path}/data/income.csv')
+income = clean_string(income, ['ikn', 'incquint'])
+income = income.rename(columns={'incquint': 'neighborhood_income_quintile'})
+chemo_df = pd.merge(chemo_df, income, on='ikn', how='left')
+
+
 # ### Include features from immigration dataset
 
-# In[11]:
+# In[15]:
 
 
 # Extract and Preprocess the Immigration Data
@@ -177,7 +188,7 @@ chemo_df = process_immigration_data(chemo_df, immigration)
 
 # ### Include features from combordity dataset
 
-# In[12]:
+# In[16]:
 
 
 # Extract and Preprocess the Combordity Data
@@ -192,7 +203,7 @@ for col in ['hypertension', 'diabetes']:
 
 # ### Include features from dialysis dataset
 
-# In[13]:
+# In[17]:
 
 
 # Extract and Preprocess the Dialysis Data
@@ -203,7 +214,7 @@ dialysis = filter_dialysis_data(dialysis)
 chemo_df = process_dialysis_data(chemo_df, dialysis)
 
 
-# In[14]:
+# In[18]:
 
 
 chemo_df.to_csv(f'{main_dir}/data/chemo_processed.csv', index=False)
@@ -227,10 +238,10 @@ print(f"Number of rows now: {len(chemo_df)}")
 print(f"Number of patients now: {chemo_df['ikn'].nunique()}")
 
 
-# In[17]:
+# In[21]:
 
 
-get_ipython().run_cell_magic('time', '', "# Preprocess the Raw OLIS Data using PySpark\npreprocess_olis_data(f'{main_dir}/data', set(chemo_df['ikn']))")
+get_ipython().run_cell_magic('time', '', "# Preprocess the Raw OLIS Data using PySpark\npreprocess_olis_data(f'{main_dir}/data', set(chemo_df['ikn']))\n")
 
 
 # In[7]:
@@ -252,23 +263,23 @@ result = pd.DataFrame(result, columns=['observation_code', 'chemo_idx', 'days_af
 result.to_csv(f'{main_dir}/data/olis2.csv', index=False)
 
 
-# In[8]:
+# In[7]:
 
 
 # Process the Olis Features
 olis_df = pd.read_csv(f'{main_dir}/data/olis2.csv')
-mapping, missing_df = postprocess_olis_data(chemo_df, olis_df, observations=all_observations, 
+chemo_df, mapping, missing_df = postprocess_olis_data(chemo_df, olis_df, observations=all_observations, 
                                             days_range=range(earliest,latest+1))
 missing_df
 
 
-# In[9]:
+# In[8]:
 
 
 mapping[scr_obs_code].to_csv(f'{main_dir}/data/serum_creatinine.csv', index=False)
 
 
-# In[10]:
+# In[9]:
 
 
 # Extract the closest Serum Creatinine measurement 9-24 months after treatment
@@ -284,7 +295,7 @@ result = pd.DataFrame(result, columns=['index', 'days_after_chemo', 'next_SCr_co
 result.to_csv(f'{main_dir}/data/olis_scr2.csv', index=False)
 
 
-# In[11]:
+# In[10]:
 
 
 # Process the serum creatinine measruements
@@ -295,7 +306,7 @@ chemo_df = chemo_df.join(olis_scr['next_SCr_count'], how='left')
 
 # ### Include features from esas (symptom questionnaire) dataset
 
-# In[63]:
+# In[13]:
 
 
 # Preprocess the Questionnaire Data
@@ -304,17 +315,17 @@ esas = filter_esas_data(esas, chemo_df['ikn'])
 esas.to_csv(f'{main_dir}/data/esas.csv', index=False)
 
 
-# In[64]:
+# In[14]:
 
 
 # Extract the Questionnaire Features
 esas = pd.read_csv(f'{main_dir}/data/esas.csv', dtype=str)
 result = get_esas_responses(chemo_df, esas, processes=processes)
-result = pd.DataFrame(result, columns=['index', 'symptom', 'severity'])
+result = pd.DataFrame(result, columns=['index', 'symptom', 'severity', 'survey_date'])
 result.to_csv(f'{main_dir}/data/esas2.csv', index=False)
 
 
-# In[12]:
+# In[11]:
 
 
 # Process the Questionnaire Responses
@@ -327,7 +338,7 @@ chemo_df = chemo_df.join(esas_df, how='left')
 
 # ### Include features from ecog and prfs (body functionality grade) dataset
 
-# In[66]:
+# In[16]:
 
 
 for dataset in ['ecog', 'prfs']:
@@ -339,23 +350,24 @@ for dataset in ['ecog', 'prfs']:
     filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(bf['ikn'])] # filter out patients not in dataset
     worker = partial(body_functionality_worker, dataset=dataset)
     result = split_and_parallelize((filtered_chemo_df, bf), worker, processes=processes)
-    result = pd.DataFrame(result, columns=['index', f'{dataset}_grade'])
+    result = pd.DataFrame(result, columns=['index', f'{dataset}_grade', 'survey_date'])
     result.to_csv(f'{main_dir}/data/{dataset}.csv', index=False)
 
 
-# In[13]:
+# In[12]:
 
 
 for dataset in ['ecog', 'prfs']:
     # Process the results
     bf = pd.read_csv(f'{main_dir}/data/{dataset}.csv')
     bf = bf.set_index('index')
+    bf = bf.rename(columns={'survey_date': f'{dataset}_grade_survey_date'})
 
     # put result in chemo_df
     chemo_df = chemo_df.join(bf, how='left') # ALT WAY: pd.merge(chemo_df, ecog, left_index=True, right_index=True, how='left')
 
 
-# In[14]:
+# In[13]:
 
 
 chemo_df.to_csv(f'{main_dir}/data/model_data.csv', index=False)
@@ -368,7 +380,7 @@ chemo_df.to_csv(f'{main_dir}/data/model_data.csv', index=False)
 # In[16]:
 
 
-from scripts.config import cisplatin_dins as keep_dins, cisplatin_cco_drug_code as keep_cco_drug_code
+from src.config import cisplatin_dins as keep_dins, cisplatin_cco_drug_code as keep_cco_drug_code
 
 df = systemic[systemic['din'].isin(keep_dins) | systemic['cco_drug_code'].isin(keep_cco_drug_code)]
 df['drug'] = 'cisplatin'

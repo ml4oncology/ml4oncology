@@ -17,7 +17,7 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[5]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -26,30 +26,29 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[5]:
+# In[6]:
 
 
-import os
 import tqdm
-import pickle
 import pandas as pd
 pd.options.mode.chained_assignment = None
+pd.set_option('display.max_columns', 150)
+pd.set_option('display.max_rows', 150)
 import numpy as np
+import seaborn as sns
 import matplotlib.pyplot as plt
-from collections import defaultdict
-from sklearn.metrics import (recall_score)
 
-from scripts.utility import (initialize_folders, load_predictions,
-                             get_nunique_entries, get_nmissing, 
-                             data_characteristic_summary, feature_summary, subgroup_performance_summary)
-from scripts.visualize import (tree_plot, importance_plot, subgroup_performance_plot)
-from scripts.config import (root_path, cyto_folder, split_date, blood_types)
-from scripts.prep_data import (PrepDataCYTO)
-from scripts.train import (TrainML, TrainRNN, TrainENS)
-from scripts.evaluate import (Evaluate)
+from src.utility import (initialize_folders, load_predictions,
+                         get_nunique_entries, get_nmissing)
+from src.summarize import (data_characteristic_summary, feature_summary, subgroup_performance_summary)
+from src.visualize import (tree_plot, importance_plot, subgroup_performance_plot)
+from src.config import (root_path, cyto_folder, split_date, blood_types)
+from src.prep_data import (PrepDataCYTO)
+from src.train import (TrainML, TrainRNN, TrainENS)
+from src.evaluate import (Evaluate)
 
 
-# In[6]:
+# In[7]:
 
 
 # config
@@ -60,48 +59,48 @@ initialize_folders(output_path)
 
 # # Prepare Data for Model Training
 
-# In[7]:
+# In[8]:
 
 
 # Preparing Data for Model Input
 prep = PrepDataCYTO()
 
 
-# In[8]:
+# In[5]:
 
 
-model_data = prep.get_data(include_first_date=True, verbose=True)
+model_data = prep.get_data(verbose=True)
 model_data
 
 
-# In[9]:
+# In[6]:
 
 
 sorted(model_data.columns.tolist())
 
 
-# In[10]:
+# In[7]:
 
 
-model_data['first_visit_date'].dt.year.value_counts()
+prep.event_dates['first_visit_date'].dt.year.value_counts()
 
 
-# In[11]:
+# In[8]:
 
 
 get_nunique_entries(model_data)
 
 
-# In[12]:
+# In[9]:
 
 
 get_nmissing(model_data, verbose=True)
 
 
-# In[13]:
+# In[9]:
 
 
-model_data = prep.get_data(include_first_date=True, missing_thresh=75, verbose=True)
+model_data = prep.get_data(missing_thresh=75, verbose=True)
 print(f"Size of model_data: {model_data.shape}")
 print(f"Number of unique patients: {model_data['ikn'].nunique()}")
 print(f'Non-missing entries: {model_data.notnull().sum().sum()}')
@@ -110,31 +109,24 @@ for blood_type, blood_info in blood_types.items():
     print(f"Number of unique patients that had {blood_info['cytopenia_name']} before treatment session: {N}")
 
 
-# In[14]:
-
-
-model_data, clip_thresholds = prep.clip_outliers(model_data, lower_percentile=0.001, upper_percentile=0.999)
-clip_thresholds
-
-
-# In[15]:
+# In[10]:
 
 
 # NOTE: any changes to X_train, X_valid, etc will also be seen in dataset
 dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), split_date=split_date)
 
 
-# In[16]:
+# In[11]:
 
 
 prep.get_label_distribution(Y_train, Y_valid, Y_test)
 
 
-# In[17]:
+# In[12]:
 
 
 # number of blood tranfusion occurences between visit date and next visit date
-chemo_df = prep.load_data()
+chemo_df = prep.load_data(dtypes=prep.chemo_dtypes)
 cohorts = {'Development Cohort': pd.concat([Y_train, Y_valid]), 'Test Cohort': Y_test}
 result = pd.DataFrame()
 for name, cohort in cohorts.items():
@@ -148,20 +140,14 @@ result.astype(int)
 
 # # Train ML Models
 
-# In[15]:
-
-
-pd.set_option('display.max_columns', None)
-
-
-# In[16]:
+# In[54]:
 
 
 # Initialize Training class
 train_ml = TrainML(dataset, output_path, n_jobs=processes)
 
 
-# In[19]:
+# In[15]:
 
 
 skip_alg = []
@@ -170,7 +156,7 @@ train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True, 
 
 # # Train RNN Model
 
-# In[20]:
+# In[13]:
 
 
 # Include ikn to the input data
@@ -182,26 +168,15 @@ X_test['ikn'] = model_data['ikn']
 train_rnn = TrainRNN(dataset, output_path)
 
 
-# In[21]:
+# In[14]:
 
 
 # Distrubution of the sequence lengths in the training set
 dist_seq_lengths = X_train.groupby('ikn').apply(len)
-fig = plt.figure(figsize=(15, 3))
-plt.hist(dist_seq_lengths, bins=100)
-plt.grid()
-plt.show()
-
-
-# In[22]:
-
-
-# A closer look at the samples of sequences with length 1 to 21
-fig = plt.figure(figsize=(15, 3))
-plt.hist(dist_seq_lengths[dist_seq_lengths < 21], bins=20)
-plt.grid()
-plt.xticks(range(1, 21))
-plt.show()
+dist_seq_lengths = dist_seq_lengths.clip(upper=dist_seq_lengths.quantile(q=0.999))
+fig, ax = plt.subplots(figsize=(15, 3))
+ax.grid(zorder=0)
+sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
 
 
 # In[23]:
@@ -212,7 +187,7 @@ train_rnn.tune_and_train(run_bayesopt=False, run_training=True, run_calibration=
 
 # # Train ENS Model 
 
-# In[15]:
+# In[14]:
 
 
 # combine rnn and ml predictions
@@ -224,7 +199,7 @@ del preds_rnn
 train_ens = TrainENS(dataset, output_path, preds)
 
 
-# In[16]:
+# In[15]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -232,13 +207,13 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # # Evaluate Models
 
-# In[17]:
+# In[16]:
 
 
 eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
 
 
-# In[18]:
+# In[35]:
 
 
 baseline_cols = ['regimen'] + [f'baseline_{bt}_count' for bt in blood_types]
@@ -246,7 +221,7 @@ kwargs = {'get_baseline': True, 'baseline_cols': baseline_cols, 'display_ci': Tr
 eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[19]:
+# In[36]:
 
 
 eval_models.plot_curves(curve_type='pr', legend_location='lower left', figsize=(12,18))
@@ -260,15 +235,16 @@ eval_models.plot_calibs(legend_location='upper left', figsize=(12,18))
 
 # ## Study Characteristics
 
-# In[33]:
+# In[38]:
 
 
-data_characteristic_summary(eval_models, save_dir=f'{output_path}/tables', partition='cohort', include_gcsf=True)
+data_characteristic_summary(eval_models, save_dir=f'{output_path}/tables', partition='cohort', 
+                            target_event='Thrombocytopenia', include_gcsf=True)
 
 
 # ## Feature Characteristics
 
-# In[20]:
+# In[39]:
 
 
 feature_summary(eval_models, prep, target_keyword='target_', save_dir=f'{output_path}/tables').head(60)
@@ -276,7 +252,7 @@ feature_summary(eval_models, prep, target_keyword='target_', save_dir=f'{output_
 
 # ## Threshold Operating Points
 
-# In[20]:
+# In[40]:
 
 
 pred_thresholds = np.arange(0.05, 1.01, 0.05)
@@ -286,7 +262,7 @@ thresh_df
 
 # ## Precision Operating Points
 
-# In[24]:
+# In[41]:
 
 
 desired_precisions = [0.2, 0.25, 0.33, 0.4, 0.5, 0.6, 0.75]
@@ -301,17 +277,17 @@ eval_models.operating_points(algorithm='ENS', points=desired_precisions, metric=
 get_ipython().system('python scripts/perm_importance.py --adverse-event CYTO')
 
 
-# In[20]:
+# In[42]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,15), top=10, importance_by='feature', 
+importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,15), top=10, importance_by='feature', 
                 padding={'pad_x0': 2.6}, colors=['#1f77b4', '#ff7f0e', '#2ca02c'])
 
 
 # ## Performance on Subgroups
 
-# In[26]:
+# In[11]:
 
 
 df = subgroup_performance_summary('ENS', eval_models, pred_thresh=0.25, display_ci=False, load_ci=False, save_ci=False)
@@ -320,50 +296,52 @@ df
 
 # ## All the Plots
 
-# In[27]:
+# In[44]:
 
 
 for blood_type, blood_info in blood_types.items():
-    target_type = blood_info['cytopenia_name']
-    print(f'Displaying all the plots for {target_type}')
-    eval_models.all_plots_for_single_target(algorithm='ENS', target_type=target_type, save=False)
+    target_event = blood_info['cytopenia_name']
+    print(f'Displaying all the plots for {target_event}')
+    eval_models.all_plots_for_single_target(algorithm='ENS', target_event=target_event, save=False)
 
 
 # ## Subgroup Performance Plot
 
-# In[28]:
+# In[15]:
 
 
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
 # Event Rate = 0.15 means true alarms occur 15% of the time
-subgroups = ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Regimen', 'Days Since Starting Regimen']
+groupings = {'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Neighborhood Income Quintile'],
+             'Treatment': ['Entire Test Cohort', 'Regimen', 'Cancer Location', 'Days Since Starting Regimen']}
 padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
-for blood_type, blood_info in blood_types.items():
-    target_type = blood_info['cytopenia_name']
-    print(f'Displaying subgroup performance for {target_type}')
-    subgroup_performance_plot(df, target_type=target_type, subgroups=subgroups, padding=padding,
-                              figsize=(12,24), save=True, save_dir=f'{output_path}/figures')
+for name, subgroups in groupings.items():
+    for blood_type, blood_info in blood_types.items():
+        target_event = blood_info['cytopenia_name']
+        print(f'Plotted {name} Subgroup Performance Plot for {target_event}')
+        subgroup_performance_plot(df, target_event=target_event, subgroups=subgroups, padding=padding,
+                                  figsize=(12,24), save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}')
 
 
 # ## Decision Curve Plot
 
-# In[23]:
+# In[47]:
 
 
-eval_models.plot_decision_curve_analysis('ENS', xlim=(-0.05, 1.05))
+result = eval_models.plot_decision_curve_analysis('ENS', xlim=(-0.05, 1.05))
+result['Neutropenia'].tail(n=100)
 
 
 # ## Randomized Individual Patient Performance
 
-# In[28]:
+# In[48]:
 
 
 sex_mapping = {'M': 'male', 'F': 'female'}
-# os.makedirs(f'{output_path}/figures/patients')
 
 
-# In[49]:
+# In[51]:
 
 
 def get_patient_info(orig_data):
@@ -394,8 +372,6 @@ def plot_patient_prediction(eval_models, X_test, algorithm='XGB', num_ikn=3, see
         orig_data = df.loc[ikn_indices]
         patient_info = get_patient_info(orig_data)
         print(patient_info)
-        if patient_info == '71 years old male patient under regimen gemcnpac(w)':
-            raise
 
         fig = plt.figure(figsize=(15, 20))
         
@@ -432,7 +408,7 @@ def plot_patient_prediction(eval_models, X_test, algorithm='XGB', num_ikn=3, see
         plt.show()
 
 
-# In[50]:
+# In[52]:
 
 
 plot_patient_prediction(eval_models, X_test, algorithm='XGB', num_ikn=8, seed=1, save=False)
@@ -454,30 +430,30 @@ for idx, blood_type in enumerate(blood_types):
 
 # ## Graph Visualization
 
-# In[35]:
+# In[58]:
 
 
-tree_plot(train_ml, target_type='Neutropenia', algorithm='RF')
+tree_plot(train_ml, target_event='Neutropenia', algorithm='RF')
 
 
 # ## More Senstivity/Error Analysis
 
-# In[29]:
+# In[59]:
 
 
 df = subgroup_performance_summary('ENS', eval_models, subgroups=['all', 'cycle_length'], display_ci=False, save_ci=False)
-subgroup_performance_plot(df, save=False, target_type='Neutropenia', figsize=(4,16))
+subgroup_performance_plot(df, save=False, target_event='Neutropenia', figsize=(4,16))
 
 
-# In[30]:
+# In[69]:
 
 
 # analyze subgroups with the worst performance IN THE VALIDATION SET
-from scripts.utility import get_worst_performing_subgroup
+from src.summarize import get_worst_performing_subgroup
 get_worst_performing_subgroup(eval_models, category='regimen', split='Valid')
 
 
-# In[31]:
+# In[70]:
 
 
 get_worst_performing_subgroup(eval_models, category='curr_topog_cd', split='Valid')
@@ -485,35 +461,37 @@ get_worst_performing_subgroup(eval_models, category='curr_topog_cd', split='Vali
 
 # ## Hyperparameters
 
-# In[32]:
+# In[71]:
 
 
-from scripts.utility import get_hyperparameters
+from src.utility import get_hyperparameters
 get_hyperparameters(output_path)
 
 
 # ## Data Summary of Filtered Data
 
-# In[51]:
+# In[80]:
 
 
-from scripts.utility import twolevel, DataPartitionSummary
+from src.utility import twolevel
+from src.summarize import DataPartitionSummary
 summary_df = pd.DataFrame(index=twolevel, columns=twolevel)
 dps = DataPartitionSummary(model_data, model_data, 'Included Data') # Both target and baseline blood count for hemoglobin, neutrophil, platelet required
 dps.get_summary(summary_df, include_target=False)
 
 mask = ~chemo_df.index.isin(model_data.index)
-dps = DataPartitionSummary(chemo_df[mask], chemo_df[mask], 'Excluded Data')
+chemo_df['neighborhood_income_quintile_is_missing'] = chemo_df['neighborhood_income_quintile'].isnull()
+dps = DataPartitionSummary(chemo_df[mask], chemo_df[mask], 'Excluded Data', top_category_items=dps.top_category_items)
 dps.get_summary(summary_df, include_target=False)
 summary_df
 
 
 # ## Missingness By Splits
 
-# In[53]:
+# In[81]:
 
 
-from scripts.utility import get_nmissing_by_splits
+from src.utility import get_nmissing_by_splits
 missing = get_nmissing_by_splits(model_data, eval_models.labels)
 missing.sort_values(by=(f'Test (N={len(Y_test)})', 'Missing (N)'), ascending=False)
 
@@ -524,8 +502,8 @@ missing.sort_values(by=(f'Test (N={len(Y_test)})', 'Missing (N)'), ascending=Fal
 
 
 from sklearn.preprocessing import StandardScaler
-from scripts.train import TrainLOESSModel, TrainPolynomialModel
-from scripts.evaluate import EvaluateBaselineModel
+from src.train import TrainLOESSModel, TrainPolynomialModel
+from src.evaluate import EvaluateBaselineModel
 
 
 # In[32]:
@@ -571,7 +549,7 @@ def loess_pipeline(dataset, orig_data, output_path, blood_type='neutrophil', alg
                                        output_path=output_path, preds=predictions, labels=labels, orig_data=orig_data.loc[Y.index])
 
     if reg_task:
-        eval_loess.plot_loess(ax, algorithm, target_type=cols[0], split=split)
+        eval_loess.plot_loess(ax, algorithm, target_event=cols[0], split=split)
         filename = f'{output_path}/figures/baseline/{cols[0]}_{algorithm}.jpg'
         plt.savefig(filename, bbox_inches='tight', dpi=300)
         ax.set_title(name)

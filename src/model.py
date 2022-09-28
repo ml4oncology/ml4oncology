@@ -33,8 +33,8 @@ from xgboost import XGBClassifier
 from skmisc.loess import loess
 from bayes_opt import BayesianOptimization
 
-from scripts.config import (calib_param, calib_param_logistic)
-from scripts.utility import (load_ml_model, bootstrap_sample)
+from src.config import (nn_solvers, nn_activations, calib_param, calib_param_logistic)
+from src.utility import (load_ml_model, bootstrap_sample)
 
 class MLModels:
     """Machine Learning Models
@@ -141,13 +141,13 @@ class RNN(nn.Module):
 class IsotonicCalibrator:
     """Calibrator - matches predicted probability with empirical probability via isotonic regression
     """
-    def __init__(self, target_types):
-        self.target_types = target_types
-        self.regressor = {target_type: IsotonicRegression(out_of_bounds='clip') for target_type in self.target_types}
+    def __init__(self, target_events):
+        self.target_events = target_events
+        self.regressor = {target_event: IsotonicRegression(out_of_bounds='clip') for target_event in self.target_events}
     
     def load_model(self, model_dir, algorithm):
         self.regressor = load_ml_model(model_dir, algorithm, name='calibrator') 
-        assert all(target_type in self.regressor for target_type in self.target_types)
+        assert all(target_event in self.regressor for target_event in self.target_events)
         
     def save_model(self, model_dir, algorithm):
         model_filename = f'{model_dir}/{algorithm}_calibrator.pkl'
@@ -155,15 +155,15 @@ class IsotonicCalibrator:
             pickle.dump(self.regressor, file)
         
     def calibrate(self, pred, label):
-        for target_type in self.target_types:
+        for target_event in self.target_events:
             # Reference: github.com/scikit-learn/scikit-learn/blob/main/sklearn/calibration.py
-            self.regressor[target_type].fit(pred[target_type], label[target_type])
+            self.regressor[target_event].fit(pred[target_event], label[target_event])
         
     def predict(self, pred_prob):
         result = []
-        for target_type, predictions in pred_prob.iteritems():
+        for target_event, predictions in pred_prob.iteritems():
             try:
-                result.append(self.regressor[target_type].predict(predictions))
+                result.append(self.regressor[target_event].predict(predictions))
             except AttributeError as e:
                 if str(e) == "'IsotonicRegression' object has no attribute 'X_min_'":
                     raise ValueError('Model has not been calibrated. Please calibrate the model first')
@@ -172,7 +172,9 @@ class IsotonicCalibrator:
         result = np.array(result).T
         return pd.DataFrame(result, columns=pred_prob.columns, index=pred_prob.index)
 
+###############################################################################
 # Baseline Models
+###############################################################################
 class BaselineModel:
     """
     Baseline model in which a single predictor/variable/column is used to predict a target
@@ -180,7 +182,7 @@ class BaselineModel:
     def __init__(self, **params):
         self.params = params
         self.models = {}
-        self.target_types = []
+        self.target_events = []
         
     def _fit(self, x, y):
         raise NotImplementedError
@@ -192,17 +194,17 @@ class BaselineModel:
         raise NotImplementedError
         
     def fit(self, x, Y):
-        for target_type, y in Y.iteritems():
-            self.models[target_type] = self._fit(x, y)
-        self.target_types = Y.columns.tolist()
+        for target_event, y in Y.iteritems():
+            self.models[target_event] = self._fit(x, y)
+        self.target_events = Y.columns.tolist()
         
     def predict(self, x):
-        preds = {target_type: self._predict(self.models[target_type], x) for target_type in self.target_types}
+        preds = {target_event: self._predict(self.models[target_event], x) for target_event in self.target_events}
         return preds
     
     def predict_with_confidence_interval(self, x, **kwargs):
         preds, ci_lower, ci_upper = {}, {}, {}
-        for tt in self.target_types:
+        for tt in self.target_events:
             output = self._predict_with_confidence_interval(tt, x, **kwargs)
             preds[tt], ci_lower[tt], ci_upper[tt] = output
         return preds, ci_lower, ci_upper
@@ -219,8 +221,8 @@ class LOESSModel(BaselineModel):
     def _predict(self, model, x):
         return model.predict(x).values
     
-    def _predict_with_confidence_interval(self, target_type, x):
-        model = self.models[target_type]
+    def _predict_with_confidence_interval(self, target_event, x):
+        model = self.models[target_event]
         pred = model.predict(x, stderror=True)
         ci = pred.confidence(0.05)
         return pred.values, ci.lower, ci.upper
@@ -264,14 +266,14 @@ class PolynomialModel(BaselineModel):
             ci_preds.append(pred)
         return np.array(ci_preds)
     
-    def _predict_with_confidence_interval(self, target_type, x, x_train=None, y_train=None):
+    def _predict_with_confidence_interval(self, target_event, x, x_train=None, y_train=None):
         """
         For spline and poly algorithm, confidence interval is calculated by permuting the data used to 
         originally train the model, retraining the model, recomputing the prediction for x,
         and taking the 2.5% and 97.5% quantiles of each prediction for sample n in x
         """
-        model = self.models[target_type]
+        model = self.models[target_event]
         pred =  self._predict(model, x)
-        ci_preds = self._compute_confidence_interval(x, x_train, y_train[target_type])
+        ci_preds = self._compute_confidence_interval(x, x_train, y_train[target_event])
         lower, upper = np.percentile(ci_preds, [2.5, 97.5], axis=0).round(3)
         return pred, lower, upper

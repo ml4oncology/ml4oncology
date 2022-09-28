@@ -23,9 +23,9 @@ from functools import partial
 from bayes_opt import BayesianOptimization
 from sklearn.metrics import (accuracy_score, roc_auc_score, mean_squared_error)
 
-from scripts.utility import (load_ml_model, load_ensemble_weights, load_predictions, save_predictions)
-from scripts.model import (MLModels, RNN, IsotonicCalibrator, LOESSModel, PolynomialModel)
-from scripts.config import (model_tuning_param, bayesopt_param)
+from src.utility import (load_ml_model, load_ensemble_weights, load_predictions, save_predictions)
+from src.model import (MLModels, RNN, IsotonicCalibrator, LOESSModel, PolynomialModel)
+from src.config import (model_tuning_param, bayesopt_param)
 
 import torch
 import torch.nn as nn
@@ -47,14 +47,14 @@ class Train:
         X_train, X_valid, X_test, Y_train, Y_valid, Y_test = dataset
         self.n_features = X_train.shape[1]
         self.n_targets = Y_train.shape[1]
-        self.target_types = Y_train.columns.tolist()
+        self.target_events = Y_train.columns.tolist()
         self.data_splits = {'Train': (X_train, Y_train), 'Valid': (X_valid, Y_valid), 'Test': (X_test, Y_test)}
         
     def convert_param_types(self, best_param):
         """You can overwrite this to convert the hyperparmeter data types as desired
         """
         return best_param
-        
+    
     def _bayesopt(self, algorithm, eval_func, hyperparam_config, optim_config, filename='', **kwargs):
         """Conduct bayesian optimization, a sequential search framework 
         for finding optimal hyperparameters using bayes theorem
@@ -88,7 +88,7 @@ class TrainML(Train):
         super().__init__(dataset, output_path)
         self.ml = MLModels(**kwargs)
         self.preds = {split: {algorithm: None for algorithm in self.ml.models} for split in self.data_splits}
-        
+       
     def _predict(self, model, algorithm, X, Y):
         pred = model.predict_proba(X)
             
@@ -96,7 +96,7 @@ class TrainML(Train):
             # format it to be row=chemo_sessions, columns=targets
             # [:, :, 1] - first column is prob of false, second column is prob of true
             pred = np.array(pred)[:, :, 1].T
-        elif len(self.target_types) == 1: 
+        elif len(self.target_events) == 1: 
             # seems for single target, NN outputs prob for both false and true, instead of just true
             pred = pred[:, 1]
 
@@ -110,42 +110,40 @@ class TrainML(Train):
             self.preds[split][algorithm] = self._predict(model, algorithm, X, Y)
         pred = self.preds[split][algorithm]
         return pred, Y
+    
+    def train_model(self, algorithm, save=True, **kwargs):
+        get_model = getattr(self.ml, f'get_{algorithm}_model')
+        model = get_model(**kwargs)
+        model.fit(*self.data_splits['Train'])
+
+        if save:
+            model_filename = f'{self.output_path}/{algorithm}_classifier.pkl'
+            with open(model_filename, 'wb') as file:
+                pickle.dump(model, file)
+
+        return model
+    
+    def convert_param_types(self, params):
+        for param in ['max_depth', 'batch_size', 'n_estimators',
+                      'first_layer_size', 'second_layer_size']:
+            if param in params:
+                params[param] = int(params[param])
+        return params
 
     def bo_evaluate(self, algorithm, split='Valid', **kwargs):
         """Evaluation function for bayesian optimization
         """
-        get_model = getattr(self.ml, f'get_{algorithm}_model')
         kwargs = self.convert_param_types(kwargs)
-        model = get_model(**kwargs)
-        model.fit(*self.data_splits['Train'])
+        model = self.train_model(algorithm, save=False, **kwargs)
         pred_prob, Y = self.predict(model, split, algorithm)
         self.preds[split][algorithm] = None # reset the cache
         return roc_auc_score(Y, pred_prob) # mean (macro-mean) of auroc scores of all target types
-    
-    def convert_param_types(self, best_param):
-        for param in ['max_depth', 'batch_size', 'n_estimators',
-                      'first_layer_size', 'second_layer_size']:
-            if param in best_param:
-                best_param[param] = int(best_param[param])
-        return best_param
 
     def bayesopt(self, algorithm, random_state=42):
         hyperparam_config = model_tuning_param[algorithm]
         optim_config = bayesopt_param[algorithm]
         evaluate_function = partial(self.bo_evaluate, algorithm=algorithm)
         return self._bayesopt(algorithm, evaluate_function, hyperparam_config, optim_config, random_state=random_state)
-    
-    def train_model_with_best_param(self, algorithm, best_param):
-        get_model = getattr(self.ml, f'get_{algorithm}_model')
-        model = get_model(**best_param)
-        model.fit(*self.data_splits['Train'])
-
-        # Save the model
-        model_filename = f'{self.output_path}/{algorithm}_classifier.pkl'
-        with open(model_filename, 'wb') as file:
-            pickle.dump(model, file)
-
-        return model
 
     def tune_and_train(self, run_bayesopt=True, run_training=True, save_preds=True, skip_alg=None, random_state=42):
         """
@@ -154,10 +152,12 @@ class TrainML(Train):
         """
         if skip_alg is None: skip_alg = []
         for algorithm in self.ml.models:
-            skip = algorithm in skip_alg
+            if algorithm in skip_alg:
+                logging.info(f'Skipping {algorithm}!')
+                continue
             
             # Tune Hyperparameters
-            if run_bayesopt and not skip:
+            if run_bayesopt:
                 best_param = self.bayesopt(algorithm, random_state=random_state)
             else:
                 filename = f'{self.output_path}/best_params/{algorithm}_best_param.pkl'
@@ -167,13 +167,13 @@ class TrainML(Train):
                     best_param = pickle.load(file)
 
             # Train Models
-            if run_training and not skip:
+            if run_training:
                 if algorithm == 'NN': 
                     best_param['max_iter'] = 100
                     best_param['verbose'] = True
                 elif algorithm == 'LR': 
                     best_param['max_iter'] = 1000
-                self.train_model_with_best_param(algorithm, best_param)
+                self.train_model(algorithm, **best_param)
                 logging.info(f'{algorithm} training completed!')
             model = load_ml_model(self.output_path, algorithm)
 
@@ -209,7 +209,7 @@ class TrainRNN(Train):
         self.dataset_splits = {'Train': self.train_dataset, 'Valid': self.valid_dataset, 'Test': self.test_dataset}
         self.preds = {split: pd.DataFrame(index=Y.index) for split, (X, Y) in self.data_splits.items()}
         self.pad_value = -999 # the padding value for padding variable length sequences
-        self.calibrator = IsotonicCalibrator(self.target_types)
+        self.calibrator = IsotonicCalibrator(self.target_events)
         
     def transform_to_tensor_dataset(self, X, Y):
         X = X.astype(float)
@@ -352,12 +352,11 @@ class TrainRNN(Train):
             train_losses[epoch] = train_loss.cpu().detach().numpy()/(i+1)
             train_scores[epoch] = train_score/(i+1)
             valid_losses[epoch], valid_scores[epoch] = self.validate(model, valid_loader, criterion)
-            statement = f"Epoch: {epoch+1}, " +\
-                        f"Train Loss: {train_losses[epoch].mean().round(4)}, " +\
-                        f"Valid Loss: {valid_losses[epoch].mean().round(4)}, " +\
-                        f"Train Accuracy: {train_scores[epoch].mean().round(4)}, " +\
-                        f"Valid Accuracy: {valid_scores[epoch].mean().round(4)}"
-            logging.info(statement)
+            logging.info(f"Epoch: {epoch+1}, "
+                         f"Train Loss: {train_losses[epoch].mean().round(4)}, "
+                         f"Valid Loss: {valid_losses[epoch].mean().round(4)}, "
+                         f"Train Accuracy: {train_scores[epoch].mean().round(4)}, "
+                         f"Valid Accuracy: {valid_scores[epoch].mean().round(4)}")
 
             if valid_losses[epoch].mean() < best_val_loss:
                 logging.info('Saving Best Model')
@@ -425,7 +424,7 @@ class TrainRNN(Train):
     def get_model_predictions(self, model, split, calibrated=False, **kwargs):
         if self.preds[split].empty:
             pred_arr, index_arr = self._get_model_predictions(model, split, **kwargs)
-            self.preds[split].loc[index_arr, self.target_types] = pred_arr
+            self.preds[split].loc[index_arr, self.target_events] = pred_arr
             if calibrated: # get the calibrated predictions
                 self.preds[split] = self.calibrator.predict(self.preds[split])
 
@@ -450,8 +449,8 @@ class TrainRNN(Train):
         pred_arr, index_arr = self._get_model_predictions(model, split)
         _, target = self.data_splits[split]
         target = target.loc[index_arr]
-        auc_score = [roc_auc_score(target[target_type], pred_arr[:, i]) 
-                     for i, target_type in enumerate(self.target_types)]
+        auc_score = [roc_auc_score(target[target_event], pred_arr[:, i]) 
+                     for i, target_event in enumerate(self.target_events)]
         return np.mean(auc_score)
     
     def bayesopt(self, algorithm='RNN', random_state=42):
@@ -477,7 +476,7 @@ class TrainRNN(Train):
             model = self.get_model(load_saved_weights=True, **best_param)
         
         if run_calibration:
-            pred = pd.DataFrame(*self._get_model_predictions(model, 'Valid'), columns=self.target_types)
+            pred = pd.DataFrame(*self._get_model_predictions(model, 'Valid'), columns=self.target_events)
             _, Y = self.data_splits['Valid']
             self.calibrator.calibrate(pred, Y)
             self.calibrator.save_model(self.output_path, algorithm)
@@ -513,7 +512,7 @@ class TrainENS(Train):
         # make sure each split contains the same models
         assert all(list(preds[split].keys()) == self.models for split in self.splits)
 
-        self.calibrator = IsotonicCalibrator(self.target_types)
+        self.calibrator = IsotonicCalibrator(self.target_events)
         
     def bo_evaluate(self, split='Valid', **kwargs):
         ensemble_weights = [kwargs[algorithm] for algorithm in self.models]
@@ -523,9 +522,9 @@ class TrainENS(Train):
     
     def bayesopt(self, algorithm='ENS', random_state=42):
         hyperparam_config = model_tuning_param[algorithm]
-        hyperparam_config = {alg: config for alg, config in hyperparam_config.items() if alg in self.models}
+        hyperparam_config = {alg: hyperparam_config[alg] for alg in self.models}
         optim_config = bayesopt_param[algorithm]
-        return self._bayesopt(algorithm, self.bo_evaluate, self.hyperparam_config, self.optim_config, random_state=random_state)
+        return self._bayesopt(algorithm, self.bo_evaluate, hyperparam_config, optim_config, random_state=random_state)
     
     def predict(self, split, ensemble_weights=None):
         # compute ensemble predictions by soft vote

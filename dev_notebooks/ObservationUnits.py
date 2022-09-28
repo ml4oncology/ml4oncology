@@ -35,7 +35,7 @@ from scipy.stats import mode
 from difflib import SequenceMatcher
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (substring, length, expr, collect_set)
-from scripts.config import (root_path, all_observations)
+from src.config import (root_path, all_observations)
 
 
 # In[3]:
@@ -58,13 +58,13 @@ def clean_string(df, cols):
 # In[5]:
 
 
-get_ipython().run_cell_magic('time', '', "olis = spark.read.csv(f'{root_path}/data/olis_complete.csv', header=True)\nolis = clean_string(olis, ['ObservationCode', 'Units'])\nobservation_units = olis.groupBy('ObservationCode').agg(collect_set('Units'))")
+get_ipython().run_cell_magic('time', '', "olis = spark.read.csv(f'{root_path}/data/olis_complete.csv', header=True)\nolis = clean_string(olis, ['ObservationCode', 'Units'])\nobservation_units = olis.groupBy('ObservationCode').agg(collect_set('Units'))\n")
 
 
 # In[6]:
 
 
-get_ipython().run_cell_magic('time', '', '# WOW its actually REALLY SLOW - the staging parts \n# Can be multiple reasons\n# - not using native hadoop?\n# - data too small?\n# - too many concurrent tasks (from other users)?\nobservation_units = observation_units.toPandas()\nobservation_units = dict(observation_units.values)')
+get_ipython().run_cell_magic('time', '', '# WOW its actually REALLY SLOW - the staging parts \n# Can be multiple reasons\n# - not using native hadoop?\n# - data too small?\n# - too many concurrent tasks (from other users)?\nobservation_units = observation_units.toPandas()\nobservation_units = dict(observation_units.values)\n')
 
 
 # In[24]:

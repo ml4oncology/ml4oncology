@@ -14,58 +14,43 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
-import tqdm
-import itertools
 import pandas as pd
 import numpy as np
-import multiprocessing as mp
+from tqdm import tqdm
 from functools import partial
 
-from scripts.config import (root_path, sas_folder, regiments_folder, 
-                            all_observations, english_lang_codes,
-                            din_exclude, cisplatin_dins, cisplatin_cco_drug_code,
-                            cancer_location_exclude,
-                            systemic_cols, drug_cols, y3_cols, olis_cols, immigration_cols, diag_cols, event_main_cols,
-                            diag_code_mapping, event_map)
+from src.config import (root_path, sas_folder,  
+                        min_chemo_date, max_chemo_date, 
+                        all_observations, english_lang_codes,
+                        din_exclude, cisplatin_dins, cisplatin_cco_drug_code,
+                        cancer_location_exclude,
+                        systemic_cols, drug_cols, y3_cols, olis_cols, 
+                        observation_cols, observation_change_cols, 
+                        immigration_cols, diag_cols, event_main_cols,
+                        diag_code_mapping, event_map)
+from src.utility import (split_and_parallelize, clean_string, replace_rare_col_entries, 
+                         numpy_ffill, group_observations)
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s', datefmt='%I:%M:%S')
-    
-# Multiprocessing
-def parallelize(generator, worker, processes=16):
-    pool = mp.Pool(processes=processes)
-    result = pool.map(worker, generator)
-    pool.close()
-    pool.join() # wait for all threads
-    result = list(itertools.chain(*result))
-    return result
 
-def split_and_parallelize(data, worker, split_by_ikns=True, processes=16):
-    """
-    Split up the data and parallelize processing of data
-    
-    Args:
-        data: array-like, DataFrame or tuple of DataFrames sharing the same patient ids
-        split_by_ikns: split up the data by patient ids
-    """
-    generator = []
-    if split_by_ikns:
-        ikns = data[0]['ikn'] if isinstance(data, tuple) else data['ikn']
-        ikn_groupings = np.array_split(ikns.unique(), processes)
-        if isinstance(data, tuple):
-            for ikn_grouping in ikn_groupings:
-                items = tuple(df[df['ikn'].isin(ikn_grouping)] for df in data)
-                generator.append(items)
-        else:
-            for ikn_grouping in ikn_groupings:
-                item = data[ikns.isin(ikn_grouping)]
-                generator.append(item)
+###############################################################################
+# sas7bdat Files
+###############################################################################
+def sas_to_csv(name, new_name='', folder=sas_folder, transfer_date=None, chunk_load=False, chunksize=10**6):
+    filename = name if transfer_date is None else f'transfer{transfer_date}/{name}'
+    name = new_name if new_name else name
+    if not chunk_load:
+        df = pd.read_sas(f'{root_path}/{folder}/{filename}.sas7bdat')
+        df = clean_sas(df, name)
+        df.to_csv(f"{root_path}/data/{name}.csv", index=False)
     else:
-        # splits df into x number of partitions, where x is number of processes
-        generator = np.array_split(data, processes)
-    return parallelize(generator, worker, processes=processes)
-
-# sas7bdat files
+        chunks = pd.read_sas(f'{root_path}/{folder}/{filename}.sas7bdat', chunksize=chunksize)
+        for i, chunk in tqdm(enumerate(chunks), desc='Converting to csv'):
+            chunk = clean_sas(chunk, name)
+            header = True if i == 0 else False
+            chunk.to_csv(f"{root_path}/data/{name}.csv", header=header, mode='a', index=False)
+            
 def clean_sas(df, name):
     # remove empty rows
     df = df[~df.iloc[:,1:].isnull().all(axis=1)]
@@ -83,70 +68,181 @@ def create_clean_regimen(df):
     df['regimen'] = df['regimen'].str.lower()
     return df
 
-def sas_to_csv(name, new_name='', folder=sas_folder, transfer_date=None, chunk_load=False, chunksize=10**6):
-    filename = name if transfer_date is None else f'transfer{transfer_date}/{name}'
-    name = new_name if new_name else name
-    if not chunk_load:
-        df = pd.read_sas(f'{root_path}/{folder}/{filename}.sas7bdat')
-        df = clean_sas(df, name)
-        df.to_csv(f"{root_path}/data/{name}.csv", index=False)
-    else:
-        chunks = pd.read_sas(f'{root_path}/{folder}/{filename}.sas7bdat', chunksize=chunksize)
-        for i, chunk in tqdm.tqdm(enumerate(chunks)):
-            chunk = clean_sas(chunk, name)
-            header = True if i == 0 else False
-            chunk.to_csv(f"{root_path}/data/{name}.csv", header=header, mode='a', index=False)
-
-# Helper functions
-def clean_string(df, cols):
-    # remove first two characters "b'" and last character "'"
-    for col in cols:
-        mask = df[col].str.startswith("b'") & df[col].str.endswith("'")
-        df.loc[mask, col] = df.loc[mask, col].str[2:-1].values
+###############################################################################
+# Systemic (Chemo) Data
+###############################################################################
+def filter_systemic_data(df, regimens, cols=None, remove_inpatients=True, exclude_dins=True, 
+                          replace_rare_regimens=True, include_drug_info=False, verbose=False):
+    """
+    Args:
+        regimens: pd.DataFrame of select annotated regimens, see load_reviewed_regimens/load_included_regimens
+    """
+    if cols is None: cols = systemic_cols.copy()
+    df = clean_up_systemic(df)
+    df = filter_regimens(df, regimens, verbose=verbose)
+    df = filter_date(df, verbose=verbose)
+    
+    if remove_inpatients: 
+        df = filter_inpatients(df, verbose=verbose)
+        
+    if exclude_dins: # DIN: Drug Identification Number
+        df = df[~df['din'].isin(din_exclude)] # remove dins in din_exclude
+        
+    if replace_rare_regimens:
+        # replace regimens with less than 6 patients to 'Other'
+        df = replace_rare_col_entries(df, ['regimen'], verbose=verbose)
+    
+    if include_drug_info: cols += drug_cols
+    df = df[cols]
+    df = df.drop_duplicates()
     return df
 
-def replace_rare_col_entries(df, cols, with_respect_to='patients', n=6, verbose=False):
-    for col in cols:
-        if with_respect_to == 'patients':
-            # replace unique values with less than n patients to 'Other'
-            counts = df.groupby(col).apply(lambda group: len(set(group['ikn'])))
-        elif with_respect_to == 'rows':
-            # replace unique values that appears less than n number of rows in the dataset to 'Other'
-            counts = df[col].value_counts()
-        replace_values = counts.index[counts < n]
-        if verbose: 
-            logging.info(f'The following {col} entries have less than {n} {with_respect_to} ' + \
-                         f'and will be replaced with "Other": {replace_values.tolist()}')
-        df.loc[df[col].isin(replace_values), col] = 'Other'
+def filter_by_drugs(df, drug='cisplatin', verbose=False):
+    if drug == 'cisplatin':
+        keep_dins = cisplatin_dins
+        keep_cco_drug_code = cisplatin_cco_drug_code
+    
+    mask = df['din'].isin(keep_dins) | df['cco_drug_code'].isin(keep_cco_drug_code)
+    if verbose: 
+        logging.info(f"Removing {sum(~mask)} sessions with no {drug} administrated")
+    df = df[mask]
+    df['drug'] = drug
+    df = df.drop(columns=['din', 'cco_drug_code'])
+    df = df[df['measurement_unit'].isin(['mg', 'MG'])] # remove rows with measurement unit of g, unit, mL, nan
+
+    # multiple dose administration on the same day and same drug - combine them together
+    dosage = 'dose_administered'
+    cols = df.columns.drop(dosage)
+    mask = df.duplicated(subset=cols, keep=False)
+    if verbose: 
+        logging.info(f"Collapsing {sum(~df[mask].duplicated())} same day sessions with multiple doses administered")
+    df.loc[mask, dosage] = df[mask].groupby(['ikn', 'visit_date'])[dosage].transform('sum')
+    df = pd.concat([df[~mask], df[mask].drop_duplicates()])
+    df = df.sort_values(by='visit_date') # order the dataframe by date
+        
     return df
 
-def pandas_ffill(df):
-    # uh...unfortunately pandas ffill is super slow when scaled up
-    return df.ffill(axis=1)[0].values
+def systemic_worker(partition, method='merge', merge_days=4):
+    """
+    Creates engineered features such as days_since_starting_chemo, days_since_last_chemo, chemo_cycle, immediate_new_regimen
+    Handles small interval chemo sessions 2 ways
+    1. Merge them together
+       e.g. May 1  10gm     ->    May 1  12gm
+            May 2  1gm            May 16 10gm
+            May 4  1gm
+            May 16 10gm
+    2. Include only the first chemo session in a given week
+       e.g. May 1  10gm     ->    May 1  10gm
+            May 2  1gm            May 16 5gm
+            May 4  1gm
+            May 16 5gm
+    NOTE: use 2nd method when you don't care about the chemo dosages and just care about the rough dates
+    
+    Args:
+        method (str): either 'merge' or 'one-per-week'
+        merge_days (int): max number of intervals/days you can merge
+    """
+    if method not in {'merge', 'one-per-week'}:
+        raise ValueError('method must be either merge or one-per-week')
+        
+    values = []
+    for ikn, df in tqdm(partition.groupby('ikn')):
+        df = df.sort_values(by='visit_date') # might be redundant but just in case
 
-def numpy_ffill(df):
-    # courtesy of stackoverflow.com/questions/41190852/most-efficient-way-to-forward-fill-nan-values-in-numpy-array
-    arr = df.values.astype(float)
-    num_rows, num_cols = arr.shape
-    mask = np.isnan(arr)
-    indices = np.where(~mask, np.arange(num_cols), 0)
-    np.maximum.accumulate(indices, axis=1, out=indices)
-    arr[mask] = arr[np.nonzero(mask)[0], indices[mask]]
-    return arr[:, -1]
+        if method == 'one-per-week':
+            # keep only the first chemo visit of a given week
+            keep_indices = []
+            tmp = df
+            while not tmp.empty:
+                first_chemo_idx = tmp.index[0]
+                keep_indices.append(first_chemo_idx)
+                first_visit_date = df['visit_date'].loc[first_chemo_idx]
+                tmp = tmp[tmp['visit_date'] >= first_visit_date + pd.Timedelta('7 days')]
+            df = df.loc[keep_indices]
+        elif method == 'merge':
+            # merges small intervals into a 4 day cycle, or to the row below/above that has interval greater than 4 days
+            df['next_visit_date'] = df['visit_date'].shift(-1)
+            df['chemo_interval'] = (df['next_visit_date'] - df['visit_date']).dt.days
+            df = merge_intervals(df, merge_days=4)
+            if df.empty:
+                # most likely patient had consecutive 1 day interval chemo sessions that totaled less than 4 days
+                # OR patient has only two chemo sessions (one row) in which interval was less than 4 days
+                continue
 
-def group_observations(observations, freq_map):
-    grouped_observations = {}
-    for obs_code, obs_name in observations.items():
-        if obs_name in grouped_observations:
-            grouped_observations[obs_name].append(obs_code)
-        else:
-            grouped_observations[obs_name] = [obs_code]
+        start_date = df['visit_date'].iloc[0]
+        df['days_since_starting_chemo'] = (df['visit_date'] - start_date).dt.days
+        df['days_since_last_chemo'] = (df['visit_date'] - df['visit_date'].shift()).dt.days
+        
+        # identify line of therapy (the nth different palliative intent chemotherapy regimen taken)
+        # NOTE: all other intent treatment are given line of therapy of 0. Usually (not always but oh well) 
+        #       once the first palliative treatment appears, the rest of the treatments remain palliative
+        new_regimen = (df['regimen'] != df['regimen'].shift())
+        palliative_intent = df['intent_of_systemic_treatment'] == 'P'
+        df['line_of_therapy'] = (new_regimen & palliative_intent).cumsum()
 
-    for obs_name, obs_codes in grouped_observations.items():
-        # sort observation codes based on their number of occurences / observation frequencies
-        grouped_observations[obs_name] = freq_map[obs_codes].sort_values(ascending=False).index.tolist()
-   
-    return grouped_observations
+        # identify chemo cycle number (resets when patient undergoes new chemo regimen or there is a 60 day gap)
+        mask = new_regimen | (df['days_since_last_chemo'] >= 60)
+        df['chemo_cycle'] = compute_chemo_cycle(mask)
+
+        # identify if this is the first chemo cycle of a new regimen immediately after the old one
+        mask = new_regimen & (df['days_since_last_chemo'] < 30)
+        df['immediate_new_regimen'] = mask
+
+        # convert to list and combine for faster performance
+        values.extend(df.values.tolist())
+        
+    return values
+
+def process_systemic_data(df, cycle_length_mapping=None, method='merge', merge_days=4):
+    """
+    Args:
+        cycle_length_mapping (dict or None): mapping between regimens and their shortest cycle lengths
+    """
+    if cycle_length_mapping is not None:
+        df['cycle_length'] = df['regimen'].map(cycle_length_mapping)
+        
+    worker = partial(systemic_worker, method=method, merge_days=merge_days)
+    values = split_and_parallelize(df, worker)
+    extra_cols = ['days_since_starting_chemo', 'days_since_last_chemo', 'line_of_therapy', 'chemo_cycle', 'immediate_new_regimen']
+    if method == 'merge': extra_cols = ['next_visit_date', 'chemo_interval'] + extra_cols
+    cols = df.columns.tolist() + extra_cols
+    df = pd.DataFrame(values, columns=cols)
+    return df
+
+###############################################################################
+# Systemic (Chemo) Data - Helper Functions
+###############################################################################
+def clean_up_systemic(df):
+    df = clean_string(df, ['ikn', 'din', 'cco_drug_code', 'intent_of_systemic_treatment', 'inpatient_flag', 'measurement_unit'])
+    df['visit_date'] = pd.to_datetime(df['visit_date'])
+    df = df.sort_values(by='visit_date') # order the data dataframe by date
+    return df
+
+def filter_regimens(df, regimens, verbose=False):
+    col = 'regimen'
+    df = df[df[col].notnull()] # filter out rows with no regimen data 
+    df = df[df[col].isin(regimens[col])] # keep only selected reigmens
+    
+    # change regimen name to the correct mapping
+    mask = regimens['relabel'].notnull()
+    old_name, new_name = regimens.loc[mask, [col, 'relabel']].T.values
+    df[col] = df[col].replace(old_name, new_name)
+    
+    return df
+
+def filter_date(df, min_date=min_chemo_date, max_date=max_chemo_date, verbose=False):
+    if verbose: logging.info(f"{len(df)} chemo treatments occured between {df['visit_date'].min()} to {df['visit_date'].max()}")
+    mask = df['visit_date'].between(min_date, max_date)
+    if verbose: logging.info(f"Removing {sum(~mask)} chemo treatments that occured before {min_date} and after {max_date}.")
+    df = df[mask] # remove chemo recieved before July 1st 2014 - before the ALR system was set up
+    return df
+
+def filter_inpatients(df, verbose=False):
+    if verbose:
+        logging.info(f"Removing {sum(df['inpatient_flag'] == 'Y')} inpatient chemo treatment and "
+                     f"{sum(df['inpatient_flag'].isnull())} unknown inpatient status chemo treatements")
+    df = df[df['inpatient_flag'] == 'N'] # remove chemo treatment recieved as an inpatient
+    return df
 
 def compute_chemo_cycle(mask):
     """
@@ -236,234 +332,16 @@ def merge_intervals(df, merge_days=4):
     df = df.drop(index=remove_indices)
     return df
 
-# Loaders
-def load_chemo_df(main_dir, includes_next_visit=True):
-    dtype = {'ikn': str, 'lhin_cd': str, 'curr_morph_cd': str}
-    chemo_df = pd.read_csv(f'{main_dir}/data/chemo_processed.csv', dtype=dtype)
-    chemo_df['visit_date'] = pd.to_datetime(chemo_df['visit_date'])
-    if includes_next_visit:
-        chemo_df['next_visit_date'] = pd.to_datetime(chemo_df['next_visit_date'])
-    return chemo_df
-
-def load_reviewed_regimens():
-    """
-    Get the annotated regimens with their cycle lengths, name relabelings, splits, etc
-    """
-    df = pd.read_csv(f'{root_path}/{regiments_folder}/regimens.csv', dtype=str)
-    df = clean_string(df, df.columns)
-
-    # convert select columns to floats
-    df['shortest_interval'] = df['shortest_interval'].replace('unclear', -1)
-    float_cols = df.columns.drop(['regimen', 'relabel', 'reason', 'notes'])
-    df[float_cols] = df[float_cols].astype(float)
-    
-    # ensure regimen names are all lowercase
-    df['regimen'] = df['regimen'].str.lower()
-    df['relabel'] = df['relabel'].str.lower()
-    
-    df = df.rename(columns={'split_number_first_dose_second_c': 'split_at_this_cycle',
-                            'split_second_component_shortest_': 'cycle_length_after_split',
-                            'shortest_interval': 'cycle_length'})
-    df['shortest_cycle_length'] = df[['cycle_length', 'cycle_length_after_split']].min(axis=1)
-    return df
-
-def load_included_regimens(criteria=None):
-    """
-    Args:
-        criteria (str or None): inclusion criteria for regimens based on different projects, 
-                                either None (no critera), 'cytotoxic' for CYTOPENIA, or 'cisplatin_containing' for CAN
-    """
-    if criteria not in {None, 'cytotoxic', 'cisplatin_containing'}:
-        raise ValueError('criteria must be either None, "cytotoxic", or "cisplatin_containing"')
-    df = load_reviewed_regimens()
-
-    # filter outpatient regimens, hematological regimens, non-IV administered regimens for all projects
-    mask = df['iv_non_hematological_outpatient'] == 0
-    df = df[~mask]
-    
-    if criteria is not None:
-        # keep only selected reigmens for the project
-        df = df[df[criteria] == 1]
-        
-        if criteria == 'cytotoxic':
-            # remove regimens with unclear cycle lengths
-            df = df[df['shortest_cycle_length'] != -1]
-
-    return df
-    
-# Systemic (chemo) data
-def clean_up_systemic(df):
-    df = clean_string(df, ['ikn', 'din', 'cco_drug_code', 'intent_of_systemic_treatment', 'inpatient_flag', 'measurement_unit'])
-    df['visit_date'] = pd.to_datetime(df['visit_date'])
-    df = df.sort_values(by='visit_date') # order the data dataframe by date
-    return df
-
-def filter_regimens(df, regimens, verbose=False):
-    col = 'regimen'
-    df = df[~df[col].isnull()] # filter out rows with no regimen data 
-    df = df[df[col].isin(regimens[col])] # keep only selected reigmens
-    
-    # change regimen name to the correct mapping
-    mask = regimens['relabel'].notnull()
-    old_name, new_name = regimens.loc[mask, [col, 'relabel']].T.values
-    df[col] = df[col].replace(old_name, new_name)
-    
-    return df
-
-def filter_date(df, min_date='2014-07-01', max_date='2020-06-30', verbose=False):
-    if verbose: logging.info(f"Treatments occured between {df['visit_date'].min()} to {df['visit_date'].max()}")
-    mask = df['visit_date'].between(min_date, max_date)
-    if verbose: logging.info(f"Removing {sum(~mask)} chemo treatments that occured before {min_date} and after {max_date}.")
-    df = df[mask] # remove chemo recieved before July 1st 2014 - before the ALR system was set up
-    return df
-
-def filter_inpatients(df, verbose=False):
-    if verbose:
-        logging.info(f"There are {sum(df['inpatient_flag'] == 'Y')} inpatient chemo treatment and " + \
-                     f"{sum(df['inpatient_flag'].isnull())} unknown inpatient status out of {len(df)} total chemo treatments")
-    df = df[df['inpatient_flag'] == 'N'] # remove chemo treatment recieved as an inpatient
-    return df
-
-def filter_systemic_data(df, regimens, remove_inpatients=True, exclude_dins=True, 
-                          replace_rare_regimens=True, include_drug_info=False, verbose=False):
-    """
-    Args:
-        regimens: pd.DataFrame of select annotated regimens, see load_reviewed_regimens/load_included_regimens
-    """
-    df = clean_up_systemic(df)
-    df = filter_regimens(df, regimens, verbose=verbose)
-    df = filter_date(df, verbose=verbose)
-    
-    if remove_inpatients: 
-        df = filter_inpatients(df, verbose=verbose)
-        
-    if exclude_dins: # DIN: Drug Identification Number
-        df = df[~df['din'].isin(din_exclude)] # remove dins in din_exclude
-        
-    if replace_rare_regimens:
-        # replace regimens with less than 6 patients to 'Other'
-        df = replace_rare_col_entries(df, ['regimen'], verbose=verbose)
-    
-    cols = systemic_cols.copy()
-    if include_drug_info: cols += drug_cols
-    df = df[cols]
-    df = df.drop_duplicates()
-    return df
-
-def filter_by_drugs(df, drug='cisplatin', verbose=False):
-    if drug == 'cisplatin':
-        keep_dins = cisplatin_dins
-        keep_cco_drug_code = cisplatin_cco_drug_code
-    
-    mask = df['din'].isin(keep_dins) | df['cco_drug_code'].isin(keep_cco_drug_code)
-    if verbose: 
-        logging.info(f"Removing {sum(~mask)} sessions with no {drug} administrated")
-    df = df[mask]
-    df['drug'] = drug
-    df = df.drop(columns=['din', 'cco_drug_code'])
-    df = df[df['measurement_unit'].isin(['mg', 'MG'])] # remove rows with measurement unit of g, unit, mL, nan
-
-    # multiple dose administration on the same day and same drug - combine them together
-    dosage = 'dose_administered'
-    cols = df.columns.drop(dosage)
-    mask = df.duplicated(subset=cols, keep=False)
-    if verbose: 
-        logging.info(f"Collapsing {sum(~df[mask].duplicated())} same day sessions with multiple doses administered")
-    df.loc[mask, dosage] = df[mask].groupby(['ikn', 'visit_date'])[dosage].transform('sum')
-    df = pd.concat([df[~mask], df[mask].drop_duplicates()])
-    df = df.sort_values(by='visit_date') # order the dataframe by date
-        
-    return df
-
-def systemic_worker(partition, method='merge', merge_days=4):
-    """
-    Creates engineered features such as days_since_starting_chemo, days_since_last_chemo, chemo_cycle, immediate_new_regimen
-    Handles small interval chemo sessions 2 ways
-    1. Merge them together
-       e.g. May 1  10gm     ->    May 1  12gm
-            May 2  1gm            May 16 10gm
-            May 4  1gm
-            May 16 10gm
-    2. Include only the first chemo session in a given week
-       e.g. May 1  10gm     ->    May 1  10gm
-            May 2  1gm            May 16 5gm
-            May 4  1gm
-            May 16 5gm
-    NOTE: use 2nd method when you don't care about the chemo dosages and just care about the rough dates
-    
-    Args:
-        method (str): either 'merge' or 'one-per-week'
-        merge_days (int): max number of intervals/days you can merge
-    """
-    if method not in {'merge', 'one-per-week'}:
-        raise ValueError('method must be either merge or one-per-week')
-        
-    values = []
-    for ikn, df in tqdm.tqdm(partition.groupby('ikn')):
-        df = df.sort_values(by='visit_date') # might be redundant but just in case
-
-        if method == 'one-per-week':
-            # keep only the first chemo visit of a given week
-            keep_indices = []
-            tmp = df
-            while not tmp.empty:
-                first_chemo_idx = tmp.index[0]
-                keep_indices.append(first_chemo_idx)
-                first_visit_date = df['visit_date'].loc[first_chemo_idx]
-                tmp = tmp[tmp['visit_date'] >= first_visit_date + pd.Timedelta('7 days')]
-            df = df.loc[keep_indices]
-        elif method == 'merge':
-            # merges small intervals into a 4 day cycle, or to the row below/above that has interval greater than 4 days
-            df['next_visit_date'] = df['visit_date'].shift(-1)
-            df['chemo_interval'] = (df['next_visit_date'] - df['visit_date']).dt.days
-            df = merge_intervals(df, merge_days=4)
-            if df.empty:
-                # most likely patient had consecutive 1 day interval chemo sessions that totaled less than 4 days
-                # OR patient has only two chemo sessions (one row) in which interval was less than 4 days
-                continue
-
-        start_date = df['visit_date'].iloc[0]
-        df['days_since_starting_chemo'] = (df['visit_date'] - start_date).dt.days
-        df['days_since_last_chemo'] = (df['visit_date'] - df['visit_date'].shift()).dt.days
-
-        # identify chemo cycle number (resets when patient undergoes new chemo regimen or there is a 60 day gap)
-        new_regimen = (df['regimen'] != df['regimen'].shift())
-        mask = new_regimen | (df['days_since_last_chemo'] >= 60)
-        df['chemo_cycle'] = compute_chemo_cycle(mask)
-
-        # identify if this is the first chemo cycle of a new regimen immediately after the old one
-        mask = new_regimen & (df['days_since_last_chemo'] < 30)
-        df['immediate_new_regimen'] = mask
-
-        # convert to list and combine for faster performance
-        values.extend(df.values.tolist())
-        
-    return values
-
-def process_systemic_data(df, cycle_length_mapping=None, method='merge', merge_days=4):
-    """
-    Args:
-        cycle_length_mapping (dict or None): mapping between regimens and their shortest cycle lengths
-    """
-    if cycle_length_mapping is not None:
-        df['cycle_length'] = df['regimen'].map(cycle_length_mapping)
-        
-    worker = partial(systemic_worker, method=method, merge_days=merge_days)
-    values = split_and_parallelize(df, worker)
-    extra_cols = ['days_since_starting_chemo', 'days_since_last_chemo', 'chemo_cycle', 'immediate_new_regimen']
-    if method == 'merge': extra_cols = ['next_visit_date', 'chemo_interval'] + extra_cols
-    cols = df.columns.tolist() + extra_cols
-    df = pd.DataFrame(values, columns=cols)
-    return df
-
-# y3 (cancer diagnosis and demographic) data
+###############################################################################
+# y3 (Cancer Diagnosis and Demographic) Data
+###############################################################################
 def filter_y3_data(y3, include_death=False):
     cols = y3_cols.copy()
     y3 = clean_string(y3, ['ikn', 'lhin_cd', 'curr_morph_cd', 'curr_topog_cd', 'sex'])
     y3['bdate'] = pd.to_datetime(y3['bdate'])
     
     if include_death:
-        cols += ['vital_status_cd', 'D_date']
+        cols += ['vital_status_cd', 'D_date', 'dolc']
         
         # organize and format columns
         y3 = clean_string(y3, ['vital_status_cd'])
@@ -504,7 +382,7 @@ def filter_cancer_and_demographic_data(chemo_df, exclude_blood_cancers=True, ver
     # remove morphology codes >= 959
     mask = chemo_df['curr_morph_cd'] >= '959'
     if verbose:
-        logging.info(f"Removing {chemo_df.loc[mask, 'ikn'].nunique()} patients and " + \
+        logging.info(f"Removing {chemo_df.loc[mask, 'ikn'].nunique()} patients and "
                      f"cancer types {chemo_df.loc[mask, 'curr_morph_cd'].unique()}")
     chemo_df = chemo_df[~mask]
     
@@ -524,7 +402,9 @@ def process_cancer_and_demographic_data(y3, systemic, exclude_blood_cancers=True
     if verbose: logging.info(f"Size of data after cleaning = {len(chemo_df)}")
     return chemo_df
 
+###############################################################################
 # Immigration
+###############################################################################
 def filter_immigration_data(immigration):
     immigration = clean_string(immigration, ['ikn', 'official_language'])
     immigration['speaks_english'] = immigration['official_language'].isin(english_lang_codes) # able to speak english
@@ -540,7 +420,9 @@ def process_immigration_data(chemo_df, immigration):
     chemo_df['is_immigrant'] = chemo_df['is_immigrant'].fillna(False)
     return chemo_df
 
+###############################################################################
 # Combordity
+###############################################################################
 def filter_combordity_data(combordity):
     combordity = clean_string(combordity, ['ikn'])
     for col in ['diabetes_diag_date', 'hypertension_diag_date']:
@@ -549,7 +431,9 @@ def filter_combordity_data(combordity):
     combordity.columns = combordity.columns.str.split('_').str[0]
     return combordity
 
+###############################################################################
 # Dialysis
+###############################################################################
 def filter_dialysis_data(dialysis):
     dialysis = clean_string(dialysis, ['ikn'])
     dialysis['servdate'] = pd.to_datetime(dialysis['servdate'])
@@ -563,7 +447,7 @@ def dialysis_worker(partition, days_after=90):
     # determine if patient recieved dialysis x to x+180 days (e.g. 3-6 months) after treatment
     chemo_df, dialysis = partition
     result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
         dialysis_group = dialysis[dialysis['ikn'] == ikn]
         for chemo_idx, chemo_row in chemo_group.iterrows():
             earliest_date = chemo_row['visit_date'] + pd.Timedelta(f'{days_after} days')
@@ -584,7 +468,42 @@ def process_dialysis_data(chemo_df, dialysis, days_after=90):
     chemo_df.loc[result, 'dialysis'] = True
     return chemo_df
 
-# Olis (blood work/lab test) data
+###############################################################################
+# OHIP (Palliative Consultation Service Billing) Data
+###############################################################################
+def filter_ohip_data(ohip):
+    ohip = clean_string(ohip, ['ikn', 'feecode'])
+    ohip['servdate'] = pd.to_datetime(ohip['servdate'])
+    ohip = ohip.sort_values(by='servdate')
+    return ohip
+
+def ohip_worker(partition):
+    # determine if patient requested any palliative consultation prior to treatment
+    chemo_df, ohip = partition
+    result = []
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
+        ohip_group = ohip[ohip['ikn'] == ikn]
+        for chemo_idx, chemo_row in chemo_group.iterrows():
+            ohip_before_chemo = ohip_group[ohip_group['servdate'] <= chemo_row['visit_date']]
+            if not ohip_before_chemo.empty:
+                # last item is always the last observed service date (we've already sorted by date)
+                ohip_before_chemo = ohip_before_chemo.iloc[-1]
+                result.append((chemo_idx, ohip_before_chemo['servdate']))
+    return result
+
+def process_ohip_data(chemo_df, ohip):
+    # filter out patients not in dataset
+    filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(ohip['ikn'])]
+    logging.info(f"{filtered_chemo_df['ikn'].nunique()} patients have requested palliative consultation services")
+    result = split_and_parallelize((filtered_chemo_df, ohip), ohip_worker)
+    result = pd.DataFrame(result, columns=['index', 'palliative_consultation_service_date'])
+    result = result.set_index('index')
+    chemo_df = chemo_df.join(result, how='left')
+    return chemo_df
+
+###############################################################################
+# OLIS (Blood Work/Lab Test) Data
+###############################################################################
 def filter_olis_data(olis, chemo_ikns, observations=None):
     """
     Args:
@@ -623,7 +542,7 @@ def filter_olis_data(olis, chemo_ikns, observations=None):
 def olis_worker(partition, earliest_limit=-5, latest_limit=28):
     chemo_df, olis_df = partition
     result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
         olis_group = olis_df[olis_df['ikn'] == ikn]
         for chemo_idx, chemo_row in chemo_group.iterrows():
             # see if there any blood count data within the dates of interest
@@ -642,7 +561,7 @@ def observation_worker(partition, days_ago=5):
     """
     chemo_df, olis_df = partition
     result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
         olis_group = olis_df[olis_df['ikn'] == ikn]
         for chemo_idx, chemo_row in chemo_group.iterrows():
             # see if there any blood count data since last chemo up to x days ago 
@@ -660,12 +579,12 @@ def observation_worker(partition, days_ago=5):
 def closest_measurement_worker(partition, days_after=90):
     """
     Finds the closest measurement x number of days after treatment to 2 years after treatment
-    partition must contain only one type of observation (e.g. serume creatinine observations only)
+    Partition must contain only one type of observation (e.g. serume creatinine observations only)
     """
     chemo_df, obs_df = partition
     obs_df = obs_df.sort_values(by='ObservationDateTime') # might be redundant but just in case
     result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
         obs_group = obs_df[obs_df['ikn'] == ikn]
         if obs_group.empty:
             continue
@@ -681,12 +600,21 @@ def closest_measurement_worker(partition, days_after=90):
             days_after_chemo = (closest_obs['ObservationDateTime'] - chemo_row['visit_date']).days
             result.append((chemo_idx, days_after_chemo, closest_obs['value']))
     return result
+
+def observation_change_worker(partition):
+    # finds the change since last measurement observation
+    result = []
+    for ikn, group in tqdm(partition.groupby('ikn')):
+        change = group[observation_cols] - group[observation_cols].shift()
+        result.append(change.reset_index().to_numpy())
+    return np.concatenate(result)
                           
 def postprocess_olis_data(chemo_df, olis_df, observations=all_observations, days_range=range(-5,29)):
-    # fill up the blood count dataframes for each blood type
+    # for each observation type, create a time series of observation counts 
+    # during day X to day Y after treatment (X and Y from days_range) for each session
     mapping = {obs_code: pd.DataFrame(index=chemo_df.index, columns=days_range) for obs_code in observations}
     olis_df = olis_df[olis_df['observation_code'].isin(observations)] # exclude obs codes not in selected observations
-    for obs_code, obs_group in tqdm.tqdm(olis_df.groupby('observation_code')):
+    for obs_code, obs_group in tqdm(olis_df.groupby('observation_code')):
         for day, day_group in obs_group.groupby('days_after_chemo'):
             chemo_indices = day_group['chemo_idx'].values.astype(int)
             obs_count_values = day_group['observation_count'].values.astype(float)
@@ -696,9 +624,9 @@ def postprocess_olis_data(chemo_df, olis_df, observations=all_observations, days
     freq_map = olis_df['observation_code'].value_counts()
     grouped_observations = group_observations(observations, freq_map)
     
-    # get baseline observation counts, combine it to chemo_df 
+    # get baseline (pre-treatment) observation counts, combine it to chemo_df 
     num_rows = {'chemo_df': len(chemo_df)} # Number of non-missing rows
-    for obs_name, obs_codes in tqdm.tqdm(grouped_observations.items()):
+    for obs_name, obs_codes in tqdm(grouped_observations.items()):
         col = f'baseline_{obs_name}_count'
         for i, obs_code in enumerate(obs_codes):
             # forward fill observation counts from day -5 to day 0
@@ -718,10 +646,18 @@ def postprocess_olis_data(chemo_df, olis_df, observations=all_observations, days
         num_rows[obs_name] = sum(~chemo_df[col].isnull())
     missing_df = pd.DataFrame(num_rows, index=['num_rows_not_null'])
     missing_df = missing_df.T.sort_values(by='num_rows_not_null')
+    
+    # get changes since last baseline measurements
+    result = split_and_parallelize(chemo_df, observation_change_worker)
+    result = pd.DataFrame(result, columns=['index']+observation_change_cols)
+    result = result.set_index('index')
+    chemo_df = chemo_df.join(result)
        
-    return mapping, missing_df
+    return chemo_df, mapping, missing_df
 
-# Esas (questionnaire) data
+###############################################################################
+# ESAS (Questionnaire) Data
+###############################################################################
 def filter_esas_data(esas, chemo_ikns):
     esas = esas.rename(columns={'esas_value': 'severity', 'esas_resourcevalue': 'symptom'})
     esas = clean_string(esas, ['ikn', 'severity', 'symptom'])
@@ -741,7 +677,7 @@ def filter_esas_data(esas, chemo_ikns):
 def esas_worker(partition):
     chemo_df, esas_df = partition
     result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
         esas_group = esas_df[esas_df['ikn'] == ikn]
         for idx, chemo_row in chemo_group.iterrows():
             visit_date = chemo_row['visit_date']
@@ -785,7 +721,9 @@ def postprocess_esas_responses(esas_df):
     
     return esas_df
 
-# ECOG (perforamnce status)/PRFS (functionality status) data (aka body functionality grade)
+###############################################################################
+# ECOG (Body Perforamnce Status) / PRFS (Body Functionality Status) Data
+###############################################################################
 def filter_body_functionality_data(df, chemo_ikns, dataset='ecog'):
     if dataset not in {'ecog', 'prfs'}: raise ValueError('dataset must be either ecog or prfs')
         
@@ -807,7 +745,7 @@ def filter_body_functionality_data(df, chemo_ikns, dataset='ecog'):
 def body_functionality_worker(partition, dataset='ecog'):
     chemo_df, bf_df = partition
     result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn'), position=0):
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn'), position=0):
         bf_group = bf_df[bf_df['ikn'] == ikn]
         for idx, chemo_row in chemo_group.iterrows():
             visit_date = chemo_row['visit_date']
@@ -818,7 +756,9 @@ def body_functionality_worker(partition, dataset='ecog'):
                 result.append((idx, bf_most_recent[f'{dataset}_grade'], bf_most_recent['surveydate']))
     return result
 
+###############################################################################
 # Blood Transfusions
+###############################################################################
 def filter_blood_transfusion_data(chunk, chemo_ikns, event='H'):
     col, _ = event_map[event]['date_col_name']
     # organize and format columns
@@ -844,7 +784,7 @@ def blood_transfusion_worker(partition, event='H'):
     date_col, _ = event_map[event]['date_col_name']
     chemo_df, bt_df = partition
     result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
         earliest_date = chemo_group['visit_date'] - pd.Timedelta('5 days')
         latest_date = chemo_group['next_visit_date'] + pd.Timedelta('3 days') 
         bt_group = bt_df[bt_df['ikn'] == ikn]
@@ -884,7 +824,9 @@ def postprocess_blood_transfusion_data(chemo_df, main_dir, event='H'):
         chemo_df.loc[chemo_indices, transfusion_type] = dates
     return chemo_df, df
 
+###############################################################################
 # ED/H Events
+###############################################################################
 def get_event_reason(df, event):
     raw_diag_codes = pd.Series(df[diag_cols].values.flatten())
     raw_diag_codes = raw_diag_codes[raw_diag_codes.notnull()]
@@ -953,7 +895,7 @@ def event_worker(partition, event='H'):
     cols = event_df.columns.drop(['ikn']).tolist()
     placeholder = ''
     result = []
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
         event_group = event_df[event_df['ikn'] == ikn]
         event_arrival_dates = event_group['arrival_date'] 
         event_depart_dates = event_group['depart_date'] # keep in mind, for ED, depart date and arrival date are the same
@@ -991,11 +933,13 @@ def extract_event_dates(chemo_df, event_df, output_path, event='H', processes=16
     
     return event_dates
 
+###############################################################################
 # Inpatients
+###############################################################################
 def get_inpatient_indices(partition):
     chemo_df, H_df = partition
     result = set()
-    for ikn, chemo_group in tqdm.tqdm(chemo_df.groupby('ikn')):
+    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
         H_group = H_df[H_df['ikn'] == ikn]
         for H_idx, H_row in H_group.iterrows():
             arrival_date = H_row['arrival_date']
