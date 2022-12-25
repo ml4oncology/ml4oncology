@@ -41,6 +41,7 @@ def main():
     sas_to_csv('dialysis_ohip', transfer_date='20220509') # dialysis
     sas_to_csv('cohort_ohip', new_name='ohip', folder=sas_folder2) # OHIP: Ontario Health Insurance Plan database
     sas_to_csv('cohort_incq', new_name='income', folder=sas_folder2) # neighborhood income quintile database
+    sas_to_csv('cohort_rural_eth', new_name='rural', folder=sas_folder2) # urban area vs rural area
     
     # Extra - extract olis units
     extract_observation_units()

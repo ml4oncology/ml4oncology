@@ -17,7 +17,7 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[2]:
+# In[1]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[3]:
+# In[2]:
 
 
 import os
@@ -52,19 +52,19 @@ from src.preprocess import (filter_systemic_data, process_systemic_data,
                             extract_blood_transfusion_data, postprocess_blood_transfusion_data)
 
 
-# In[4]:
+# In[3]:
 
 
 get_ipython().system('ls $sas_folder')
 
 
-# In[5]:
+# In[4]:
 
 
 get_ipython().system('du -h $sas_folder/olis.sas7bdat $sas_folder/systemic.sas7bdat $sas_folder/y3.sas7bdat')
 
 
-# In[6]:
+# In[5]:
 
 
 # config
@@ -76,7 +76,7 @@ if not os.path.exists(f'{main_dir}/data'):
 
 # # Selected Regimens
 
-# In[7]:
+# In[21]:
 
 
 regimens = load_included_regimens(criteria='cytotoxic')
@@ -113,7 +113,7 @@ print(f"Number of patients = {systemic['ikn'].nunique()}")
 print(f"Number of unique regiments = {systemic['regimen'].nunique()}")
 
 
-# In[21]:
+# In[6]:
 
 
 systemic = pd.read_csv(f'{main_dir}/data/systemic.csv', dtype={'ikn': str})
@@ -180,7 +180,7 @@ chemo_df.to_csv(f'{main_dir}/data/chemo_processed.csv', index=False)
 # ### Include features from olis (blood work/lab test observation count) dataset
 # Note: I think they made a mistake. The variable <b>value_recommended_d</b> is the value of the test result (variable should be named "value")
 
-# In[7]:
+# In[32]:
 
 
 chemo_df = load_chemo_df(main_dir)

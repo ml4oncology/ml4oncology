@@ -32,12 +32,12 @@ get_ipython().run_line_magic('autoreload', '2')
 import numpy as np
 import pandas as pd
 pd.options.mode.chained_assignment = None
-from pyspark.sql import SparkSession
+pd.set_option('display.max_rows', 150)
 
 from src.spark import clean_string as spark_clean_string
 from src.config import (root_path, acu_folder, death_folder, max_chemo_date, y3_cols)
-from src.utility import (clean_string)
-from src.preprocess import (filter_y3_data, filter_ohip_data, process_ohip_data)
+from src.utility import (clean_string, get_mapping_from_textfile)
+from src.preprocess import (filter_y3_data, get_world_region_of_birth, filter_ohip_data, process_ohip_data)
 
 
 # In[3]:
@@ -69,9 +69,56 @@ chemo_df['visit_date'] = pd.to_datetime(chemo_df['visit_date'])
 print(f"NSessions: {len(chemo_df)}. NPatients: {chemo_df['ikn'].nunique()}")
 
 
-# ### Include death date features
+# ### Include urban vs rural feature
 
 # In[6]:
+
+
+rural = pd.read_csv(f'{root_path}/data/rural.csv')
+rural = clean_string(rural, ['ikn', 'rural'])
+rural['rural'].replace({'N': False, 'Y': True}, inplace=True)
+chemo_df = pd.merge(chemo_df, rural, on='ikn', how='left')
+chemo_df['rural'].fillna(False, inplace=True) # nans are negligible (0.7% prevalence), assume urban
+
+
+# ### Include world region of birth feature
+
+# In[7]:
+
+
+immigration = pd.read_csv(f'{root_path}/data/immigration.csv')
+cols = ['ikn', 'country_birth', 'nat_language']
+immigration = clean_string(immigration, cols)
+immigration = immigration[cols]
+
+
+# In[8]:
+
+
+# only use data from urban area
+mask = immigration['ikn'].map(dict(rural.to_numpy()))
+mask.fillna(True, inplace=True)
+immigration = immigration[~mask]
+
+
+# In[9]:
+
+
+country_code_map = get_mapping_from_textfile(filepath=f'{root_path}/data/country_codes.txt')
+immigration = get_world_region_of_birth(immigration, country_code_map)
+chemo_df = pd.merge(chemo_df, immigration[['ikn', 'world_region_of_birth']], on='ikn', how='left')
+chemo_df['world_region_of_birth'].fillna('Unknown', inplace=True)
+
+
+# In[10]:
+
+
+chemo_df['world_region_of_birth'].value_counts()
+
+
+# ### Include death date features
+
+# In[11]:
 
 
 y3 = pd.read_csv(f'{root_path}/data/y3.csv')
@@ -79,12 +126,11 @@ y3 = filter_y3_data(y3, include_death=True)
 y3 = y3[['ikn', 'D_date']]
 chemo_df = chemo_df[chemo_df['ikn'].isin(y3['ikn'])]
 chemo_df = pd.merge(chemo_df, y3, on='ikn', how='left')
-print(f"NSessions: {len(chemo_df)}. NPatients: {chemo_df['ikn'].nunique()}")
 
 
 # ### Include last seen date features
 
-# In[7]:
+# In[12]:
 
 
 chemo_df['last_seen_date'] = chemo_df['D_date']
@@ -92,35 +138,20 @@ chemo_df['last_seen_date'] = chemo_df['last_seen_date'].fillna(max_chemo_date)
 
 
 # ### Include features from OHIP database
-# Get Physician Billing Codes for Palliative Consultation Service
+# Get date of palliative care consultation services (PCCS) via physician billing codes (A945 and C945)
 
-# In[8]:
+# In[13]:
 
 
 # Extract and Preprocess the OHIP Data
 ohip = pd.read_csv(f'{root_path}/data/ohip.csv')
-ohip = filter_ohip_data(ohip)
+ohip = filter_ohip_data(ohip, billing_codes=['A945', 'C945'])
 
 # Process the OHIP Data
 chemo_df = process_ohip_data(chemo_df, ohip)
 
 
-# In[9]:
+# In[14]:
 
 
 chemo_df.to_csv(main_filepath, index=False)
-
-
-# ### Update ED/H dates
-
-# In[10]:
-
-
-for event in ['ED', 'H']:
-    filepath = f'{output_path}/data/{event}_dates.csv'
-    event_dates = pd.read_csv(filepath, dtype=str)
-    event_dates = event_dates[event_dates['chemo_idx'].isin(chemo_df['index'])]
-    event_dates.to_csv(filepath, index=False)
-
-
-# In[ ]:

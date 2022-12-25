@@ -14,24 +14,27 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
+from functools import partial 
+import argparse
+import pickle
 import os
 import sys
 sys.path.append(os.getcwd())
-import argparse
-import pickle
-import pandas as pd
+
+from sklearn.inspection import permutation_importance
+from sklearn.metrics import roc_auc_score
+from sklearn.tree import DecisionTreeClassifier as placeholderClassifier
 pd.options.mode.chained_assignment = None
 import numpy as np
+import pandas as pd
 
 from src.utility import (load_ml_model, load_ensemble_weights)
-from src.config import (root_path, cyto_folder, acu_folder, can_folder, death_folder,
-                        split_date, blood_types, variable_groupings_by_keyword)
+from src.config import (
+    root_path, cyto_folder, acu_folder, can_folder, death_folder, 
+    split_date, blood_types, variable_groupings_by_keyword
+)
 from src.prep_data import (PrepDataCYTO, PrepDataEDHD, PrepDataCAN)
 from src.train import (TrainML, TrainRNN)
-
-from sklearn.metrics import roc_auc_score
-from sklearn.inspection import permutation_importance
-from sklearn.tree import DecisionTreeClassifier as placeholderClassifier
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s', datefmt='%I:%M:%S')
@@ -40,8 +43,9 @@ class PermImportance:
     def __init__(self, output_path, split_date=None, preload=True):
         """
         Args:
-            split_date (str or None): date to temoporally split the data into development and testing cohort
-                                      if None, data will be split across all years evenly into train-val-test split
+            split_date (str): date to temoporally split the data into 
+                development and testing cohort. If None, data will be split 
+                across all years evenly into train-val-test split
         """
         self.output_path = output_path
         self.split_date = split_date
@@ -80,18 +84,22 @@ class PermImportance:
         raise NotImplementedError
         
     def clean_y(self, Y):
-        """
-        You can overwrite this to do custom operations
+        """You can overwrite this to do custom operations
         """
         return Y
         
     def get_data_splits(self, data, include_ikn=False):
         kwargs = {'target_keyword': self.target_keyword, 'split_date': self.split_date}
         X_train, X_valid, X_test, Y_train, Y_valid, Y_test = self.prep.split_data(data, **kwargs)
+        
         if include_ikn:
             # the ikn corresponding to each data split are assigned by matching the indices
             X_train['ikn'], X_valid['ikn'], X_test['ikn'] = data['ikn'], data['ikn'], data['ikn']
-        data_splits = (X_train, X_valid, X_test, self.clean_y(Y_train), self.clean_y(Y_valid), self.clean_y(Y_test)) 
+        
+        data_splits = (
+            X_train, X_valid, X_test, 
+            self.clean_y(Y_train), self.clean_y(Y_valid), self.clean_y(Y_test)
+        ) 
         return data_splits
         
     def get_data(self):
@@ -153,7 +161,10 @@ class PermImportance:
                 importances.append(orig_scores - roc_auc_score(self.Y_test, pred_prob, average=None))
             result.loc[col, self.target_events] = np.mean(importances, axis=0)
             logging.info(f'Successfully computed perm feature importance scores for {col}')
-        result.to_csv(f'{self.output_path}/perm_importance/{algorithm}_feature_importance.csv', index_label='index')
+        
+        # save results
+        filepath = f'{self.output_path}/perm_importance/{algorithm}_feature_importance.csv'
+        result.to_csv(filepath, index_label='index')
         
     def get_group_importance(self, algorithm):
         """Run permutation importance across subgroups of columns/features
@@ -175,7 +186,10 @@ class PermImportance:
                 importances.append(orig_scores - roc_auc_score(self.Y_test, pred_prob, average=None))
             result.loc[group, self.target_events] = np.mean(importances, axis=0)
             logging.info(f'Successfully computed perm group importance scores for {group}')
-        result.to_csv(f'{self.output_path}/perm_importance/{algorithm}_group_importance.csv', index_label='index')
+            
+        # save results
+        filepath = f'{self.output_path}/perm_importance/{algorithm}_group_importance.csv'
+        result.to_csv(filepath, index_label='index')
             
 class PermImportanceCYTO(PermImportance):
     """Permutation importance for cytopenia
@@ -189,8 +203,7 @@ class PermImportanceCYTO(PermImportance):
         return self.prep.get_data(missing_thresh=75)
     
 class PermImportancePROACCT(PermImportance):
-    """
-    Permutation importance for acute care use (ED/H)
+    """Permutation importance for acute care use (ED/H)
     ED - Emergency Department visits
     H - Hospitalizations
     """
@@ -213,7 +226,7 @@ class PermImportanceDEATH(PermImportance):
         super().__init__(output_path, split_date=split_date)
     
     def load_data(self):
-        return self.prep.get_data(self.target_keyword, missing_thresh=75, treatment_intent=['P'])
+        return self.prep.get_data(self.target_keyword, missing_thresh=75, treatment_intents=['P'])
     
 class PermImportanceCAN(PermImportance):
     """Permutation importance for cisplatin-induced nephrotoxicity
@@ -247,29 +260,26 @@ def main_death(permute_group=False):
     pm = PermImportanceDEATH(output_path)
     main(pm, permute_group=permute_group)
         
-def main_caaki(permute_group=False):
-    adverse_event = 'aki'
-    output_path = f'{root_path}/{can_folder}/models/{adverse_event.upper()}'
-    pm = PermImportanceCAN(output_path, adverse_event)
-    main(pm, permute_group=permute_group)
-    
-def main_cackd(permute_group=False):
-    adverse_event = 'ckd'
+def main_can(adverse_event='aki', permute_group=False):
     output_path = f'{root_path}/{can_folder}/models/{adverse_event.upper()}'
     pm = PermImportanceCAN(output_path, adverse_event)
     main(pm, permute_group=permute_group)
     
 if __name__ == '__main__':
-    main_events = {'CYTO': main_cyto, # Cytopenia
-                   'ACU': main_acu,  # Acute Care Use
-                   'CAAKI': main_caaki, # Cisplatin-Associated Acute Kidney Injury
-                   'CACKD': main_cackd, # Cisplatin-Associated Chronic Kidney Disease
-                   'DEATH': main_death}
+    main_events = {
+        'CYTO': main_cyto, # Cytopenia
+        'ACU': main_acu,  # Acute Care Use
+        'CAAKI': partial(main_can, adverse_event='aki'), # Cisplatin-Associated Nephrotoxicicity
+        'CACKD': partial(main_can, adverse_event='ckd'), # Cisplatin-Associated Chronic Kidney Disease
+        'DEATH': main_death
+    }
     parser = argparse.ArgumentParser()
     parser.add_argument('--adverse-event', default='CYTO', choices=main_events.keys())
-    parser.add_argument('--permute-group', action='store_true', default=False, 
-                        help="Run permutation group importance (permute subset of alike features) " +\
-                        "instead of permutation feature importance (permute each feature)")
+    parser.add_argument(
+        '--permute-group', action='store_true', default=False, 
+        help=("Run permutation group importance (permute subset of alike features) "
+              "instead of permutation feature importance (permute each feature)")
+    )
     args = vars(parser.parse_args())
     main_event = main_events[args['adverse_event']]
     main_event(permute_group=args['permute_group'])

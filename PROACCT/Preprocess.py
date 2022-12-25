@@ -90,7 +90,7 @@ print(f"Number of unique regiments = {systemic['regimen'].nunique()}")
 print(f"Chemotherapy Cohort from {systemic['visit_date'].min()} to {systemic['visit_date'].max()}")
 
 
-# In[8]:
+# In[5]:
 
 
 systemic = pd.read_csv(f'{output_path}/data/systemic.csv', dtype={'ikn': str})
@@ -99,7 +99,7 @@ systemic['visit_date'] = pd.to_datetime(systemic['visit_date'])
 
 # ### Include features from y3 (cancer and demographic) dataset
 
-# In[9]:
+# In[6]:
 
 
 col_arrangement = ['ikn', 'regimen', 'visit_date', 'days_since_starting_chemo', 'days_since_last_chemo', 'chemo_cycle', 
@@ -107,7 +107,7 @@ col_arrangement = ['ikn', 'regimen', 'visit_date', 'days_since_starting_chemo', 
                    'curr_morph_cd', 'curr_topog_cd', 'age', 'sex', 'body_surface_area']
 
 
-# In[10]:
+# In[7]:
 
 
 # Extract and Preprocess the Y3 Data
@@ -117,7 +117,7 @@ print(f"Number of patients in y3 = {y3['ikn'].nunique()}")
 print(f"Number of patients in y3 and systemic = {y3['ikn'].isin(systemic['ikn']).sum()}")
 
 
-# In[11]:
+# In[8]:
 
 
 # Process the Y3 and Systemic Data
@@ -131,7 +131,7 @@ print(f"Number of male patients = {chemo_df.loc[chemo_df['sex'] == 'M', 'ikn'].n
 
 # ### Include features from income dataset
 
-# In[12]:
+# In[9]:
 
 
 income = pd.read_csv(f'{root_path}/data/income.csv')
@@ -142,7 +142,7 @@ chemo_df = pd.merge(chemo_df, income, on='ikn', how='left')
 
 # ### Include features from immigration dataset
 
-# In[13]:
+# In[10]:
 
 
 # Extract and Preprocess the Immigration Data
@@ -156,7 +156,7 @@ chemo_df.to_csv(f'{output_path}/data/chemo_processed.csv', index=False)
 
 # ### Include features from olis (lab test observations) dataset
 
-# In[5]:
+# In[16]:
 
 
 chemo_df = load_chemo_df(output_path, includes_next_visit=False)
@@ -182,7 +182,7 @@ result = pd.DataFrame(result, columns=['observation_code', 'chemo_idx', 'days_af
 result.to_csv(f'{output_path}/data/olis2.csv', index=False)
 
 
-# In[6]:
+# In[17]:
 
 
 # Process the OLIS Features
@@ -214,7 +214,7 @@ result = pd.DataFrame(result, columns=['index', 'symptom', 'severity', 'survey_d
 result.to_csv(f'{output_path}/data/esas2.csv', index=False)
 
 
-# In[8]:
+# In[18]:
 
 
 # Process the Questionnaire responses
@@ -243,7 +243,7 @@ for dataset in ['ecog', 'prfs']:
     result.to_csv(f'{output_path}/data/{dataset}.csv', index=False)
 
 
-# In[10]:
+# In[19]:
 
 
 for dataset in ['ecog', 'prfs']:
@@ -256,10 +256,10 @@ for dataset in ['ecog', 'prfs']:
     chemo_df = chemo_df.join(bf, how='left') # ALT WAY: pd.merge(chemo_df, ecog, left_index=True, right_index=True, how='left')
 
 
-# In[11]:
+# In[27]:
 
 
-chemo_df.to_csv(f'{output_path}/data/model_data.csv', index_label='index')
+chemo_df.to_csv(f'{output_path}/data/model_data.csv', index=False)
 
 
 # ## Get ED/H Events from dad and nacrs dataset

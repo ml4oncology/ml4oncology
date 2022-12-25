@@ -17,7 +17,7 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[3]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[2]:
+# In[4]:
 
 
 import pandas as pd
@@ -38,7 +38,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 from src.utility import (initialize_folders, load_predictions,
-                         get_nunique_entries, get_nmissing)
+                         get_nunique_categories, get_nmissing)
 from src.summarize import (data_characteristic_summary, feature_summary, subgroup_performance_summary)
 from src.visualize import (importance_plot, subgroup_performance_plot)
 from src.config import (root_path, acu_folder)
@@ -47,7 +47,7 @@ from src.train import (TrainML, TrainRNN, TrainENS)
 from src.evaluate import (Evaluate)
 
 
-# In[3]:
+# In[5]:
 
 
 # config
@@ -61,7 +61,7 @@ initialize_folders(output_path, extra_folders=['figures/important_groups'])
 
 # # Prepare Data for Model Training
 
-# In[4]:
+# In[6]:
 
 
 prep = PrepDataEDHD(adverse_event='acu')
@@ -69,25 +69,25 @@ model_data = prep.get_data(target_keyword, verbose=True)
 model_data
 
 
-# In[5]:
+# In[7]:
 
 
 sorted(model_data.columns.tolist())
 
 
-# In[6]:
+# In[8]:
 
 
-get_nunique_entries(model_data)
+get_nunique_categories(model_data)
 
 
-# In[7]:
+# In[9]:
 
 
 get_nmissing(model_data, verbose=True)
 
 
-# In[8]:
+# In[10]:
 
 
 prep = PrepDataEDHD(adverse_event='acu') # need to reset
@@ -98,7 +98,7 @@ N = model_data.loc[model_data['ACU_within_30days'], 'ikn'].nunique()
 print(f"Number of unique patients that had ACU within 30 days after a treatment session: {N}")
 
 
-# In[9]:
+# In[11]:
 
 
 # NOTE: any changes to X_train, X_valid, etc will also be seen in dataset
@@ -106,13 +106,13 @@ kwargs = {'target_keyword': target_keyword}
 dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), **kwargs)
 
 
-# In[10]:
+# In[12]:
 
 
 prep.get_label_distribution(Y_train, Y_valid, Y_test)
 
 
-# In[11]:
+# In[13]:
 
 
 Y_train.columns = Y_train.columns.str.replace(target_keyword, '')
@@ -122,17 +122,17 @@ Y_test.columns = Y_test.columns.str.replace(target_keyword, '')
 
 # # Train ML Models
 
-# In[140]:
+# In[12]:
 
 
 # Initialize Training class
 train_ml = TrainML(dataset, output_path, n_jobs=processes)
 
 
-# In[ ]:
+# In[14]:
 
 
-skip_alg = []
+skip_alg = ['XGB', 'LR', 'RF']
 train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True, skip_alg=skip_alg)
 
 
@@ -170,7 +170,7 @@ train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration
 # # Train ENS Model 
 # Find Optimal Ensemble Weights
 
-# In[12]:
+# In[36]:
 
 
 # combine rnn and ml predictions
@@ -182,7 +182,7 @@ del preds_rnn
 train_ens = TrainENS(dataset, output_path, preds)
 
 
-# In[ ]:
+# In[37]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -190,20 +190,34 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # # Evaluate Models
 
-# In[ ]:
+# In[40]:
+
+
+kwargs = {'baseline_cols': ['regimen'], 'display_ci': True, 'load_ci': True, 'save_ci': True, 'verbose': False}
+x = eval_models.get_evaluation_scores(**kwargs)
+
+
+# In[48]:
+
+
+x['Test'].loc[(slice(None), slice('AUROC Score')), 
+              ['ACU', 'ED', 'H', 'TR_ACU', 'TR_ED', 'TR_H', 'INFX_ED', 'INFX_H','GI_ED', 'GI_H']].T
+
+
+# In[38]:
 
 
 eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
 
 
-# In[21]:
+# In[17]:
 
 
-kwargs = {'get_baseline': True, 'display_ci': True, 'load_ci': True, 'save_ci': True, 'verbose': False}
+kwargs = {'baseline_cols': ['regimen'], 'display_ci': True, 'load_ci': True, 'save_ci': True, 'verbose': False}
 eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[22]:
+# In[18]:
 
 
 eval_models.plot_curves(curve_type='pr', legend_location='upper right', figsize=(12,18), save=False)
@@ -215,9 +229,16 @@ eval_models.plot_calibs(legend_location='upper left', figsize=(12,18), save=Fals
 
 # # Post-Training Analysis
 
+# In[71]:
+
+
+event_dates = prep.event_dates[['visit_date', 'next_ED_date', 'next_H_date']]
+event_dates['ikn'] = model_data['ikn']
+
+
 # ## Study Characteristics
 
-# In[98]:
+# In[19]:
 
 
 data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models')
@@ -225,7 +246,7 @@ data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models')
 
 # ## Feature Characteristics
 
-# In[23]:
+# In[20]:
 
 
 feature_summary(eval_models, prep, target_keyword, save_dir=f'{main_dir}/models').head(60)
@@ -233,12 +254,12 @@ feature_summary(eval_models, prep, target_keyword, save_dir=f'{main_dir}/models'
 
 # ## Threshold Operating Points
 
-# In[38]:
+# In[16]:
 
 
 pred_thresholds = np.arange(0.05, 0.51, 0.05)
 thresh_df = eval_models.operating_points(algorithm='ENS', points=pred_thresholds, metric='threshold',
-                                         include_outcome_recall=True, event_dates=prep.event_dates)
+                                         include_outcome_recall=True, event_dates=event_dates)
 thresh_df
 
 
@@ -250,14 +271,14 @@ thresh_df
 get_ipython().system('python scripts/perm_importance.py --adverse-event ACU')
 
 
-# In[17]:
+# In[15]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
 importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,50), top=10, importance_by='feature', padding={'pad_x0': 4.0})
 
 
-# In[18]:
+# In[16]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
@@ -266,22 +287,26 @@ importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,50), t
 
 # ## Performance on Subgroups
 
-# In[134]:
+# In[83]:
 
 
-df = subgroup_performance_summary('ENS', eval_models, pred_thresh=0.25, display_ci=False, load_ci=False, save_ci=False)
-df
+subgroups = {'all', 'age', 'sex', 'immigrant', 'regimen', 'cancer_location', 'days_since_starting'}
+subgroup_performance = subgroup_performance_summary(
+    'ENS', eval_models, pred_thresh=0.25, subgroups=subgroups, display_ci=False, load_ci=False, save_ci=False,
+    include_outcome_recall=True, event_dates=event_dates
+)
+subgroup_performance
 
 
 # ## Decision Curve Plot
 
-# In[37]:
+# In[21]:
 
 
-result = eval_models.plot_decision_curve_analysis('ENS', padding={'pad_x0': 1.0})
+result = eval_models.plot_decision_curves('ENS', padding={'pad_x0': 1.0})
 
 
-# In[61]:
+# In[22]:
 
 
 # find threshold range where net benefit for system is better than treat all and treat none (aka 0)
@@ -297,22 +322,24 @@ pd.DataFrame(thresh_range, index=['Threshold Min', 'Threshold Max']).T
 
 # ### All the Plots
 
-# In[26]:
+# In[20]:
 
 
-eval_models.all_plots_for_single_target(algorithm='ENS', target_event='ACU')
+eval_models.all_plots_for_single_target(alg='ENS', target_event='ACU')
 
 
 # ### Subgroup Performance Plot
 
-# In[136]:
+# In[23]:
 
 
-groupings = {'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Neighborhood Income Quintile'],
-             'Treatment': ['Entire Test Cohort', 'Regimen', 'Cancer Location', 'Days Since Starting Regimen']}
+groupings = {
+    'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Neighborhood Income Quintile'],
+    'Treatment': ['Entire Test Cohort', 'Regimen', 'Cancer Topography ICD-0-3', 'Days Since Starting Regimen']
+}
 padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
 for name, subgroups in groupings.items():
-    subgroup_performance_plot(df, target_event='ACU', subgroups=subgroups, padding=padding,
+    subgroup_performance_plot(subgroup_performance, target_event='ACU', subgroups=subgroups, padding=padding,
                               figsize=(12,24), save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}')
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
@@ -323,9 +350,10 @@ for name, subgroups in groupings.items():
 
 # ## Brooks 2 Variable Based Model
 
-# In[137]:
+# In[21]:
 
 
+prep = PrepDataEDHD(adverse_event='acu')
 df = prep.get_data(target_keyword)
 print(f'Size of data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
 df = df.loc[Y_test.index]
@@ -336,7 +364,7 @@ df = df[df['days_since_starting_chemo'] == 0] # very first treatment
 print(f'Size of test data with only first day chemos = {len(df)}, Number of patients = {df["ikn"].nunique()}')
 
 
-# In[6]:
+# In[22]:
 
 
 def predict(df):
@@ -344,7 +372,7 @@ def predict(df):
     return 1 / (1 + np.exp(-x))
 
 
-# In[68]:
+# In[23]:
 
 
 split = 'Test'
@@ -355,14 +383,14 @@ preds = {split: {'ENS': train_ens.preds[split]['ENS'].loc[df.index],
 eval_brooks_model = Evaluate(output_path='', preds=preds, labels=labels, orig_data=df)
 
 
-# In[69]:
+# In[24]:
 
 
 # label distribtuion
 labels[split].apply(pd.value_counts)
 
 
-# In[70]:
+# In[25]:
 
 
 kwargs = {'algorithms': ['ENS', 'BRK'], 'splits': ['Test'], 'display_ci': True, 'save_score': False}
@@ -370,14 +398,15 @@ result = eval_brooks_model.get_evaluation_scores(**kwargs)
 result
 
 
-# In[71]:
+# In[27]:
 
 
-eval_brooks_model.all_plots_for_single_target(algorithm='BRK', target_event='H', split='Test',
-                                              n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
+eval_brooks_model.all_plots_for_single_target(
+    alg='BRK', target_event='H', split='Test', n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False
+)
 
 
-# In[72]:
+# In[28]:
 
 
 points = np.arange(0.05, 0.51, 0.05)
@@ -386,24 +415,68 @@ eval_brooks_model.operating_points('BRK', points, metric='threshold', target_eve
 
 # ### Compare with ENS
 
-# In[73]:
+# In[29]:
 
 
-eval_brooks_model.all_plots_for_single_target(algorithm='ENS', target_event='H', split='Test',
-                                              n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
+eval_brooks_model.all_plots_for_single_target(
+    alg='ENS', target_event='H', split='Test', n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False
+)
 
 
-# In[74]:
+# In[30]:
 
 
 points = np.arange(0.05, 0.51, 0.05)
 eval_brooks_model.operating_points('ENS', points, metric='threshold', target_events=['H'], split='Test', save=False)
 
 
+# ## Final Output Plots
+
+# In[50]:
+
+
+from src.visualize import get_bbox
+
+
+# In[63]:
+
+
+alg, target_events, split = 'ENS', ['ACU'], 'Test'
+fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(12,12))
+axes = axes.flatten()
+plt.subplots_adjust(hspace=0.2, wspace=0.2)
+eval_models.plot_auc_curve(
+    axes[0], alg, target_events, split, curve_type='roc', legend_location='lower right', remove_legend_line=True
+)
+eval_models.plot_auc_curve(
+    axes[1], alg, target_events, split, curve_type='pr', legend_location='lower right', remove_legend_line=True
+)
+eval_models.plot_calib(axes[2], alg, target_events, split, legend_location='lower right', calib_ci=True)
+eval_models.plot_decision_curve(axes[3], alg, 'ACU', split)
+axes[3].set_yticks(np.arange(-0.05, 0.16, 0.05))
+for idx, filename in enumerate(['roc','pr','calib', 'dc']):
+    filepath = f'{output_path}/figures/output/{alg}_{filename}.jpg'
+    pad_x0 = 0.90 if filename == 'dc_30d_death' else 0.75
+    fig.savefig(filepath, bbox_inches=get_bbox(axes[idx], fig, pad_x0=pad_x0), dpi=300) 
+    axes[idx].set_title(filename) # set title AFTER saving individual figures
+
+
+# In[82]:
+
+
+subgroups = ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Regimen', 'Days Since Starting Regimen']
+padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
+subgroup_performance_plot(subgroup_performance, target_event='ACU', subgroups=subgroups, padding=padding,
+                          figsize=(12,30), save=True, save_dir=f'{output_path}/figures/output')
+
+
 # ## Hyperparameters
 
-# In[16]:
+# In[43]:
 
 
 from src.utility import get_hyperparameters
 get_hyperparameters(output_path, days=days)
+
+
+# In[ ]:

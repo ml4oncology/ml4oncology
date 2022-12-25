@@ -17,7 +17,7 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[2]:
+# In[1]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[3]:
+# In[2]:
 
 
 import os
@@ -41,7 +41,7 @@ import matplotlib.pyplot as plt
 
 from src.config import (root_path, can_folder, split_date, SCr_rise_threshold)
 from src.utility import (initialize_folders, load_predictions, 
-                         get_nunique_entries, get_nmissing, most_common_by_category,
+                         get_nunique_categories, get_nmissing, most_common_categories,
                          get_hyperparameters)
 from src.summarize import (data_characteristic_summary, feature_summary, subgroup_performance_summary)
 from src.visualize import (importance_plot, subgroup_performance_plot)
@@ -87,7 +87,7 @@ model_data
 # In[7]:
 
 
-most_common_by_category(model_data, category='regimen', with_respect_to='patients', top=10)
+most_common_categories(model_data, catcol='regimen', with_respect_to='patients', top=10)
 
 
 # In[8]:
@@ -99,7 +99,7 @@ sorted(model_data.columns.tolist())
 # In[9]:
 
 
-get_nunique_entries(model_data)
+get_nunique_categories(model_data)
 
 
 # In[10]:
@@ -203,7 +203,7 @@ eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=tr
 
 
 baseline_cols = ['regimen', 'baseline_eGFR']
-kwargs = {'get_baseline': True, 'baseline_cols': baseline_cols, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False}
+kwargs = {'baseline_cols': baseline_cols, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False}
 eval_models.get_evaluation_scores(**kwargs)
 
 
@@ -299,7 +299,7 @@ for name, subgroups in groupings.items():
 # In[78]:
 
 
-_ = eval_models.plot_decision_curve_analysis('ENS')
+_ = eval_models.plot_decision_curves('ENS')
 
 
 # In[79]:
@@ -508,7 +508,7 @@ for name, subgroups in groupings.items():
 # In[107]:
 
 
-eval_models.plot_decision_curve_analysis('ENS')
+eval_models.plot_decision_curves('ENS')
 
 
 # In[108]:

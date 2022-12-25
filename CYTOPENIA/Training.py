@@ -17,7 +17,7 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[5]:
+# In[1]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[6]:
+# In[2]:
 
 
 import tqdm
@@ -39,7 +39,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 from src.utility import (initialize_folders, load_predictions,
-                         get_nunique_entries, get_nmissing)
+                         get_nunique_categories, get_nmissing)
 from src.summarize import (data_characteristic_summary, feature_summary, subgroup_performance_summary)
 from src.visualize import (tree_plot, importance_plot, subgroup_performance_plot)
 from src.config import (root_path, cyto_folder, split_date, blood_types)
@@ -48,7 +48,7 @@ from src.train import (TrainML, TrainRNN, TrainENS)
 from src.evaluate import (Evaluate)
 
 
-# In[7]:
+# In[3]:
 
 
 # config
@@ -59,7 +59,7 @@ initialize_folders(output_path)
 
 # # Prepare Data for Model Training
 
-# In[8]:
+# In[4]:
 
 
 # Preparing Data for Model Input
@@ -88,7 +88,7 @@ prep.event_dates['first_visit_date'].dt.year.value_counts()
 # In[8]:
 
 
-get_nunique_entries(model_data)
+get_nunique_categories(model_data)
 
 
 # In[9]:
@@ -97,7 +97,7 @@ get_nunique_entries(model_data)
 get_nmissing(model_data, verbose=True)
 
 
-# In[9]:
+# In[10]:
 
 
 model_data = prep.get_data(missing_thresh=75, verbose=True)
@@ -109,20 +109,20 @@ for blood_type, blood_info in blood_types.items():
     print(f"Number of unique patients that had {blood_info['cytopenia_name']} before treatment session: {N}")
 
 
-# In[10]:
+# In[11]:
 
 
 # NOTE: any changes to X_train, X_valid, etc will also be seen in dataset
 dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), split_date=split_date)
 
 
-# In[11]:
+# In[12]:
 
 
 prep.get_label_distribution(Y_train, Y_valid, Y_test)
 
 
-# In[12]:
+# In[13]:
 
 
 # number of blood tranfusion occurences between visit date and next visit date
@@ -217,7 +217,7 @@ eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=tr
 
 
 baseline_cols = ['regimen'] + [f'baseline_{bt}_count' for bt in blood_types]
-kwargs = {'get_baseline': True, 'baseline_cols': baseline_cols, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False}
+kwargs = {'baseline_cols': baseline_cols, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False}
 eval_models.get_evaluation_scores(**kwargs)
 
 
@@ -302,7 +302,7 @@ df
 for blood_type, blood_info in blood_types.items():
     target_event = blood_info['cytopenia_name']
     print(f'Displaying all the plots for {target_event}')
-    eval_models.all_plots_for_single_target(algorithm='ENS', target_event=target_event, save=False)
+    eval_models.all_plots_for_single_target(alg='ENS', target_event=target_event, save=False)
 
 
 # ## Subgroup Performance Plot
@@ -329,7 +329,7 @@ for name, subgroups in groupings.items():
 # In[47]:
 
 
-result = eval_models.plot_decision_curve_analysis('ENS', xlim=(-0.05, 1.05))
+result = eval_models.plot_decision_curves('ENS', xlim=(-0.05, 1.05))
 result['Neutropenia'].tail(n=100)
 
 
