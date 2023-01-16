@@ -18,7 +18,7 @@ TERMS OF USE:
 root_path = 'XXXXX'
 share_path = 'XXXXX'
 sas_folder = 'XXXXX'
-sas_folder2 = 'XXXXX'
+sas_folder2 = 'XXXXXX'
 regiments_folder = 'XXXXX'
 cyto_folder = 'CYTOPENIA' # Cytopenia folder = 'CYTOPENIA'
 acu_folder = 'PROACCT' # Acute care use folder = 'PROACCT' (PRediction of Acute Care use during Cancer Treatment)
@@ -622,7 +622,7 @@ event_map = {
 # Subgroups
 # {group column name: {category: subgroup name associated with the category}
 subgroup_map = {
-    'is_immigrant': {False: 'Non-Immigrant', True: 'Immigrant'},
+    'is_immigrant': {False: 'Long-Term Resident', True: 'Recent Immigrant'},
     'speaks_english': {False: 'Non-English Speaker', True: 'English Speaker'},
     'sex': {'F': 'Female', 'M': 'Male'},
     'world_region_of_birth': {'do_not_include': ['Unknown', 'Other']},

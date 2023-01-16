@@ -37,22 +37,22 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from src.preprocess import (filter_ohip_data, process_ohip_data)
 from src.utility import (
     twolevel, initialize_folders, load_predictions,
     get_nunique_categories, get_nmissing, 
-    equal_rate_pred_thresh,
-    time_to_target_after_alarm, time_to_alarm_after_pccs
+    time_to_x_after_y,
 )
 from src.summarize import (
     data_characteristic_summary, feature_summary, 
     subgroup_performance_summary, 
-    pccs_receival_summary, eol_chemo_receival_summary
+    get_pccs_analysis_data, get_eol_treatment_analysis_data,
+    pccs_receival_summary, eol_treatment_receival_summary,
+    epc_impact_summary,
 )
 from src.visualize import (
-    get_bbox, importance_plot, subgroup_performance_plot,                
-    time_to_event_plot, pccs_receival_plot,                   
-    pccs_impact_plot, eol_chemo_impact_plot
+    get_bbox, importance_plot, subgroup_performance_plot,
+    time_to_event_plot, pccs_receival_plot, post_pccs_survival_plot,
+    remove_top_right_axis
 )
 from src.config import (root_path, death_folder, split_date)
 from src.prep_data import (PrepDataEDHD)
@@ -221,16 +221,16 @@ eval_models.plot_calibs(legend_location='upper left', figsize=(12,18), save=Fals
 
 # # Post-Training Analysis
 
-# In[24]:
+# In[43]:
 
 
-event_dates = prep.event_dates[['visit_date', 'D_date', 'PCCS_date']]
+event_dates = prep.event_dates[['visit_date', 'D_date', 'first_PCCS_date', 'last_seen_date']]
 event_dates['ikn'] = model_data['ikn']
 
 
 # ## Study Characteristics
 
-# In[125]:
+# In[17]:
 
 
 data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models/tables', partition='cohort', target_event='30d Mortality')
@@ -294,7 +294,7 @@ for idx, filename in enumerate(['roc','calib', 'dc_30d_death', 'dc_365d_death'])
 
 # ## Threshold Operating Points
 
-# In[19]:
+# In[153]:
 
 
 pred_thresholds = np.arange(0.05, 1.01, 0.05)
@@ -305,25 +305,25 @@ thresh_df
 
 
 # ## Threshold Selection
-# Select prediction threshold at which alarm rate and event rate are equal
 
-# In[25]:
-
-
-# year_mortality_thresh = 0.5
-year_mortality_thresh = equal_rate_pred_thresh(eval_models, event_dates, target_event='365d Mortality')
+# In[16]:
 
 
-# In[26]:
+# Select prediction threshold at which alarm rate and usual intervention rate is equal 
+# (resource utility is equal for both usual care and model-guided care)
+# year_mortality_thresh = equal_rate_pred_thresh(eval_models, event_dates, split='Valid', alg='ENS', target_event='365d Mortality')
+year_mortality_thresh = 0.5
 
 
-# month_mortality_thresh = 0.2
-month_mortality_thresh = equal_rate_pred_thresh(eval_models, event_dates, target_event='30d Mortality')
+# In[17]:
+
+
+month_mortality_thresh = 0.2
 
 
 # ## Performance on Subgroups
 
-# In[27]:
+# In[29]:
 
 
 df = subgroup_performance_summary(
@@ -333,13 +333,12 @@ df = subgroup_performance_summary(
 df
 
 
-# In[28]:
+# In[30]:
 
 
 groupings = {
     'Demographic': [
-        'Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Immigrant World Region of Birth', 
-        'Neighborhood Income Quintile', 'Area of Residence'
+        'Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Neighborhood Income Quintile', 'Area of Residence'
     ],
     'Treatment': [
         'Entire Test Cohort', 'Regimen', 'Cancer Topography ICD-0-3', 'Days Since Starting Regimen'
@@ -351,15 +350,15 @@ groupings = {
 
 # ### Subgroup Performance Plot
 
-# In[29]:
+# In[31]:
 
 
-padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
+padding = {'pad_y0': 1.2, 'pad_x1': 2.7, 'pad_y1': 0.2}
+width = {'Demographic': 18, 'Treatment': 12}
 for name, subgroups in groupings.items():
-    width = min(max(12, len(df.loc[subgroups])), 20)
     subgroup_performance_plot(
-        df, target_event='30d Mortality', subgroups=subgroups, padding=padding, figsize=(width,30), 
-        xtick_rotation=75, save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}'
+        df, target_event='30d Mortality', subgroups=subgroups, padding=padding, figsize=(width[name],30), 
+        save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}'
     )
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
@@ -368,11 +367,11 @@ for name, subgroups in groupings.items():
 
 # ### Time to Death After First Alarm
 
-# In[30]:
+# In[59]:
 
 
-time_to_death = time_to_target_after_alarm(
-    eval_models, event_dates, target_event='30d Mortality', target_date_col='D_date', 
+time_to_death = time_to_x_after_y(
+    eval_models, event_dates, x='death', y='first_alarm', target_event='30d Mortality', 
     split='Test', algorithm='ENS', pred_thresh=month_mortality_thresh
 )
 
@@ -387,15 +386,15 @@ for ax in axes: ax.set_title('Time to Death After First Alarm')
 
 # ### Subgroup Performance Plot
 
-# In[31]:
+# In[33]:
 
 
-padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
+padding = {'pad_y0': 1.2, 'pad_x1': 2.7, 'pad_y1': 0.2}
+width = {'Demographic': 18, 'Treatment': 12}
 for name, subgroups in groupings.items():
-    width = min(max(12, len(df.loc[subgroups])), 20)
     subgroup_performance_plot(
-        df, target_event='365d Mortality', subgroups=subgroups, padding=padding, figsize=(width,30), 
-        xtick_rotation=75, save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}'
+        df, target_event='365d Mortality', subgroups=subgroups, padding=padding, figsize=(width[name],30), 
+        save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}'
     )
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
@@ -404,11 +403,11 @@ for name, subgroups in groupings.items():
 
 # ### Time to Death After First Alarm
 
-# In[32]:
+# In[61]:
 
 
-time_to_death = time_to_target_after_alarm(
-    eval_models, event_dates, target_event='365d Mortality', target_date_col='D_date', 
+time_to_death = time_to_x_after_y(
+    eval_models, event_dates, x='death', y='first_alarm', target_event='365d Mortality', 
     split='Test', algorithm='ENS', pred_thresh=year_mortality_thresh
 )
 
@@ -422,76 +421,101 @@ for ax in axes: ax.set_title('Time to Death After First Alarm')
 
 # # Palliative Care Consultation Service (PCCS) Analysis
 
-# In[33]:
+# In[18]:
 
 
-pccs_result = pccs_receival_summary(
+pccs_df = get_pccs_analysis_data(
     eval_models, event_dates, pred_thresh=year_mortality_thresh, 
     algorithm='ENS', split='Test', target_event='365d Mortality'
 )
 
 
-# In[34]:
+# In[19]:
 
 
-# For each patient, we take the first alarm incident or very last treatment session if no alarm incidents occured
-# We check if palliative consultation was requested within the appropriate time frame (e.g. 5 years before the session to 3 months after the session)
-for outcome_type, matrices in pccs_result.items():
-    for subgroup_name, matrix in matrices.items():
-        print(matrix.astype(int).to_string(), end='\n\n')
+pccs_result = pccs_receival_summary(pccs_df, split='Test')
+for subgroup_name, matrix in pccs_result.items():
+    print(matrix.astype(int).to_string(), end='\n\n')
 
 
-# In[35]:
+# In[20]:
 
 
 pccs_receival_plot(pccs_result, target_event='365d Mortality')
 
 
-# ## Time to Alarm After PCCS
-# Most recent service prior to treatment session
-
-# In[36]:
-
-
-# Cumulative Distribution of Months from PCCS Date to First Risk of Target Event
-time_to_alarm = time_to_alarm_after_pccs(
-    eval_models, event_dates, target_event='365d Mortality', split='Test', algorithm='ENS', 
-    pred_thresh=year_mortality_thresh
-)
-
-fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4))
-xticks = range(0,int(time_to_alarm.max()),6)
-time_to_event_plot(time_to_alarm, ax=axes[0], plot_type='hist', xticks=xticks, xlabel='Months')
-time_to_event_plot(time_to_alarm, ax=axes[1], plot_type='cdf', xticks=xticks, xlabel='Months', ylabel="Cumulative Proportion of Patients")
-for ax in axes: ax.set_title('Time to First Alarm After A945/C945')
-
-
 # ## Model Impact
 
-# In[37]:
+# In[21]:
 
 
-fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(6, 12))
-pccs_impact_plot(eval_models, event_dates, axes[0], pred_thresh=year_mortality_thresh, verbose=True)
-pccs_impact_plot(eval_models, event_dates, axes[1], eval_method='count', pred_thresh=year_mortality_thresh, verbose=False)
-plt.savefig(f'{output_path}/figures/model_impact/365d_Mortality.jpg', bbox_inches='tight', dpi=300)
+# EPC - Early Palliative Care (receival of early PCCS)
+impact = epc_impact_summary(pccs_df, no_alarm_strategy='uc')
+impact
+
+
+# In[22]:
+
+
+impact / len(pccs_df)
+
+
+# In[23]:
+
+
+def epc_impact_plot(impact):
+    rate = impact.loc['Died Without EPC'] / len(pccs_df)
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6,6))
+    bar = ax.bar(x=rate.index, height=rate, color=['#1f77b4', '#ff7f0e'])
+    ax.margins(0.1)
+    ax.set_ylabel('Propotion Of Patients Who Died\nWithout Early Palliative Care')
+    remove_top_right_axis(ax)
+    
+epc_impact_plot(impact)
+plt.savefig(f'{output_path}/figures/model_impact/Died_Without_EPC_Rate.jpg', bbox_inches='tight', dpi=300)
+
+
+# In[26]:
+
+
+kmfs = post_pccs_survival_plot(eval_models, event_dates, verbose=True, pred_thresh=year_mortality_thresh)
+plt.savefig(f'{output_path}/figures/model_impact/KM_curve.jpg', bbox_inches='tight', dpi=300)
+
+
+# In[27]:
+
+
+def get_surv_prob(kmfs, months_after=24):
+    df = pd.DataFrame()
+    for kmf, care_name in kmfs:
+        ci = kmf.confidence_interval_survival_function_
+        lower, upper = ci[ci.index > months_after].iloc[0]
+        surv_prob = kmf.predict(months_after)
+        df.loc['Upper CI', care_name] = upper
+        df.loc['Survival Probability', care_name] = surv_prob
+        df.loc['Lower CI', care_name] = lower
+    df['Difference'] = df['Model-Guided Care'] - df['Usual Care']
+    return df
+
+get_surv_prob(kmfs, months_after=24)
 
 
 # # Chemo at End-of-Life Analysis
 
-# In[38]:
+# In[28]:
 
 
-eol_chemo_result = eol_chemo_receival_summary(eval_models, event_dates, pred_thresh=month_mortality_thresh)
+eol_treatment_df = get_eol_treatment_analysis_data(eval_models, event_dates, pred_thresh=month_mortality_thresh)
+eol_chemo_result = eol_treatment_receival_summary(eol_treatment_df)
 eol_chemo_result.astype(int)
 
 
-# In[39]:
+# In[29]:
 
 
 result = eol_chemo_result.copy()
 old_col = 'Received Chemo Near EOL (%)'
-new_col = 'Proportion of Patients that Received\nChemotherapy Near End-Of-Life'
+new_col = 'Proportion of Patients Who Received\nTreatment Near End-Of-Life'
 result = result.T[[old_col]]
 result[new_col] = result.pop(old_col)
 result.columns = pd.MultiIndex.from_product([['30d Mortality'], result.columns])
@@ -499,66 +523,15 @@ padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
 subgroup_performance_plot(result/100, target_event='30d Mortality', padding=padding, figsize=(18,3))
 
 
-# ## Model Impact
-
-# In[40]:
-
-
-fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(6, 12))
-eol_chemo_impact_plot(eval_models, event_dates, axes[0], pred_thresh=month_mortality_thresh, verbose=True)
-eol_chemo_impact_plot(eval_models, event_dates, axes[1], eval_method='count', pred_thresh=month_mortality_thresh, verbose=False)
-plt.savefig(f'{output_path}/figures/model_impact/30d_Mortality.jpg', bbox_inches='tight', dpi=300)
-
-
 # # Scratch Notes
 
-# ## PCCS Numbers Graph Plot
+# ## PCCS Graph Plot
 
-# In[41]:
+# In[31]:
 
 
-import graphviz
-from src.summarize import get_pccs_analysis_data
-
-df = get_pccs_analysis_data(eval_models, event_dates, pred_thresh=year_mortality_thresh, verbose=False)
-N = len(df)
-
-mask = df['observed'] # mask of which patients experienced 365 day mortality
-died, survived = df[mask], df[~mask]
-n_died, n_survived  = len(died), len(survived)
-
-mask = died['received_pccs']
-died_without_pccs = died[~mask]
-n_died_with_pccs = sum(mask) 
-
-mask = survived['received_pccs']
-survived_without_pccs = survived[~mask]
-n_survived_with_pccs = sum(mask) 
-
-f = lambda n: f'{n} ({n/N*100:.1f}%)'
-total_str = f'Total\n{N} (100%)'
-died_str = f'Died\n{f(n_died)}'
-surv_str = f'Survived\n{f(n_survived)}'
-died_with_pccs_str = f'Received PCCS\n{f(n_died_with_pccs)}'
-died_without_pccs_str = f'Not Received PCCS\n{f(len(died_without_pccs))}'
-surv_with_pccs_str = f'Received PCCS\n {f(n_survived_with_pccs)}'
-surv_without_pccs_str = f'Not Received PCCS\n{f(len(survived_without_pccs))}'
-died_without_pccs_pred_str = f'Alerted\n{f(sum(died_without_pccs["predicted"]))}'
-died_without_pccs_no_pred_str = f'Not Alerted\n{f(sum(~died_without_pccs["predicted"]))}'
-surv_without_pccs_pred_str = f'Alerted\n{f(sum(survived_without_pccs["predicted"]))}'
-surv_without_pccs_no_pred_str = f'Not Alerted\n{f(sum(~survived_without_pccs["predicted"]))}'
-
-d = graphviz.Digraph()
-d.edge(total_str, died_str)
-d.edge(died_str, died_with_pccs_str)
-d.edge(died_str, died_without_pccs_str)
-d.edge(died_without_pccs_str, died_without_pccs_pred_str)
-d.edge(died_without_pccs_str, died_without_pccs_no_pred_str)
-d.edge(total_str, surv_str)
-d.edge(surv_str, surv_with_pccs_str)
-d.edge(surv_str, surv_without_pccs_str)
-d.edge(surv_without_pccs_str, surv_without_pccs_pred_str)
-d.edge(surv_without_pccs_str, surv_without_pccs_no_pred_str)
+from src.visualize import pccs_graph_plot
+d = pccs_graph_plot(pccs_df)
 d.render(filename='pccs_num_graph', directory=f'{output_path}/figures/output', format='png')
 d
 
@@ -566,110 +539,230 @@ d
 # ## Bias Among Subgroups Plot
 # And How Model Can Mitigate Bias
 
+# In[45]:
+
+
+from src.visualize import epc_bias_mitigation_plot
+idxs = eval_models.labels['Test'].index
+rural_mask = model_data.loc[idxs, 'rural']
+immigrant_mask = model_data.loc[idxs, 'is_immigrant']
+female_mask = model_data.loc[idxs, 'sex'] == 'F'
+subgroup_masks = {
+    'Area of Residence': {'Urban': ~rural_mask, 'Rural': rural_mask},
+    'Immigration': {'Recent Immigrant': immigrant_mask, 'Long-Term Resident': ~immigrant_mask},
+    'Sex': {'Female': female_mask, 'Male': ~female_mask},
+}
+epc_bias_mitigation_plot(
+    eval_models, pccs_result, subgroup_masks, save=True, save_path=f'{output_path}/figures/output'
+)
+
+
+# ## All Billing Codes
+# TODO: Table of Billing Code Freq
+
+# In[28]:
+
+
+from src.preprocess import filter_ohip_data
+ohip = pd.read_csv(f'{root_path}/data/ohip.csv')
+ohip = filter_ohip_data(ohip)
+initial_pccs_date = ohip.groupby('ikn')['servdate'].first()
+initial_pccs_date.index = initial_pccs_date.index.astype(int)
+
+
+# In[29]:
+
+
+pccs_df['first_PCCS_date'] = pccs_df.index.map(initial_pccs_date)
+pccs_df['received_early_pccs'] = pccs_df['first_PCCS_date'] < pccs_df['D_date'] - pd.Timedelta(days=180)
+event_dates['first_PCCS_date'] = event_dates['ikn'].map(pccs_df['first_PCCS_date'])
+
+
+# In[33]:
+
+
+impact = epc_impact_summary(pccs_df, no_alarm_strategy='uc')
+impact
+
+
+# In[34]:
+
+
+impact / len(pccs_df)
+
+
 # In[42]:
 
 
-split = 'Test'
-algorithm = 'ENS'
-idxs = eval_models.labels[split].index
-catcol = 'subgroup'
+epc_impact_plot(impact)
+kmfs = post_pccs_survival_plot(eval_models, event_dates, verbose=True, pred_thresh=year_mortality_thresh)
+plt.show()
+get_surv_prob(kmfs, months_after=24)
 
-fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(18,12))
-axes = axes.flatten()
 
-# Urban vs Rural for Timely Receival of Early Palliative Care Consultation Service
-pccs_col = 'Received PCCS (%)'
-df = pd.DataFrame(
-    data = [
-        ['Overall', pccs_result['observed'][f'Entire {split} Cohort'].loc[pccs_col, 'Dies']],
-        ['Rural', pccs_result['observed']['Area of Residence'].loc[pccs_col, ('Rural', 'Dies')]],
-        ['Urban', pccs_result['observed']['Area of Residence'].loc[pccs_col, ('Urban', 'Dies')]],
-    ], 
-    columns=[catcol, pccs_col]
+# ## Equal Resource Utility Threshold
+
+# In[53]:
+
+
+from src.utility import equal_rate_pred_thresh
+year_mortality_thresh = equal_rate_pred_thresh(eval_models, event_dates, split='Valid', alg='ENS', target_event='365d Mortality')
+
+
+# In[54]:
+
+
+pccs_df = get_pccs_analysis_data(
+    eval_models, event_dates, pred_thresh=year_mortality_thresh, 
+    algorithm='ENS', split='Test', target_event='365d Mortality'
 )
-df[pccs_col] /= 100
-sns.barplot(data=df, x=catcol, y=pccs_col, ax=axes[0])
-axes[0].set_xlabel('Subgroup Population - Area of Residence')
-axes[0].set_ylabel('Proportion of Patients that\nRecieved Specialized Palliative Care')
 
-# Urban vs Rural for 365d Mortality AUPRC
-target_event = '365d Mortality'
-mask = model_data.loc[idxs, 'rural']
-args = (axes[1], algorithm, [target_event])
-kwargs = {'split': split, 'curve_type': 'pr'}
-eval_models.plot_auc_curve(*args, **kwargs, mask_name='Overall')
-eval_models.plot_auc_curve(*args, **kwargs, mask=mask, mask_name='Rural')
-eval_models.plot_auc_curve(*args, **kwargs, mask=~mask, mask_name='Urban')
 
-# Urban vs Rural for 365d Mortality Calibration
-args = (axes[2], algorithm, [target_event])
-kwargs = {'split': split}
-eval_models.plot_calib(*args, **kwargs, mask_name='Overall', show_perf_calib=False)
-eval_models.plot_calib(*args, **kwargs, mask=mask, mask_name='Rural', show_perf_calib=False)
-eval_models.plot_calib(*args, **kwargs, mask=~mask, mask_name='Urban')
+# In[55]:
 
-# Carrib/SSA vs EU/NA/A+NZ (World Region of Birth) for Receival of Chemotherapy near End-of-Life
-eol_chemo_col = 'Received Chemo Near EOL (%)'
-df = pd.DataFrame(
-    data = [
-        ['Overall', eol_chemo_result.loc[eol_chemo_col, (f'Entire {split} Cohort', '')]],
-        # ['Immigrant', eol_chemo_result.loc[eol_chemo_col, (f'Immigration', 'Immigrant')]],
-        ['Carrib/SSA', eol_chemo_result.loc[eol_chemo_col, ('World Region of Birth', 'Carrib/SSA')]],
-        ['EU/NA/A+NZ', eol_chemo_result.loc[eol_chemo_col, ('World Region of Birth', 'EU/NA/A+NZ')]],
-    ], 
-    columns=[catcol, eol_chemo_col]
+
+impact = epc_impact_summary(pccs_df, no_alarm_strategy='uc')
+impact
+
+
+# In[56]:
+
+
+impact / len(pccs_df)
+
+
+# In[58]:
+
+
+epc_impact_plot(impact)
+plt.savefig(f'{output_path}/figures/model_impact/Died_Without_EPC_Rate_equal_resource.jpg', bbox_inches='tight', dpi=300)
+kmfs = post_pccs_survival_plot(eval_models, event_dates, verbose=True, pred_thresh=year_mortality_thresh)
+plt.savefig(f'{output_path}/figures/model_impact/KM_curve_equal_resource.jpg', bbox_inches='tight', dpi=300)
+plt.show()
+get_surv_prob(kmfs, months_after=24)
+
+
+# ## 9-month Before Death as EPC
+
+# In[49]:
+
+
+pccs_df = get_pccs_analysis_data(
+    eval_models, event_dates, days_before_death=270, pred_thresh=year_mortality_thresh, 
+    algorithm='ENS', split='Test', target_event='365d Mortality'
 )
-df[eol_chemo_col] /= 100
-sns.barplot(data=df, x=catcol, y=eol_chemo_col, ax=axes[3])
-axes[3].set_xlabel('Subgroup Population - World Region of Birth')
-axes[3].set_ylabel('Proportion of Patients that\nRecieved Chemotherapy at End-of-Life')
-text = 'Carrib - Carribean, SSA - Sub-Saharan Africa, EU - Europe, NA - North America, A+NZ - Australia + New Zealand'
-axes[3].text(0, -0.2, text, transform=axes[3].transAxes)
 
-# Carrib/SSA vs EU/NA/A+NZ for 30d Mortality AUPRC
-target_event = '30d Mortality'
-carrib_ssa_mask = model_data.loc[idxs, 'world_region_of_birth'] == 'Carrib/SSA'
-eu_na_anz_mask = model_data.loc[idxs, 'world_region_of_birth'] == 'EU/NA/A+NZ'
-args = (axes[4], algorithm, [target_event])
-kwargs = {'split': split, 'curve_type': 'pr', 'legend_location': 'lower left'}
-eval_models.plot_auc_curve(*args, **kwargs, mask_name='Overall')
-# eval_models.plot_auc_curve(*args, **kwargs, mask=model_data.loc[idxs, 'is_immigrant'], mask_name='Immigrant')
-eval_models.plot_auc_curve(*args, **kwargs, mask=carrib_ssa_mask, mask_name='Carrib/SSA')
-eval_models.plot_auc_curve(*args, **kwargs, mask=eu_na_anz_mask, mask_name='EU/NA/A+NZ')
 
-# Carrib/SSA vs EU/NA/A+NZ for 30d Mortality Calibration
-args = (axes[5], algorithm, [target_event])
-kwargs = {'split': split, 'legend_location': 'upper right'}
-eval_models.plot_calib(*args, **kwargs, mask_name='Overall', show_perf_calib=False)
-# eval_models.plot_calib(*args, **kwargs, mask=model_data.loc[idxs, 'is_immigrant'], mask_name='Immigrant', show_perf_calib=False)
-eval_models.plot_calib(*args, **kwargs, mask=carrib_ssa_mask, mask_name='Carrib/SSA', show_perf_calib=False)
-eval_models.plot_calib(*args, **kwargs, mask=eu_na_anz_mask, mask_name='EU/NA/A+NZ')
+# In[50]:
 
-# save results
-plt.savefig(f'{output_path}/figures/output/bias.jpg', bbox_inches='tight', dpi=300)
+
+impact = epc_impact_summary(pccs_df, no_alarm_strategy='uc')
+impact
+
+
+# In[51]:
+
+
+impact / len(pccs_df)
+
+
+# In[52]:
+
+
+epc_impact_plot(impact)
+
+
+# ## Time to First Alarm After First PCCS
+
+# In[84]:
+
+
+time_to_alarm = time_to_x_after_y(
+    eval_models, event_dates, x='first_alarm', y='first_pccs', target_event='365d Mortality', 
+    split='Test', algorithm='ENS', pred_thresh=year_mortality_thresh, clip=True,
+)
+fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(18, 6))
+xticks = range(-60,61,6)
+time_to_event_plot(time_to_alarm, ax=axes[0], plot_type='hist', xticks=xticks, xlabel='Months')
+time_to_event_plot(time_to_alarm, ax=axes[1], plot_type='cdf', xticks=xticks, xlabel='Months', ylabel="Cumulative Proportion of Patients")
+for ax in axes: ax.set_title('Time to First Alarm After First PCCS')
+
+
+# ## Time to Death After First PCCS
+
+# In[83]:
+
+
+time_to_death = time_to_x_after_y(
+    eval_models, event_dates, x='death', y='first_pccs', target_event='365d Mortality', 
+    split='Test', algorithm='ENS', pred_thresh=year_mortality_thresh, clip=True,
+)
+fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6))
+xticks = np.arange(0,81,6)
+time_to_event_plot(time_to_death, ax=axes[0], plot_type='hist', xticks=xticks, xlabel='Months')
+time_to_event_plot(time_to_death, ax=axes[1], plot_type='cdf', xticks=xticks, xlabel='Months', ylabel="Cumulative Proportion of Patients")
+for ax in axes: ax.set_title('Time to Death After First PCCS')
+
+
+# ## Experimental Visualizations
+
+# In[76]:
+
+
+impact_rate = impact.T / impact['Usual Care'].sum()
+impact_rate.columns = impact_rate.columns.str.replace('Died ', '')
+impact_rate.columns = impact_rate.columns.str.replace('EPC', 'Early Palliative Care')
+ax = impact_rate.plot.barh(stacked=True, color=['#3d85c6', '#9fc5e8'], figsize=(6,6), width=0.7)
+ax.set_xlabel('Propotion Of Patients Who Died')
+ax.margins(0.1)
+ax.legend(frameon=False, loc='upper right')
+remove_top_right_axis(ax)
+
+
+# In[77]:
+
+
+from statsmodels.graphics.mosaicplot import mosaic
+data = {(care, status): number for care, metrics in impact.to_dict().items() for status, number in metrics.items()} 
+colors = ['#d9ead3', '#ff3636', '#91c579', '#ff6f65']
+props = {key: {'color': colors[idx]} for idx, key in enumerate(data.keys())}
+fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6,6))
+mosaic(data, labelizer=lambda k: data[k], properties=lambda k: props[k], ax=ax)
+plt.show()
 
 
 # ## Placing Dots on AUC Plots
 
-# In[65]:
+# In[50]:
 
 
-from sklearn.metrics import precision_score, recall_score
-split = 'Test'
-target_event = '365d Mortality'
-idxs = eval_models.labels[split].index
-df = event_dates.loc[idxs, ['ikn', 'PCCS_date']]
-df['died'] = eval_models.labels[split][target_event]
-df['received_pccs'] = event_dates.loc[df.index, 'PCCS_date'].notnull()
-df = df.groupby('ikn').last() # Take the last session of each patient
-ppv = precision_score(df['died'], df['received_pccs'])
-sensitivity = recall_score(df['died'], df['received_pccs'])
-specificity = recall_score(df['died'], df['received_pccs'], pos_label=False)
+from sklearn.metrics import precision_score, recall_score, precision_recall_curve, average_precision_score, roc_curve, roc_auc_score
 fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12,6))
-eval_models.plot_auc_curve(axes[0], alg, [target_event], split, curve_type='roc')
+
+Y_true = pccs_df['status'] == 'Dead'
+Y_pred_prob = pccs_df['predicted_prob']
+# Y_pred_bool = Y_pred_prob > year_mortality_thresh
+Y_pred_bool = pccs_df['early_pccs_by_alert']
+
+ppv = precision_score(Y_true, Y_pred_bool)
+sensitivity = recall_score(Y_true, Y_pred_bool)
+specificity = recall_score(Y_true, Y_pred_bool, pos_label=False)
+
+fpr, tpr, thresholds = roc_curve(Y_true, Y_pred_prob)
+score = roc_auc_score(Y_true, Y_pred_prob)
+label = f'AUROC={score:.2f}'
+axes[0].plot(fpr, tpr, label=label)
 axes[0].plot(1 - specificity, sensitivity, 'go')
-eval_models.plot_auc_curve(axes[1], alg, [target_event], split, curve_type='pr')
+axes[0].set(xlabel= '1 - Specificity', ylabel='Sensitivity')
+axes[0].legend()
+
+precision, recall, thresholds = precision_recall_curve(Y_true, Y_pred_prob)
+score = average_precision_score(Y_true, Y_pred_prob)
+label = f'AUPRC={score:.2f}'
+axes[1].plot(recall, precision, label=label)
 axes[1].plot(sensitivity, ppv, 'go')
+axes[1].set(xlabel='Sensitivity', ylabel='Positive Predictive Value')
+axes[1].legend()
 
 
 # ## Hyperparameters

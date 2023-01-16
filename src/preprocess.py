@@ -524,18 +524,18 @@ def filter_immigration_data(df):
 def process_immigration_data(chemo_df, immigration):
     """Combine immigration data into chemo_df"""
     chemo_df = pd.merge(chemo_df, immigration, on='ikn', how='left')
-    chemo_df['speaks_english'].fillna(True, inplace=True)
-    chemo_df['is_immigrant'].fillna(False, inplace=True)
+    chemo_df['speaks_english'] = chemo_df['speaks_english'].fillna(True)
+    chemo_df['is_immigrant'] = chemo_df['is_immigrant'].fillna(False)
     
     # get years since immigrating to Canada 
     col = 'years_since_immigration'
     chemo_df[col] = get_years_diff(chemo_df, 'visit_date', 'landing_date')
     # for non-immigrants / long-term residents, we will say they "immigrated"
     # the year they were born
-    chemo_df[col].fillna(chemo_df['age'], inplace=True)
+    chemo_df[col] = chemo_df[col].fillna(chemo_df['age'])
     
     # remove landing date
-    chemo_df.drop(columns=['landing_date'], inplace=True)
+    chemo_df = chemo_df.drop(columns=['landing_date'])
     
     return chemo_df
 
@@ -548,7 +548,7 @@ def get_world_region_of_birth(df, ctry_code_map):
     df[col] = df[col].map(reformat(ctry_code_map))
     # map the country name to world region
     df['world_region_of_birth'] = df[col].map(reformat(world_region_country_map))
-    df['world_region_of_birth'].fillna('Other', inplace=True)
+    df['world_region_of_birth'] = df['world_region_of_birth'].fillna('Other')
     return df
 
 def get_years_diff(df, col1, col2):
@@ -581,7 +581,7 @@ def dialysis_worker(partition, days_after=90):
     """Determine if patient recieved dialysis x to x+180 days (e.g. 3-6 months)
     after treatment
     """
-    days_after_treatment = pd.Timedelta(f'{days_after} days')
+    days_after_treatment = pd.Timedelta(days=days_after)
     
     chemo_df, dialysis = partition
     result = []
@@ -594,7 +594,7 @@ def dialysis_worker(partition, days_after=90):
             if mask.any(): result.append(chemo_idx)
     return result
 
-def process_dialysis_data(chemo_df, dialysis, days_after=90):
+def process_dialysis_data(chemo_df, dialysis):
     """Determine if patients had dialysis
     
     If patient require dialysis between 90 days after chemo visit and before
@@ -625,41 +625,10 @@ def filter_ohip_data(ohip, billing_codes=None):
     ohip = clean_string(ohip, ['ikn', 'feecode'])
     if billing_codes is not None:
         ohip = ohip[ohip['feecode'].isin(billing_codes)]
+    ohip = ohip.drop_duplicates()
     ohip['servdate'] = pd.to_datetime(ohip['servdate'])
     ohip = ohip.sort_values(by='servdate')
     return ohip
-
-def ohip_worker(partition):
-    """Determine if patient received any palliative care consultation service 
-    (PCCS) prior to treatment
-    """
-    chemo_df, ohip = partition
-    result = []
-    for ikn, chemo_group in tqdm(chemo_df.groupby('ikn')):
-        ohip_group = ohip[ohip['ikn'] == ikn]
-        for chemo_idx, chemo_row in chemo_group.iterrows():
-            mask = ohip_group['servdate'] <= chemo_row['visit_date']
-            ohip_before_chemo = ohip_group[mask]
-            if ohip_before_chemo.empty:
-                continue
-            # last item is always the last observed service date 
-            # (we've already sorted by date)
-            ohip_before_chemo = ohip_before_chemo.iloc[-1]
-            result.append((chemo_idx, ohip_before_chemo['servdate']))
-    return result
-
-def process_ohip_data(chemo_df, ohip):
-    # filter out patients not in dataset
-    filtered_chemo_df = chemo_df[chemo_df['ikn'].isin(ohip['ikn'])]
-    logging.info(f"{filtered_chemo_df['ikn'].nunique()} patients have received "
-                 "palliative care consultation services (PCCS)")
-    result = split_and_parallelize((filtered_chemo_df, ohip), ohip_worker)
-    result = pd.DataFrame(
-        result, columns=['index', 'PCCS_date']
-    )
-    result = result.set_index('index')
-    chemo_df = chemo_df.join(result, how='left')
-    return chemo_df
 
 ###############################################################################
 # OLIS (Blood Work/Lab Test) Data

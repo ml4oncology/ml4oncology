@@ -622,7 +622,7 @@ class PrepDataEDHD(PrepData):
             self.main_dir = f'{root_path}/{acu_folder}'
         elif self.adverse_event == 'death':
             self.main_dir = f'{root_path}/{death_folder}'
-            self.datetime_cols += ['PCCS_date', 'last_seen_date']
+            self.datetime_cols += ['first_PCCS_date', 'last_seen_date']
             self.target_days = ([14, 30, 90, 180, 365] if target_days is None 
                                 else target_days)
         self.norm_cols += [

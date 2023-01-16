@@ -16,9 +16,13 @@ TERMS OF USE:
 """
 import os
 
+from lifelines import KaplanMeierFitter
+from lifelines.plotting import add_at_risk_counts
+from lifelines.statistics import logrank_test
 from sklearn import tree
 from tqdm import tqdm
 from xgboost import plot_tree
+import graphviz
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -29,11 +33,18 @@ from src.utility import (
     twolevel, 
     load_ml_model, 
     get_clean_variable_names, 
-    pred_thresh_binary_search
+    pred_thresh_binary_search,
+    time_to_x_after_y,
 )
 from src.summarize import (
     get_pccs_analysis_data, 
-    get_eol_chemo_analysis_data
+    get_eol_treatment_analysis_data
+)
+
+import logging
+logging.basicConfig(
+    level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s', 
+    datefmt='%I:%M:%S'
 )
 
 ###############################################################################
@@ -191,196 +202,14 @@ def time_to_event_plot(time_to_event, ax, plot_type='cdf', **kwargs):
                                   'Distribution Function) and hist (Histogram)')
     ax.grid(zorder=0)
     if plot_type == 'hist':
+        bins = int(time_to_event.max() - time_to_event.min())
         sns.histplot(
-            time_to_event, ax=ax, bins=int(time_to_event.max()), zorder=2
+            time_to_event, ax=ax, bins=bins, zorder=2
         )
     elif plot_type == 'cdf':
         N = len(time_to_event)
         ax.plot(time_to_event,  np.arange(N) / float(N))
     ax.set(**kwargs)
-
-###############################################################################
-# Palliative Care Consultation Service (PCCS)
-###############################################################################
-def pccs_receival_plot(summary, target_event='365d Mortality'):
-    """Plot the proportion of patients that received palliative care 
-    consultation service (PCCS) within appropriate time frame wrt to first 
-    alarm incident or very last session for different subgroup populations
-    
-    Args:
-        summary (dict): A mapping of subgroup population (str) and their 
-            associated service receival summary for observed and predicted 
-            outcome (dict of str: pd.DataFrame)
-            e.g. {subgroup_type: {outcome_type: summary}}
-    """
-    # Setup the dataframe to call subgroup_performance_plot
-    proportion_col, event_col = 'Received PCCS (%)', 'Dies'
-    df = pd.DataFrame(index=twolevel, columns=twolevel)
-    for outcome_type, matrices in summary.items():
-        desc = "True" if outcome_type == "observed" else "First Alarm"
-        desc = f"{desc} Incident"
-        
-        metric = f'Proportion of Patients ({desc})\n'
-        metric = f'{metric}that Received Specialized Palliative Care'
-        
-        for subgroup_name, matrix in matrices.items():
-            # Edge Case
-            if subgroup_name == 'Language': subgroup_name = 'Immigration'
-                
-            col = (target_event, metric)
-            if subgroup_name.startswith('Entire'):
-                receival_rate = matrix.loc[proportion_col, event_col]
-                df.loc[(subgroup_name, ''), col] = receival_rate
-            else:
-                for subgroup_id in matrix.columns.levels[0]:
-                    matrix_col = (subgroup_id, event_col)
-                    receival_rate = matrix.loc[proportion_col, matrix_col]
-                    df.loc[(subgroup_name, subgroup_id), col] = receival_rate
-    df /= 100
-    padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
-    subgroup_performance_plot(
-        df, target_event=target_event, padding=padding, figsize=(18,8)
-    )
-    
-###############################################################################
-# Model Impact
-###############################################################################
-def pccs_impact_plot(
-    eval_models, 
-    event_dates, 
-    ax, 
-    title=None, 
-    eval_method='rate', 
-    **kwargs
-):
-    # Get data for PCCS analysis
-    df = get_pccs_analysis_data(eval_models, event_dates, **kwargs)
-    N = len(df)
-    
-    mask = df['observed'] # mask of which patients experienced 365 day mortality
-    died, survived = df[mask], df[~mask]
-    n_died, n_survived  = len(died), len(survived)
-
-    mask = died['received_pccs']
-    died_without_pccs = died[~mask]
-    n_died_with_pccs = sum(mask) 
-
-    mask = survived['received_pccs']
-    survived_without_pccs = survived[~mask]
-    n_survived_with_pccs = sum(mask) 
-
-    # Get receival count (rc) of PCCS for patients that 
-    #   1. died (D) within 365 days after first alarm incident or last session
-    #   2. survived (A) at least 365 days after first alarm incident or last session
-    # for
-    #   1. usual care (UC) 
-    #   2. model care (MC = usual care + warning system)
-    # NOTE: warning system triggers an alarm = patient will receive PCCS
-    usual_care_rc = {'D': n_died_with_pccs, 'A': n_survived_with_pccs}
-    model_care_rc = {
-        'D': sum(died_without_pccs['predicted']) + n_died_with_pccs, 
-        'A': sum(survived_without_pccs['predicted']) + n_survived_with_pccs
-    }
-    
-    impact_plot(
-        usual_care_rc, model_care_rc, N, ax, eval_method=eval_method, 
-        service_name='\nSpecialized Palliative Care Consult', title=title
-    )
-
-def eol_chemo_impact_plot(
-    eval_models, 
-    event_dates, 
-    ax, 
-    title=None, 
-    eval_method='rate',
-    **kwargs
-):
-    # Get data for EOL chemo analysis
-    df = get_eol_chemo_analysis_data(eval_models, event_dates, **kwargs)
-    N = len(df)
-    mask = df['observed']
-    died, survived = df[mask], df[~mask]
-
-    # Get receival count (rc) of treatment for patients that 
-    #   1. died (D) within 30 days after first alarm incident or last session
-    #   2. survived (A) at least 30 days after first alarm incident or last session
-    # for
-    #   1. usual care (UC) 
-    #   2. model care (MC = usual care + warning system)
-    # NOTE: warning system triggers an alarm = treatment is terminated
-    usual_care_rc = {'D': len(died), 'A': len(survived)}
-    model_care_rc = {
-        'D': len(died) - sum(died['predicted']), 
-        'A': len(survived) - sum(survived['predicted'])
-    }
-    
-    impact_plot(
-        usual_care_rc, model_care_rc, N, ax, eval_method=eval_method, 
-        title=title, legend_loc='upper left'
-    )
-    
-def impact_plot(
-    usual_care_rc, 
-    model_care_rc, 
-    N, 
-    ax, 
-    eval_method='rate', 
-    service_name='Treatment', 
-    title=None, 
-    legend_loc='best'
-):
-    # Compute receival rate (rr) of service
-    usual_care_rr = {status: count / N for status, count in usual_care_rc.items()}
-    model_care_rr = {status: count / N for status, count in model_care_rc.items()}
-    
-    # Set up plot variables
-    died_rr_diff = model_care_rr['D'] - usual_care_rr['D']
-    surv_rr_diff = model_care_rr['A'] - usual_care_rr['A']
-    pos_diff =  died_rr_diff > 0
-    if eval_method == 'rate':
-        usual_care, model_care = usual_care_rr, model_care_rr
-        label = 'Proportion'
-        func = lambda rr, key: rr[key] + 0.01
-        text_ypos_died = func(model_care_rr, 'D') if pos_diff else func(usual_care_rr, 'D')
-        text_ypos_surv = func(model_care_rr, 'A') if pos_diff else func(usual_care_rr, 'A')
-    elif eval_method == 'count':
-        usual_care, model_care = usual_care_rc, model_care_rc
-        label = 'Number'
-        func = lambda rc, key: rc[key] + int(rc[key] * 0.01)
-        text_ypos_died = func(model_care_rc, 'D') if pos_diff else func(usual_care_rc, 'D')
-        text_ypos_surv = func(model_care_rc, 'A') if pos_diff else func(usual_care_rc, 'A')
-    text_prefix = '+' if pos_diff else ''
-    xticks = ['Died', 'Survived']
-    usual_care_zorder = True if pos_diff else False
-    
-    # Plot the impact
-    # Color Combo Options: 
-    #   1. 'lightblue', 'darkblue'
-    #   2. '#D5F5E3', '#1F618D'
-    ax.bar(
-        xticks, [usual_care['D'], usual_care['A']], label='Usual Care', 
-        color='darkblue', width=0.5, zorder=usual_care_zorder
-    )
-    ax.bar(
-        xticks, [model_care['D'], model_care['A']], label='Model Care', 
-        color='lightblue', width=0.5, zorder=not usual_care_zorder
-    )
-    ax.legend(frameon=False, loc=legend_loc)
-    if eval_method == 'rate': ax.set_yticks(np.arange(0, 1.01, 0.1))
-    ax.set_ylabel(f'{label} of Patients that Received {service_name}')
-    ax.margins(x=0.2)
-    remove_top_right_axis(ax)
-    if title is not None: ax.set_title(title)
-    
-    # Annotate the differences
-    ax.text(
-        0, text_ypos_died, f'{text_prefix}{died_rr_diff*100:.1f}%', 
-        horizontalalignment='center', fontsize=16, color='darkgreen'
-    )
-    ax.text(
-        1, text_ypos_surv, f'{text_prefix}{surv_rr_diff*100:.1f}%', 
-        horizontalalignment='center', fontsize=16, color='darkred'
-    )
     
 ###############################################################################
 # Cytopenia
@@ -534,6 +363,214 @@ def event_rate_stacked_bar_plot(
         filepath = f'{save_dir}/plots/{cytopenia}_{"_".join(regimens)}.jpg'
         plt.savefig(filepath, bbox_inches='tight', dpi=300)
     plt.show()
+    
+###############################################################################
+# Palliative Care Consultation Service (PCCS)
+###############################################################################
+def pccs_receival_plot(summary, target_event='365d Mortality'):
+    """Plot the proportion of patients that died without receiving early 
+    palliative care consultation service (PCCS) (e.g. did not receive PCCS 
+    prior to 6 months before death) for different subgroup populations
+    
+    Args:
+        summary (dict): A mapping of subgroup population (str) and their 
+            associated service receival summary (pd.DataFrame)
+    """
+    # Setup the dataframe to call subgroup_performance_plot
+    proportion_col, event_col = 'Not Got Early PCCS (%)', 'Dead'
+    df = pd.DataFrame(index=twolevel, columns=twolevel)
+
+    metric = 'Proportion of Patients Who Died\nWithout Early Palliative Care'
+    for subgroup_name, matrix in summary.items():
+        # Edge Case
+        if subgroup_name == 'Language': subgroup_name = 'Immigration'
+
+        col = (target_event, metric)
+        if subgroup_name.startswith('Entire'):
+            receival_rate = matrix.loc[proportion_col, event_col]
+            df.loc[(subgroup_name, ''), col] = receival_rate
+        else:
+            for subgroup_id in matrix.columns.levels[0]:
+                matrix_col = (subgroup_id, event_col)
+                receival_rate = matrix.loc[proportion_col, matrix_col]
+                df.loc[(subgroup_name, subgroup_id), col] = receival_rate
+    df /= 100
+    padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
+    subgroup_performance_plot(
+        df, target_event=target_event, padding=padding, figsize=(18,3)
+    )
+    
+def pccs_graph_plot(df):
+    """Visualize the number and proportion of patients who are dead, alive,
+    received palliative care consultation service (PCCS), did not receive PCCS, 
+    alerted, not alerted, etc, as a tree-based graph.
+    
+    Args:
+        df (pd.DataFrame): table of patients and their relevant data (PCCS receival,
+            vital status, alert status, etc) (from output of get_pccs_analysis_data)
+    """
+    d = graphviz.Digraph(
+        graph_attr={'rankdir': 'LR'}, 
+        edge_attr={}, 
+        node_attr={'shape': 'box'}
+    )
+    
+    N = len(df)
+    f = lambda n: f'{n} ({n/N*100:.1f}%)'
+    total_str = f'Total\n{N} (100%)'
+
+    for vital_status, vital_group in df.groupby('status'):
+        # Patient vital status
+        vital_str = f'{vital_status}\n{f(len(vital_group))}'
+        d.edge(total_str, vital_str)
+
+        # Patient PCCS receival status
+        mask = vital_group['first_PCCS_date'].notnull()
+        for receival_status, receival_group in vital_group.groupby(mask):
+            name = 'Received PCCS' if receival_status else 'Not Received PCCS'
+            receival_str = f'{name}\n{f(len(receival_group))}'
+            d.edge(vital_str, receival_str)
+
+            if vital_status == 'Alive':
+                # Patient Alarm Status
+                mask = receival_group['predicted']
+                d.edge(receival_str, f'Alerted\n{f(sum(mask))}')
+                d.edge(receival_str, f'Not Alerted\n{f(sum(~mask))}')
+
+            elif vital_status == 'Dead':
+                if receival_status:
+                    # Patient early PCCS receival status
+                    mask = receival_group['received_early_pccs']
+                    grouping = receival_group.groupby(mask)
+                    for early_receival_status, early_receival_group in grouping:
+                        name = 'Early' if early_receival_status else 'Late'
+                        early_str = f'{name}\n{f(len(early_receival_group))}'
+                        d.edge(receival_str, early_str)
+
+                        # Patient Alarm Status
+                        mask1 = early_receival_group['early_pccs_by_alert']
+                        mask2 = early_receival_group['predicted']
+                        d.edge(early_str, f'Alerted Early\n{f(sum(mask1))}')
+                        d.edge(early_str, f'Alerted Late\n{f(sum(~mask1 & mask2))}')
+                        d.edge(early_str, f'Not Alerted\n{f(sum(~mask2))}')
+                else:
+                    # Patient Alarm Status
+                    mask1 = receival_group['early_pccs_by_alert']
+                    mask2 = receival_group['predicted']
+                    d.edge(receival_str, f'Alerted Early\n{f(sum(mask1))}')
+                    d.edge(receival_str, f'Alerted Late\n{f(sum(~mask1 & mask2))}')
+                    d.edge(receival_str, f'Not Alerted\n{f(sum(~mask2))}')
+    return d
+
+def epc_bias_mitigation_plot(
+    eval_models, 
+    pccs_result, 
+    subgroup_masks,
+    split='Test',
+    algorithm='ENS',
+    target_event='365d Mortality',
+    save=True,
+    save_path='',
+):
+    """Plot the bias among subgroups for receival of early palliative care (EPC)
+    and how the model performs comparably among these subgroups (indicating 
+    the model can potentially mitigate the bias)
+    
+    Args:
+        subgroup_masks: A nested map of subgroup category (str) and each of 
+            their subgroup's (str) boolean aligned series (pd.Series), which 
+            indicates which samples in the original data belongs to the subgroup
+            e.g. {'Area of Residence': {'Urban': pd.Series, 'Rural': pd.Series}}
+    """
+    N = len(subgroup_masks)
+    fig, axes = plt.subplots(nrows=N, ncols=3, figsize=(18,6*N))
+        
+    catcol = 'subgroup'
+    pccs_col = 'Not Got Early PCCS (%)'
+    
+    for i, (catname, masks) in enumerate(subgroup_masks.items()):
+        (subgroup1, mask1), (subgroup2, mask2) = masks.items()
+        
+        df = pd.DataFrame(
+            data = [
+                ['Overall', pccs_result[f'Entire {split} Cohort'].loc[pccs_col, 'Dead']],
+                [subgroup1, pccs_result[catname].loc[pccs_col, (subgroup1, 'Dead')]],
+                [subgroup2, pccs_result[catname].loc[pccs_col, (subgroup2, 'Dead')]],
+            ], 
+            columns=[catcol, pccs_col]
+        )
+        df[pccs_col] /= 100
+        sns.barplot(data=df, x=catcol, y=pccs_col, ax=axes[i][0])
+        if min(df[pccs_col]) > 0.2: 
+            axes[i][0].set_ylim(bottom=min(df[pccs_col])-0.1)
+        axes[i][0].set_xlabel(f'Subgroup Population - {catname}')
+        axes[i][0].set_ylabel('Proportion of Patients Who Died\n'
+                           'Without Receiving Early Palliative Care')
+
+        # AUPRC
+        args = (axes[i][1], algorithm, [target_event])
+        kwargs = {'split': split, 'curve_type': 'pr'}
+        eval_models.plot_auc_curve(*args, **kwargs, mask_name='Overall')
+        eval_models.plot_auc_curve(*args, **kwargs, mask=mask1, mask_name=subgroup1)
+        eval_models.plot_auc_curve(*args, **kwargs, mask=mask2, mask_name=subgroup2)
+
+        # Calibration
+        args = (axes[i][2], algorithm, [target_event])
+        kwargs = {'split': split}
+        eval_models.plot_calib(*args, **kwargs, mask_name='Overall', show_perf_calib=False)
+        eval_models.plot_calib(*args, **kwargs, mask=mask1, mask_name=subgroup1, show_perf_calib=False)
+        eval_models.plot_calib(*args, **kwargs, mask=mask2, mask_name=subgroup2)
+
+    # save results
+    if save: plt.savefig(f'{save_path}/bias.jpg', bbox_inches='tight', dpi=300)
+        
+def post_pccs_survival_plot(eval_models, event_dates, verbose=True, **kwargs):
+    """Plot the survival analysis of patients after they receive initial
+    palliative care consulation service (PCCS)
+    
+    Args:
+       **kwargs: keyword arguments fed into time_to_x_after_y
+    """
+    is_dead = event_dates.groupby('ikn')['D_date'].last().notnull()
+    time_frame = np.arange(0, 37, 6)
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6,6))
+    care_names = ['Usual Care', 'Model-Guided Care']
+    times, statuses, kmfs = [], [], []
+    for care_name in care_names:
+        if verbose:
+            logging.info('Analyzing Time to Death After Initial PCCS for '
+                         f'{care_name}...')
+        
+        time_to_death = time_to_x_after_y(
+            eval_models, event_dates, x='last_obs', y='first_pccs', 
+            verbose=True, care_name=care_name, **kwargs
+        )
+        status = is_dead.loc[time_to_death.index]
+        
+        kmf = KaplanMeierFitter()
+        kmf.fit(time_to_death, status)
+        kmf.plot(ax=ax, label=care_name, loc=slice(time_frame[-1]))
+        
+        times.append(time_to_death)
+        statuses.append(status)
+        kmfs.append(kmf)
+
+    xlabel = 'Months After First Palliative Care Consultation Service'
+    add_at_risk_counts(
+        *kmfs, ax=ax, xticks=time_frame[1:], labels=care_names, 
+        rows_to_show=['At risk']
+    )
+    ax.set(
+        xticks=time_frame, ylim=(-0.05,1.05), xlabel=xlabel, 
+        ylabel='Survival Probability'
+    )
+    ax.legend(frameon=False)
+    
+    # Show p-value
+    p_value = logrank_test(*times, *statuses).p_value
+    logging.info(f'P-value = {p_value}')
+    
+    return zip(kmfs, care_names)
     
 ###############################################################################
 # Misc Cytopenia Plots

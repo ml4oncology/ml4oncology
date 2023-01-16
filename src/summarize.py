@@ -48,6 +48,7 @@ from src.utility import (
     most_common_categories,
     nadir_bootstrap_worker,
     outcome_recall_score,
+    get_first_alarms_or_last_treatment,
     split_and_parallelize, 
     twolevel, 
 )
@@ -90,10 +91,10 @@ class DataPartitionSummary:
         
     def num_sessions_per_patient_summary(self, summary_df):
         num_sessions = self.X.groupby('ikn').apply(len)
-        mean = num_sessions.mean()
-        std = num_sessions.std()
-        name = ('Number of Treatments, Mean (SD)', '')
-        summary_df.loc[name, self.col['patients']] = f'{mean:.1f} ({std:.1f})'
+        median = int(num_sessions.median())
+        q25, q75 = np.percentile(num_sessions, [25, 75]).astype(int)
+        name = ('Number of Treatments, Median (IQR)', '')
+        summary_df.loc[name, self.col['patients']] = f'{median} ({q25}-{q75})'
 
     def median_age_summary(self, summary_df):
         for with_respect_to, col in self.col.items():
@@ -634,6 +635,7 @@ class SubgroupPerformanceSummary:
         summary_df, 
         catcol, 
         mapping=None,
+        transform=None,
         top=3,
     ):
         title = get_clean_variable_name(catcol)
@@ -644,6 +646,7 @@ class SubgroupPerformanceSummary:
         for category in top_cats:
             mask = self.data[catcol] == category
             if mapping is not None: category = mapping[category]
+            if transform is not None: category = transform(category)
             name = (title, category)
             self._subgroup_score(summary_df, mask, name)
 
@@ -772,7 +775,9 @@ class SubgroupPerformanceSummary:
         if 'area_density' in subgroups: 
             self.area_density_subgroups_score(summary_df)
         if 'regimen' in subgroups: 
-            self.most_common_category_subgroups_score(summary_df, 'regimen')
+            self.most_common_category_subgroups_score(
+                summary_df, 'regimen', transform=str.upper
+            )
         if 'cancer_location' in subgroups: 
             self.most_common_category_subgroups_score(
                 summary_df, 'curr_topog_cd', mapping=cancer_code_mapping
@@ -862,168 +867,154 @@ def get_worst_performing_subgroup(
 ###############################################################################
 # Palliative Care Consultation Service (PCCS) (TODO: Move to Utility)
 ###############################################################################
-def pccs_receival_summary(eval_models, event_dates, split='Test', **kwargs):
-    """Determine number of patients that received early palliative care 
-    consultation service (PCCS).
-    
-    We take the first session in which model triggered an alarm 
-    (risk prediction > threshold), and determine if palliative consultation 
-    service was received within the appropriate time frame. If model never 
-    triggered an alarm, we use the last session of that patient.
-    
-    We then group the numbers by the predicted or observed outcome to create a 
-    2 by 2 table (Will/will not experience target event vs Did/did not request 
-    service)
-    
-    We create this 2 by 2 table for multiple subgroups (immigrants, sex, 
-    quintiles, etc)
-    
-    Args:
-        **kwargs: keyword arguments fed into get_pccs_analysis_data
-            
-    Returns:
-        A nested dictionary {subgroup_type: {outcome_type: 2x2 pd.DataFrame}}
-    """    
-    df = get_pccs_analysis_data(
-        eval_models, event_dates, split=split, **kwargs
-    )
-    
-    result = defaultdict(dict)
-    for outcome_type in ['predicted', 'observed']:
-        
-        # Get summary for entire cohort 
-        matrix = pccs_receival_matrix(df, group_by=outcome_type)
-        matrix = matrix.rename_axis(outcome_type.title()).T
-        result[outcome_type][f'Entire {split} Cohort'] = matrix
-        
-        # Get summary for each subgroup populations
-        for col, mapping in subgroup_map.items():
-            matrices = {}
-            for subgroup_name, group, in df.groupby(col):
-                name = mapping.get(subgroup_name, subgroup_name)
-                skip_subgroups = mapping.get('do_not_include', [])
-                if subgroup_name in skip_subgroups: continue
-                matrices[name] = pccs_receival_matrix(
-                    group, group_by=outcome_type
-                ) 
-            
-            title = group_title_map[col]
-            names = [title, outcome_type.title()]
-            matrices = pd.concat(matrices, names=names).T
-            result[outcome_type][title] = matrices
-
-    return result
-
 def get_pccs_analysis_data(
     eval_models, 
     event_dates,
-    time_frame=(5*365,90), 
+    days_before_death=180,
     pred_thresh=0.5,             
     algorithm='ENS', 
     split='Test', 
     target_event='365d Mortality',
     verbose=True,
 ):
-    """
+    """Extract the relevant data for analysis of palliative care consultation 
+    service (PCCS) receival
+    
     Args:
-        time_frame (tuple(int, int)): A tuple of integers representing the 
-            appropriate time frame within which PCCS was received, in terms of 
-            number of days before and after a treatment session
+        days_before_death (int): Minimum number of days before death in which
+            PCCS receival is still acceptable
     """
     if verbose:
         logging.info('Arranging PCCS Analysis Data...')
     df = pd.DataFrame()
-    
-    # Get prediction (risk) and observation of target event
+
+    # Get prediction (risk) of target event
     df['predicted_prob'] = eval_models.preds[split][algorithm][target_event]
-    df['predicted'] = df['predicted_prob'] > pred_thresh
-    df['observed'] = eval_models.labels[split][target_event]
-    
+
     # Get patient id, immigrant status, sex, income quintile, etc
     cols = list(subgroup_map)+['ikn']
     df[cols] = eval_models.orig_data.loc[df.index, cols]
     # need to binarize time since immigration arrival
     df['years_since_immigration'] = df['years_since_immigration'] < 10 
-    
-    # Determine if patient received PCCS within N days before to M days after 
-    # treatment
-    df['received_pccs'] = check_received_pccs(
-        event_dates.loc[df.index], time_frame
-    )
+
+    # Get patient death date, first PCCS date, and treatment date
+    cols = ['visit_date', 'D_date', 'first_PCCS_date']
+    df[cols] = event_dates.loc[df.index, cols]
     
     # Keep original index
     df = df.reset_index()
+
+    # Take the first session in which an alarm was triggered for each patient
+    # or the last session if alarms were never triggered
+    df = get_first_alarms_or_last_treatment(df, pred_thresh, verbose=verbose)
     
-    # Take the first session in which alarm was triggered for each patient
-    first_alarm = df[df['predicted']].groupby('ikn').first()
-    # or the last session if no alarms were ever triggered
-    # (patients whose risk never exceeded threshold)
-    low_risk_ikns = set(df['ikn']).difference(first_alarm.index)
-    last_session = df[df['ikn'].isin(low_risk_ikns)].groupby('ikn').last()
-    df = pd.concat([first_alarm, last_session])
-    if verbose:
-        logging.info('Number of patients with first alarm incidents '
-                     f'(risk > {pred_thresh:.2f}): {len(first_alarm)}. Number '
-                     'of patients with no alarm incidents (take the last '
-                     f'session): {len(last_session)}')
+    # Get patient's vital status
+    df['status'] = df['D_date'].isnull().replace({True: 'Alive', False: 'Dead'})
+
+    # Determine if patient received early PCCS
+    latest_date = df['D_date'] - pd.Timedelta(days=days_before_death)
+    df['received_early_pccs'] = df['first_PCCS_date'] < latest_date
+    # Determine if alert would result in patient receiving early PCCS
+    # (i.e. alert was not too late)
+    df['early_pccs_by_alert'] = df['predicted'] & (df['visit_date'] < latest_date)
     
     return df
-    
-def pccs_receival_matrix(df, group_by):
-    result = pd.DataFrame()
-    mapping = {False: 'Survives', True: 'Dies'}
-    col = 'Received PCCS'
-    for status, group in df.groupby(group_by):
-        status = mapping[status]
-        counts = group['received_pccs'].value_counts()
-        result.loc[status, col] = counts.get(True, 0)
-        result.loc[status, f'Not {col}'] = counts.get(False, 0)
-    result[f'{col} (%)'] = result[col] / result.sum(axis=1) * 100
-    return result
 
-def check_received_pccs(event_dates, time_frame):
-    days_before, days_after = time_frame
-    service_date = event_dates['PCCS_date']
-    visit_date = event_dates['visit_date']
-    return service_date.between(visit_date - pd.Timedelta(days=days_before),
-                                visit_date + pd.Timedelta(days=days_after))
-
-###############################################################################
-# Chemotherapy Near End-of-Life (TODO: Move to Utility)
-###############################################################################
-def eol_chemo_receival_summary(eval_models, event_dates, split='Test', **kwargs):
-    """Determine number of patients that received chemotherapy near end-of-life
-    (EOL), for multiple subgroups (immigrants, sex, quintiles, etc)
-    
-    We take the first session in which model triggered an alarm 
-    (risk prediction > threshold), and determine if patient died within X days 
-    (experienced target event). If model never triggered an alarm, we use the 
-    last session of that patient.
+def pccs_receival_summary(df, split='Test'):
+    """Determine number of patients who received palliative care 
+    consultation service (PCCS) for different subgroups (immigrants, sex, 
+    income quintiles, etc)
     
     Args:
-        **kwargs: keyword arguments fed into get_eol_chemo_analysis_data
-    
-    Returns:
-        A Table (pd.DataFrame) of number and proportion of patients that 
-        recieved chemotherapy at EOL among the different subgroup populations
-    """
-    df = get_eol_chemo_analysis_data(
-        eval_models, event_dates, split=split, **kwargs
-    )
-        
-    # Get summary for each subgroup populations
-    summary = pd.DataFrame(columns=twolevel)
-    eol_chemo_receival_matrix(df, (f'Entire {split} Cohort', ''), summary)
-    for col, mapping in subgroup_map.items():
-        title = group_title_map[col]
-        for subgroup_name, group, in df.groupby(col):
-            if subgroup_name in mapping.get('do_not_include', []): continue
-            subgroup_name = mapping.get(subgroup_name, subgroup_name)
-            eol_chemo_receival_matrix(group, (title, subgroup_name), summary)
-        
-    return summary
+        df (pd.DataFrame): table of patients and their relevant data (subgroup 
+            status, PCCS date, etc) (from output of get_pccs_analysis_data)
+    """   
+    result = {}
 
-def get_eol_chemo_analysis_data(
+    # Get summary for entire cohort 
+    matrix = pccs_receival_matrix(df)
+    result[f'Entire {split} Cohort'] = matrix.T
+
+    # Get summary for each subgroup populations
+    for col, mapping in subgroup_map.items():
+        matrices = {}
+        for subgroup_name, group, in df.groupby(col):
+            name = mapping.get(subgroup_name, subgroup_name)
+            skip_subgroups = mapping.get('do_not_include', [])
+            if subgroup_name in skip_subgroups: continue
+            matrices[name] = pccs_receival_matrix(group) 
+
+        title = group_title_map[col]
+        matrices = pd.concat(matrices, names=[title]).T
+        result[title] = matrices
+        
+    return result
+    
+def pccs_receival_matrix(df):
+    result = pd.DataFrame()
+    for status, group in df.groupby('status'):
+        mask1 = group['first_PCCS_date'].notnull()
+        result.loc[status, 'Got PCCS'] = sum(mask1)
+        result.loc[status, 'Not Got PCCS'] = sum(~mask1)
+        if status == 'Dead':
+            mask2 = group['received_early_pccs']
+            result.loc[status, 'Got Early PCCS'] = sum(mask2)
+            result.loc[status, 'Got Late PCCS'] = sum(mask1 & ~mask2)
+            col = 'Not Got Early PCCS (%)'
+            result.loc[status, col] = sum(~mask2) / len(df) * 100
+    result = result.fillna(0)
+    return result
+
+def epc_impact_summary(df, no_alarm_strategy='uc'):
+    """Determine the model's clinical impact on early palliative care (EPC). 
+
+    We compute the number of patients who died with and without receiving early
+    palliative care consulation service (PCCS) for Usual Care and Model-Guided Care.
+
+    Model-Guided Care:
+    Warning system triggers an alarm => patient receives PCCS
+    Warning system does not trigger an alarm =>
+        a) Strategy 1: patient does not receive PCCS
+        b) Strategy 2: default to usual care
+
+    Args:
+        df (pd.DataFrame): table of patients and their relevant data (PCCS receival,
+            vital status, etc) (from output of get_pccs_analysis_data)
+        no_alarm_strategy (str): which strategy to use in the absence of an
+            alarm. Either 'no_pccs' (patient will not receive pccs) or 'uc'
+            (default to whatever action occured in usual care)
+    """
+    died = df[df['status'] == 'Dead']
+
+    # RS - Received Service, NRS - Not Received Service
+    mask = died['received_early_pccs']
+    usual_care = {'RS': sum(mask), 'NRS': sum(~mask)}
+
+    if no_alarm_strategy == 'uc':
+        mask = died[~mask]['early_pccs_by_alert']
+        model_care = {
+            'RS': usual_care['RS'] + sum(mask),
+            'NRS': usual_care['NRS'] - sum(mask)}
+    elif no_alarm_strategy == 'no_pccs':
+        mask = died['early_pccs_by_alert']
+        model_care = {'RS': sum(mask), 'NRS': sum(~mask)}
+
+    # make sure numbers add up to the same total
+    assert(sum(usual_care.values()) == sum(model_care.values()))
+
+    impact = pd.DataFrame(
+        data=[[usual_care['RS'], model_care['RS']], 
+              [usual_care['NRS'], model_care['NRS']]],
+        columns=['Usual Care', 'Model-Guided Care'],
+        index=['Died With EPC', 'Died Without EPC']
+    )
+
+    return impact
+
+###############################################################################
+# Treatment Near End-of-Life (TODO: Move to Utility)
+###############################################################################
+def get_eol_treatment_analysis_data(
     eval_models, 
     event_dates,
     pred_thresh=0.2,             
@@ -1036,10 +1027,8 @@ def get_eol_chemo_analysis_data(
         logging.info('Arranging Chemo at End-of-Life Analysis Data...')
     df = pd.DataFrame()
 
-    # Get prediction (risk) and observation of target event
+    # Get prediction (risk) of target event
     df['predicted_prob'] = eval_models.preds[split][algorithm][target_event]
-    df['predicted'] = df['predicted_prob'] > pred_thresh
-    df['observed'] = eval_models.labels[split][target_event]
 
     # Get patient id, immigrant status, sex, income quintile, etc
     cols = list(subgroup_map)+['ikn']
@@ -1065,22 +1054,38 @@ def get_eol_chemo_analysis_data(
     # Keep original index
     df = df.reset_index()
     
-    # Take the first session in which alarm was triggered for each patient
-    first_alarm = df[df['predicted']].groupby('ikn').first()
-    # or the last session if no alarms were ever triggered
-    # (patients whose risk never exceeded threshold)
-    low_risk_ikns = set(df['ikn']).difference(first_alarm.index)
-    last_session = df[df['ikn'].isin(low_risk_ikns)].groupby('ikn').last()
-    df = pd.concat([first_alarm, last_session])
-    if verbose:
-        logging.info('Number of patients with first alarm incidents '
-                     f'(risk > {pred_thresh:.2f}): {len(first_alarm)}. Number '
-                     'of patients with no alarm incidents (take the last '
-                     f'session): {len(last_session)}')
+    # Take the first session in which an alarm was triggered for each patient
+    # or the last session if alarms were never triggered
+    df = get_first_alarms_or_last_treatment(df, pred_thresh, verbose=verbose)
     
     return df
+
+def eol_treatment_receival_summary(df, split='Test'):
+    """Determine number of patients who received treatment near end-of-life
+    (EOL) for multiple subgroups (immigrants, sex, income quintiles, etc)
     
-def eol_chemo_receival_matrix(group, col, summary):
+    Args:
+        df (pd.DataFrame): table of patients and their relevant data (subgroup 
+            status, treatment receival, etc) (from output of 
+            get_eol_treatment_analysis_data)
+    
+    Returns:
+        A Table (pd.DataFrame) of number and proportion of patients that 
+        recieved treatment at EOL among the different subgroup populations
+    """
+    # Get summary for each subgroup populations
+    summary = pd.DataFrame(columns=twolevel)
+    eol_treatment_receival_matrix(df, (f'Entire {split} Cohort', ''), summary)
+    for col, mapping in subgroup_map.items():
+        title = group_title_map[col]
+        for subgroup_name, group, in df.groupby(col):
+            if subgroup_name in mapping.get('do_not_include', []): continue
+            subgroup_name = mapping.get(subgroup_name, subgroup_name)
+            eol_treatment_receival_matrix(group, (title, subgroup_name), summary)
+        
+    return summary
+    
+def eol_treatment_receival_matrix(group, col, summary):
     name = 'Received Chemo Near EOL'
     counts = group['received_chemo_near_EOL'].value_counts()
     summary.loc[name, col] = counts.get(True, 0)

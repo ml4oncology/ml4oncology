@@ -140,18 +140,27 @@ chemo_df['last_seen_date'] = chemo_df['last_seen_date'].fillna(max_chemo_date)
 # ### Include features from OHIP database
 # Get date of palliative care consultation services (PCCS) via physician billing codes (A945 and C945)
 
-# In[13]:
+# In[67]:
 
 
 # Extract and Preprocess the OHIP Data
 ohip = pd.read_csv(f'{root_path}/data/ohip.csv')
 ohip = filter_ohip_data(ohip, billing_codes=['A945', 'C945'])
 
-# Process the OHIP Data
-chemo_df = process_ohip_data(chemo_df, ohip)
+# Determine the date a patient received (PCCS) for the first time
+initial_pccs_date = ohip.groupby('ikn')['servdate'].first()
+chemo_df['first_PCCS_date'] = chemo_df['ikn'].map(initial_pccs_date)
 
 
-# In[14]:
+# In[71]:
+
+
+n = chemo_df.loc[chemo_df['first_PCCS_date'].notnull(), 'ikn'].nunique()
+N = chemo_df['ikn'].nunique()
+print(f"{n} patients out of {N} total patients have received at least one palliative care consultation services (PCCS)")
+
+
+# In[68]:
 
 
 chemo_df.to_csv(main_filepath, index=False)

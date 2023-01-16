@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import (
+    max_chemo_date,
     all_observations,
     clean_variable_mapping, 
     eGFR_params, 
@@ -230,13 +231,6 @@ def split_and_parallelize(data, worker, split_by_ikns=True, processes=16):
 ###############################################################################
 # Misc (Cleaners, Forward Fillers, Groupers)
 ###############################################################################
-def clean_string(df, cols):
-    # remove first two characters "b'" and last character "'"
-    for col in cols:
-        mask = df[col].str.startswith("b'") & df[col].str.endswith("'")
-        df.loc[mask, col] = df.loc[mask, col].str[2:-1].values
-    return df
-
 def replace_rare_categories(
     df, 
     catcols, 
@@ -260,20 +254,6 @@ def replace_rare_categories(
         df.loc[df[col].isin(replace_cats), col] = 'Other'
     return df
 
-def pandas_ffill(df):
-    # uh...unfortunately pandas ffill is super slow when scaled up
-    return df.ffill(axis=1)[0].values
-
-def numpy_ffill(df):
-    # Ref: stackoverflow.com/questions/41190852/most-efficient-way-to-forward-fill-nan-values-in-numpy-array
-    arr = df.values.astype(float)
-    num_rows, num_cols = arr.shape
-    mask = np.isnan(arr)
-    indices = np.where(~mask, np.arange(num_cols), 0)
-    np.maximum.accumulate(indices, axis=1, out=indices)
-    arr[mask] = arr[np.nonzero(mask)[0], indices[mask]]
-    return arr[:, -1]
-
 def group_observations(observations, freq_map):
     grouped_observations = {}
     for obs_code, obs_name in observations.items():
@@ -288,9 +268,47 @@ def group_observations(observations, freq_map):
         grouped_observations[obs_name] = obs_codes.tolist()
    
     return grouped_observations
+    
+def pandas_ffill(df):
+    # uh...unfortunately pandas ffill is super slow when scaled up
+    return df.ffill(axis=1)[0].values
+
+def numpy_ffill(df):
+    # Ref: stackoverflow.com/questions/41190852/most-efficient-way-to-forward-fill-nan-values-in-numpy-array
+    arr = df.values.astype(float)
+    num_rows, num_cols = arr.shape
+    mask = np.isnan(arr)
+    indices = np.where(~mask, np.arange(num_cols), 0)
+    np.maximum.accumulate(indices, axis=1, out=indices)
+    arr[mask] = arr[np.nonzero(mask)[0], indices[mask]]
+    return arr[:, -1]
+    
+def clean_string(df, cols):
+    # remove first two characters "b'" and last character "'"
+    for col in cols:
+        mask = df[col].str.startswith("b'") & df[col].str.endswith("'")
+        df.loc[mask, col] = df.loc[mask, col].str[2:-1].values
+    return df
 
 def get_years_diff(df, col1, col2):
     return df[col1].dt.year - df[col2].dt.year
+
+def get_first_alarms_or_last_treatment(df, pred_thresh, verbose=False):
+    """Get each patient's first alarm incident (the session where the first
+    alarm occured). If no alarms were ever triggered, get the patient's last 
+    session
+    """
+    df['predicted'] = df['predicted_prob'] > pred_thresh
+    first_alarm = df[df['predicted']].groupby('ikn').first()
+    low_risk_ikns = set(df['ikn']).difference(first_alarm.index)
+    last_session = df[df['ikn'].isin(low_risk_ikns)].groupby('ikn').last()
+    if verbose:
+        logging.info('Number of patients with first alarm incidents '
+                     f'(risk > {pred_thresh:.2f}): {len(first_alarm)}. Number '
+                     'of patients with no alarm incidents (take the last '
+                     f'session): {len(last_session)}')
+    df = pd.concat([first_alarm, last_session])
+    return df
 
 ###############################################################################
 # Bootstrap Confidence Interval 
@@ -527,14 +545,14 @@ def most_common_categories(
     return most_common
 
 ###############################################################################
-# Predictions & Metrics
+# Predictions & Metrics 
 ###############################################################################
 def outcome_recall_score(
     Y_true, 
     Y_pred_bool, 
     target_event, 
     event_dates=None, 
-    lookahead_window='30d'
+    lookback_window='30d'
 ):
     """Compute the outcome-level recall/sensitivity. The proportion of events 
     where at least one warning was issued prior to the event 
@@ -543,7 +561,7 @@ def outcome_recall_score(
         event_dates (pd.DataFrame): table of relevant event dates (e.g. D_date,
             next_ED_date, visit_date, etc) associated with each session. Also 
             includes ikn (patient id)
-        lookahead_window (str): number of days prior to the event in which a 
+        lookback_window (str): number of days prior to the event in which a 
             warning is valid, in the format '{int}d'
     """
     event_col_map = {
@@ -560,7 +578,7 @@ def outcome_recall_score(
     
     if target_event.endswith('Mortality'):
         # e.g. target_event = '14d Mortality'
-        lookahead_window = target_event.split(' ')[0] 
+        lookback_window = target_event.split(' ')[0] 
         event = 'D'
     else:
         # event will be either ACU, ED, or H
@@ -579,13 +597,13 @@ def outcome_recall_score(
     # group predictions by outcome
     worker = partial(
         group_pred_by_outcome, event_cols=event_cols, 
-        lookahead_window=lookahead_window
+        lookback_window=lookback_window
     )
     grouped_preds = split_and_parallelize(
         event_dates[mask], worker, processes=8
     )
     grouped_preds = pd.DataFrame(grouped_preds, columns=['chemo_idx', 'pred'])
-    grouped_preds.set_index('chemo_idx', inplace=True)
+    grouped_preds = grouped_preds.set_index('chemo_idx')
     
     # select the rows of interest
     result = pd.concat([
@@ -598,25 +616,25 @@ def outcome_recall_score(
     
     return recall_score(result['true'], result['pred'], zero_division=1)
     
-def group_pred_by_outcome(df, event_cols, lookahead_window='30d'):
+def group_pred_by_outcome(df, event_cols, lookback_window='30d'):
     """Group the predictions by outcome, collapse multiple chemo treatments 
     into one outcome.
 
-    E.g. if chemo happens on Jan 1 and Jan 14, ED visit happens on Jan 20, and 
-         our lookahead window is 30 days, then the outcome for predicting ED 
-         visit within 30 days would be a true positive if either Jan 1 and 
-         Jan 14 trigger a warning and a false negative if neither do
+    E.g. if ED visit happens on Jan 20, chemo happens on Jan 1 and Jan 14, and
+         our lookback window is 30 days, then the outcome for predicting ED 
+         visit within 30 days would be true positive if either Jan 1 or Jan 14 
+         trigger a warning, and false negative if neither do
 
     Currrently only supports ED/H event and Death outcomes
     """
-    lookahead_window = pd.Timedelta(lookahead_window)
+    lookback_window = pd.Timedelta(lookback_window)
     result = defaultdict(bool) # {index: prediction}, default to False
     for ikn, ikn_group in df.groupby('ikn'):
         for event in event_cols:
             for date, date_group in ikn_group.groupby(event):
-                # only keep samples in which event occured within lookahead 
+                # only keep samples in which event occured within lookback 
                 # window
-                mask = date_group['visit_date'] >= date - lookahead_window
+                mask = date_group['visit_date'] >= date - lookback_window
                 idx = date_group.index[-1]
                 result[idx] = result[idx] or any(date_group.loc[mask, 'pred'])
     return list(result.items())
@@ -624,49 +642,41 @@ def group_pred_by_outcome(df, event_cols, lookahead_window='30d'):
 def equal_rate_pred_thresh(
     eval_models, 
     event_dates, 
-    target_event='365d Mortality', 
-    split='Test', 
-    algorithm='ENS'
+    split='Valid', 
+    alg='ENS', 
+    target_event='365d Mortality'
 ):
     """Find the prediction threshold at which the alarm rate roughly equals the
-    event rate during usual care (ensuring the warning system will capture
-    the same proportion of events as usual care)
+    intervention rate during usual care (ensuring the warning system would use
+    same amount of resource as usual care)
     
-    For target of 365d Mortality, event is receiving palliative care 
+    For target of 365d Mortality, intervention is receiving palliative care 
     consultation service (PCCS)
-    
-    For target of 30d Mortality, event is dying within 30 days after treatment 
-    administration
     """
-    idxs = eval_models.labels[split].index
-    df = event_dates.loc[idxs]
-    df['predicted_prob'] = eval_models.preds[split][algorithm][target_event]
-    df['observed'] = eval_models.labels[split][target_event]
-    df['received_pccs'] = df['PCCS_date'].notnull()
+    # Extract relevant data
+    df = pd.DataFrame()
+    df['predicted_prob'] = eval_models.preds[split][alg][target_event]
+    df['ikn'] = eval_models.orig_data.loc[df.index, 'ikn']
     
-    # Take the last session of each patient
-    df = df.groupby('ikn').last()
-    
+    # Get intervention rate (by patient, not session)
     if target_event == '365d Mortality':
-        # Get the event rate of patients receiving PCCS
-        event_rate = df['received_pccs'].mean() 
-        event_name = 'receiving PCCS'
-    elif target_event == '30d Mortality':
-        # Get the event rate of patients dying within 30 days
-        event_rate = df['observed'].mean()
-        event_name = 'dying within 30 days after treatment'
+        tmp = event_dates.loc[df.index, ['first_PCCS_date', 'ikn']]
+        tmp = tmp.drop_duplicates()
+        intervention_rate = tmp['first_PCCS_date'].notnull().mean()
+    else:
+        raise NotImplementedError(f'Target {target_event} is not supported yet')
 
-    # Get the prediction threshold that will match the model's warning rate to 
-    # the event rate
-    threshold = pred_thresh_binary_search(
-        Y_pred_prob=df['predicted_prob'], Y_true=df['observed'], 
-        desired_target=event_rate, metric='warning_rate'
-    )
-    print(f"Prediction threshold of {threshold:.2f} would ensure the warning "
-          "system trigger alarms at a rate that will approximately equal the "
-          f"rate of patients {event_name} during usual care")
+    def scorer(thresh, df):
+        # Take the first session in which an alarm was triggered for each patient
+        # or the last session if alarms were never triggered
+        df = get_first_alarms_or_last_treatment(df, thresh, verbose=False)
+        # Get the alarm rate
+        alarm_rate = df['predicted'].mean()
+        return alarm_rate
     
-    return threshold
+    return binary_search(
+        scorer, intervention_rate, 'alarm rate', df, swap_adjustment=True,
+    )
     
 def pred_thresh_binary_search(
     Y_pred_prob, 
@@ -678,33 +688,48 @@ def pred_thresh_binary_search(
     """Finds the closest prediction threshold that will achieve the desired 
     metric score using binary search
     """
-    increase_thresh = lambda low, mid, high: (mid + 0.0001, high)
-    decrease_thresh = lambda low, mid, high: (low, mid - 0.0001)
-    if metric == 'precision': # goes up as pred thresh goes up
-        score_func = precision_score
-        less_than_target_adjust_thresh = increase_thresh
-        more_than_target_adjust_thresh = decrease_thresh
-    elif metric == 'sensitivity': # goes down as pred thresh goes up
-        score_func = recall_score
-        less_than_target_adjust_thresh = decrease_thresh
-        more_than_target_adjust_thresh = increase_thresh
-    elif metric == 'warning_rate':
-        score_func = lambda y_true, y_pred: y_pred.mean()
-        less_than_target_adjust_thresh = decrease_thresh
-        more_than_target_adjust_thresh = increase_thresh
+    score_func = {
+        'precision': precision_score, 
+        'sensitivity': recall_score, 
+        'warning_rate': lambda y_true, y_pred: y_pred.mean()
+    }
+    
+    def scorer(thresh, Y_true, Y_pred_prob, **kwargs):
+        Y_pred_bool = Y_pred_prob > thresh
+        return score_func[metric](Y_true, Y_pred_bool, **kwargs)
+    
+    swap_adjustment = metric in {'sensitivity', 'warning_rate'}
+    
+    return binary_search(
+        scorer, desired_target, metric, Y_true, Y_pred_prob, 
+        swap_adjustment=swap_adjustment, **kwargs
+    )
 
+def binary_search(
+    scorer,
+    desired_target, 
+    metric, 
+    *args, 
+    swap_adjustment=False,
+    **kwargs
+):
+    less_than_desired_adjust = lambda low, mid, high: (mid + 0.0001, high)
+    more_than_desired_adjust = lambda low, mid, high: (low, mid - 0.0001)
+    if swap_adjustment:
+        less_than_desired_adjust, more_than_desired_adjust = \
+        more_than_desired_adjust, less_than_desired_adjust
+        
     cur_target = 0
     low, high = 0, 1
     while low <= high:
         mid = (high + low)/2
-        Y_pred_bool = Y_pred_prob > mid
-        cur_target = score_func(Y_true, Y_pred_bool, **kwargs)
+        cur_target = scorer(mid, *args, **kwargs)
         if abs(cur_target - desired_target) <= 0.005:
             return mid
         elif cur_target < desired_target:
-            low, high = less_than_target_adjust_thresh(low, mid, high)
+            low, high = less_than_desired_adjust(low, mid, high)
         elif cur_target > desired_target:
-            low, high = more_than_target_adjust_thresh(low, mid, high)
+            low, high = more_than_desired_adjust(low, mid, high)
             
     logging.warning(f'Desired {metric} {desired_target:.2f} could not be '
                     f'achieved. Closest {metric} achieved was {cur_target:.2f}')
@@ -713,93 +738,89 @@ def pred_thresh_binary_search(
 ###############################################################################
 # Time Intervals
 ###############################################################################
-def time_to_target_after_alarm(
+def time_to_x_after_y(
     eval_models, 
-    event_dates, 
-    target_event, 
-    target_date_col,                        
+    event_dates,   
+    x=None,
+    y=None,
     split='Test', 
     algorithm='ENS', 
-    pred_thresh=0.5
+    target_event='365d Mortality',
+    pred_thresh=0.5,
+    verbose=True,
+    care_name=None,
+    clip=False
 ):
-    """Get the time to target after the first alarm incident 
-    (risk prediction > threshold) for each patient
+    """Get the time (in months) to event x after event y for each patient
+    
+    x/y can be first alarm incident, death, first palliative care consultation
+    service (PCCS), last observation, etc.
+    
+    Args:
+        x (str): event, either 'first_alarm', 'death', 'first_pccs', 'last_obs'
+        y (str): event, either 'first_alarm', 'death', 'first_pccs', 'last_obs'
     """
+    if x == y: raise ValueError('x and y must be different')
+    
+    # Get relevant data
     df = pd.DataFrame()
-    cols = [target_date_col, 'visit_date']
-    df[cols] = event_dates[cols]
-    df['pred'] = eval_models.preds[split][algorithm][target_event]
-    df['ikn'] = eval_models.orig_data['ikn']
-    df['label'] = eval_models.labels[split][target_event]
+    df['predicted_prob'] = eval_models.preds[split][algorithm][target_event]
+    df['ikn'] = eval_models.orig_data.loc[df.index, 'ikn']
+    df[event_dates.columns] = event_dates.loc[df.index]
     
-    # get first incident when risk prediction surpassed the threshold for each 
-    # patient. Data is already sorted by visit date, so first alarm incident is
-    # always the first row of the group
-    mask = df['pred'] > pred_thresh
-    first_alarm = df[mask].groupby('ikn').first()
-    # get the time to target
-    time_to_target = month_diff(
-        first_alarm[target_date_col], first_alarm['visit_date']
-    )
-    logging.info(f'Alarm = high risk of {target_event} (risk > {pred_thresh})')
-    logging.info(f'{len(first_alarm)} patients had alarms. Among them, '
-                 f'{sum(time_to_target.isnull())} patients did not experience '
-                 'the event at all / were censored.')
-
-    # get patients whose risk prediction never surpassed the threshold
-    low_risk_ikns = set(df['ikn']).difference(first_alarm.index)
-    # determine whether they've experienced the target
-    mask = df['ikn'].isin(low_risk_ikns)
-    experienced_target = df[mask].groupby('ikn')['label'].any()
-    logging.info(f'{len(low_risk_ikns)} patients had no alarms. Among them, '
-                 f'{sum(experienced_target)} patients did experience '
-                 f'{target_event}.')
+    # Take the first session in which an alarm was triggered for each patient
+    # or the last session if alarms were never triggered
+    df = get_first_alarms_or_last_treatment(df, pred_thresh, verbose=verbose)
     
-    time_to_target = time_to_target.sort_values()
-    return time_to_target
-
-def time_to_alarm_after_pccs(
-    eval_models, 
-    event_dates, 
-    target_event,                   
-    split='Test', 
-    algorithm='ENS', 
-    pred_thresh=0.5
-):
-    """Get the time (in months) to first alarm incident after the palliative 
-    care consultation service (PCCS) for each patient
-    """
-    df = pd.DataFrame()
-    df['preds'] = eval_models.preds[split][algorithm][target_event]
-    df['ikn'] = eval_models.orig_data['ikn']
-    df['pccs_date'] = event_dates['PCCS_date']
-    df['visit_date'] = event_dates['visit_date']
+    # get the time to event x after event y
+    cols = {
+        'last_obs': 'last_seen_date',
+        'death': 'D_date',
+        'first_alarm': 'visit_date', 
+        'first_pccs': 'first_PCCS_date'
+    }
     
-    # remove sessions where alarm was not triggered
-    mask = df['preds'] > pred_thresh
-    logging.info(f'Filtering out sessions where risk of target event did not '
-                 f'exceed {pred_thresh}.\n{sum(mask)} sessions remain out of '
-                 f'{len(mask)} total sessions.\n'
-                 f'{df.loc[mask, "ikn"].nunique()} patients remain out of '
-                 f'{df["ikn"].nunique()} total patients.\n')
-    df = df[mask]
-
-    # remove sessions where no early PCCS was received
-    mask = df['pccs_date'].notnull()
-    logging.info('Filtering out sessions where palliative care consultation '
-                 f'service was not received.\n{sum(mask)} sessions remain.\n'
-                 f'{df.loc[mask, "ikn"].nunique()} patients remain.\n')
-    df = df[mask]
-
-    # take the first alarm incident of each patient
-    df = df.groupby('ikn').first()
-
-    # get the time to first alarm after PCCS date
-    time_to_alarm = month_diff(df['visit_date'], df['pccs_date'])
-    time_to_alarm = time_to_alarm.clip(upper=time_to_alarm.quantile(q=0.999))
-    time_to_alarm = time_to_alarm.sort_values()
+    if x == 'first_alarm' or y == 'first_alarm':
+        # remove patients who never had an alarm
+        mask = df['predicted']
+        if verbose:
+            logging.info('Removing patients who never had an alarm. '
+                         f'{sum(mask)} patients remain out of {len(mask)} '
+                         'total patients.')
+        df = df[mask]
     
-    return time_to_alarm
+    if x == 'death' or y == 'death':
+        col = cols['death']
+        # remove patients who never died
+        mask = df[col].notnull()
+        if verbose:
+            logging.info(f'Removing patients who never died. {sum(mask)} '
+                         f'patients remain out of {len(mask)} total patients.')
+        df = df[mask]
+        
+    if x == 'first_pccs' or y == 'first_pccs':
+        col = cols['first_pccs']
+        
+        if care_name == 'Model-Guided Care':
+            # update where warning system initiated PCCS earlier than usual care
+            mask = df['predicted']
+            dates = df.loc[mask, [col, 'visit_date']]
+            df[col][mask] = dates.min(axis=1)
+            
+        # remove patients who never received PCCS or 
+        # received PCCS after cohort end date
+        mask1 = df[col].isnull()
+        mask2 = df[col] > max_chemo_date
+        if verbose:
+            logging.info(f'Removing {sum(mask1)} patients that never received PCCS.')
+            logging.info(f'Removing {sum(mask2)} patients who received PCCS '
+                         f'after the cohort end date of {max_chemo_date}.\n')
+        df = df[~mask1 & ~mask2]
+        
+    time = month_diff(df[cols[x]], df[cols[y]])
+    if clip: time = time.clip(upper=time.quantile(q=0.999))
+    time = time.sort_values()
+    return time
 
 def month_diff(d1, d2):
     """Get the months between datetimes"""

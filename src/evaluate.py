@@ -641,11 +641,11 @@ class Evaluate:
         calib_ci=True, 
         n_bins=10, 
         calib_strategy='quantile', 
-        figsize=(12,12), 
+        figsize=(12,18), 
         save=True
     ):
         # setup 
-        fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize)
+        fig, axes = plt.subplots(nrows=3, ncols=2, figsize=figsize)
         axes = axes.flatten()
         plt.subplots_adjust(hspace=0.2, wspace=0.2)
         
@@ -663,12 +663,13 @@ class Evaluate:
             legend_location='lower right', calib_strategy=calib_strategy, 
             calib_ci=calib_ci, save=save
         )
-        self.plot_decision_curve(axes[3], alg, target_event, split)
-        # self.plot_pred_cdf(axes[3], alg, [target_event], split=split)
+        self.plot_pred_cdf(axes[3], alg, [target_event], split=split)
+        self.plot_decision_curve(axes[4], alg, target_event, split)
         
         # save
         if save:
-            for idx, filename in enumerate(['pr', 'roc', 'calib', 'dc']):
+            filenames = ['pr', 'roc', 'calib', 'cdf', 'dc']
+            for idx, filename in enumerate(filenames):
                 filename = f'{alg}_{target_event}_{filename}'
                 fig.savefig(
                     f'{self.output_path}/figures/curves/{filename}.jpg', 
@@ -686,26 +687,28 @@ class Evaluate:
         points, 
         metric='threshold', 
         target_events=None, 
-        split='Test',        
+        split='Test',
+        event_dates=None,
         include_outcome_recall=False, 
         mask=None,
-        save=True, 
-        **kwargs
+        save=True
     ):
         """Evaluate how system performs at different operating points 
-        (e.g. prediction thresholds, desired precision, desired sensitivity)
+        (e.g. prediction thresholds, desired precision, desired recall)
         
         Args:
+            event_dates (pd.DataFrame): table of relevant event dates 
+                (e.g. D_date, next_ED_date, visit_date, etc) associated with 
+                each session. Also includes ikn (patient id). If None, certain 
+                performance metrics won't be calculated
             include_outcome_recall (bool): If True, include outcome-level 
                 recall scores. Only ED/H/D events are supported.
             mask (pd.Series): An alignable boolean series to filter samples in 
                 the corresponding data split. If None, no filtering is done.
-            **kwargs: keyword arguments fed into outcome_recall_score (if we 
-                are including outcome-level recall)
         """
-        if metric not in {'threshold', 'precision', 'sensitivity', 'warning_rate'}:
+        if metric not in {'threshold', 'precision', 'recall', 'warning_rate'}:
             raise ValueError('metric must be set to threshold, precision, '
-                             'sensitivity, or warning_rate')
+                             'recall, or warning_rate')
             
         if target_events is None: target_events = self.target_events
         df = pd.DataFrame(columns=twolevel)
@@ -721,7 +724,7 @@ class Evaluate:
             for point in points:
                 point = np.round(point, 2)
                 
-                if metric in {'precision', 'sensitivity', 'warning_rate'}:
+                if metric in {'precision', 'recall', 'warning_rate'}:
                     # LOL binary search the threshold to get desired precision,
                     # sensitivity, or warning_rate
                     threshold = pred_thresh_binary_search(
@@ -733,45 +736,76 @@ class Evaluate:
                     
                 Y_pred_bool = Y_pred_prob > threshold
                 
-                if metric != 'warning_rate':
-                    col = (target_event, 'Warning Rate')
-                    df.loc[point, col] = Y_pred_bool.mean()
-                
                 if metric != 'threshold':
                     col = (target_event, 'Prediction Threshold')
                     df.loc[point, col] = threshold
                 
+                if metric != 'warning_rate':
+                    # Proportion of treatments
+                    # where a warning was issued
+                    col = (target_event, 'Warning Rate')
+                    df.loc[point, col] = Y_pred_bool.mean()
+                
                 if metric != 'precision':
+                    # Proportion of treatments in which a warning was issued
+                    # where target event occurs
                     col = (target_event, 'PPV')
                     df.loc[point, col] = precision_score(
                         Y_true, Y_pred_bool, zero_division=1
                     )
                     
-                if metric != 'sensitivity':
-                    name = 'Recall' 
-                    if include_outcome_recall: 
-                        name = f'Trigger-Level {name}'
-                        
-                    col = (target_event, name)
+                if metric != 'recall':  
+                    # Proportion of treatments in which target event occurs
+                    # where a warning was issued
+                    col = (target_event, 'Recall')
                     df.loc[point, col] = recall_score(
                         Y_true, Y_pred_bool, zero_division=1
                     )
-                    
-                if include_outcome_recall:
-                    col = (target_event, 'Outcome-Level Recall')
-                    df.loc[point, col] = outcome_recall_score(
-                        Y_true, Y_pred_bool, target_event, **kwargs
-                    )
                 
+                # Proportion of treatments in which target event does not occur
+                # where a warning was not issued
                 col = (target_event, 'NPV')
                 df.loc[point, col] = precision_score(
                     ~Y_true, ~Y_pred_bool, zero_division=1
                 )
                 
+                # Proportion of treatments in which a warning was not issued
+                # where target event does not occurs
                 col = (target_event, 'Specificity')
                 df.loc[point, col] = recall_score(
                     ~Y_true, ~Y_pred_bool, zero_division=1
                 )
+                    
+                if include_outcome_recall:
+                    # Proportion of target events 
+                    # where at least one warning was issued in the lookback window
+                    col = (target_event, 'Outcome-Level Recall')
+                    df.loc[point, col] = outcome_recall_score(
+                        Y_true, Y_pred_bool, target_event, event_dates
+                    )
+                
+                if event_dates is not None:
+                    # Filter out treatments after the first warning
+                    tmp = event_dates.loc[Y_pred_bool.index]
+                    tmp['pred'] = Y_pred_bool
+                    cumsum = tmp.groupby('ikn')['pred'].cumsum()
+                    # keep treatments where first warning occured
+                    mask = (cumsum == 1) & (cumsum != cumsum.shift())
+                    # keep treatments prior to first warning
+                    mask |= cumsum < 1
+                    
+                    # Proportion of treatments
+                    # where a first warning was issued
+                    # (we ignore all treatments after first warning)
+                    col = (target_event, 'First Warning Rate')
+                    df.loc[point, col] = Y_pred_bool[mask].mean()
+                    
+                    # Proportion of treatments in which a first warning was issued
+                    # where target event occurs
+                    col = (target_event, 'First Warning PPV')
+                    df.loc[point, col] = precision_score(
+                        Y_true[mask], Y_pred_bool[mask], zero_division=1
+                    )
                 
         df = self.round(df)
         if save: 
