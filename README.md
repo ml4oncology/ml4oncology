@@ -12,15 +12,15 @@ This dataset is not open-source. The code can only be run in the ICES DSH (Data 
 
 ## Instructions
 
-    python <adverse event folder>/Preprocess.py 
-    python <adverse event folder>/Training.py
+    python scripts/data_pipeline.py [OPTIONAL args]
+    python scripts/train_pipeline.py [OPTIONAL args]
 
-or convert those python files into jupyter notebooks, and run them on a jupyter browser.
+or convert the python files in the adverse event folders into jupyter notebooks, and run them on a jupyter browser.
 
 ## Prerequisites
-See environment.yaml, or run
+See env.yaml, or run
 
-	conda env create -f environment.yaml
+	conda env create -f env.yaml
 
 To use that conda environment on jupyter notebook, run
 
