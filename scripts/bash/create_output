@@ -7,15 +7,14 @@ mkdir output/code
 mkdir output/PROACCT_results
 cp -r PROACCT/models/within_30_days/figures output/PROACCT_results/
 cp -r PROACCT/models/within_30_days/tables output/PROACCT_results/
-cp PROACCT/models/*.csv output/PROACCT_results/tables/
-cp PROACCT/models/within_14_days/tables/classification_results.csv output/PROACCT_results/tables/14day_classification_results.csv
-cp PROACCT/models/within_180_days/tables/classification_results.csv output/PROACCT_results/tables/180day_classification_results.csv
+cp PROACCT/models/within_14_days/tables/evaluation_scores.csv output/PROACCT_results/tables/14day_evaluation_scores.csv
+cp PROACCT/models/within_180_days/tables/evaluation_scores.csv output/PROACCT_results/tables/180day_evaluation_scores.csv
 ############### CYTOPENIA RESULTS ###############
 mkdir output/CYTO_results
 cp -r CYTOPENIA/models/figures output/CYTO_results/
 cp -r CYTOPENIA/models/tables output/CYTO_results/
-cp -r CYTOPENIA/plots output/CYTO_results/
-cp -r CYTOPENIA/data/analysis output/CYTO_results/
+cp -r CYTOPENIA/analysis/figures/*.jpg output/CYTO_results/
+cp -r CYTOPENIA/analysis/tables/*_summary.csv output/CYTO_results/
 ############### AKI RESULTS ###############
 mkdir output/AKI_results
 cp -r CAN/models/AKI/figures output/AKI_results/
@@ -55,7 +54,7 @@ jupyter nbconvert --output-dir output/code/TRREKO --to script TRREKO/*ipynb
 jupyter nbconvert --output-dir output/code/dev_notebooks --to script dev_notebooks/*ipynb
 
 # Copy environment file
-cp environment.yaml output/code/
+cp env.yaml output/code/
 
 # Remove unnecessary files
 shopt -s globstar
@@ -63,8 +62,6 @@ rm -r output/**/.ipynb_checkpoints
 rm -r output/**/__pycache__
 rm -r output/*_results/figures/rnn_train_performance
 rm output/*_results/figures/curves/*.npy
-rm output/*_results/analysis/*.npy 
-rm output/*_results/analysis/*_bootstraps.csv
 
 # Add Terms of Use
 TOU=`cat TermsOfUse_ForICESCode.txt`

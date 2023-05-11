@@ -21,11 +21,12 @@ from tqdm import tqdm
 import pandas as pd
 import numpy as np
 
+from src import logging
 from src.config import (
     root_path, cyto_folder, acu_folder, can_folder, death_folder,
-    INTENT, BSA,
+    DATE, INTENT, BSA, 
     observation_cols, observation_change_cols, symptom_cols, 
-    blood_types, event_map,
+    blood_types, cytopenia_grades, event_map,
     SCr_max_threshold, SCr_rise_threshold, SCr_rise_threshold2
 )
 from src.utility import (
@@ -36,14 +37,10 @@ from src.utility import (
     split_and_parallelize
 )
 
-import logging
-logging.basicConfig(
-    level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s', 
-    datefmt='%I:%M:%S'
-)
+MAXDATE = pd.Timestamp.max
 
 class Imputer:
-    """Imputate Missing Data by Mean, Mode, or Median
+    """Impute missing data by mean, mode, or median
     """
     def __init__(self):
         self.impute_cols = {
@@ -87,22 +84,136 @@ class Imputer:
                 # use existing imputer to impute the data
                 data[cols] = imputer.transform(data[cols])
         return data
+    
+class OneHotEncoder:
+    """One-hot encode (OHE) categorical data.
+    
+    Create separate indicator columns for each unique category and assign binary
+    values of 1 or 0 to indicate the category's presence.
+    """
+    def __init__(self):
+        # NOTE: if you change the ordering, you will need to retrain the models
+        self.encode_cols = [
+            'regimen', 'cancer_topog_cd', 'cancer_morph_cd', 'lhin_cd', INTENT,
+            'world_region_of_birth'
+        ]
+        self.final_columns = None # the final feature names after OHE
+        
+        # function to get the indicator columns of a categorical feature
+        self.get_indcols = lambda cols, feat: cols[cols.str.startswith(feat)]
+        
+    def separate_regimen_sets(self, data, verbose=True):
+        """For regimens, some categories represent a regimen set (different 
+        treatments taken concurrently/within a short span of time). Create
+        separate columns for each regimen in the set. If those columns already
+        exists, combine them together (which is for most cases, except for 
+        monoclonal antibody treatments e.g beva, tras, pert).
+        
+        E.g.
+        regimen_A  regimen_B  regimen_A+B+C
+        True       False      False 
+        False      True       False 
+        False      False      True    
+        False      False      False
+        
+        regimen_A  regimen_B  regimen_C
+        True       False      False
+        False      True       False
+        True       True       True
+        False      False      False
+        
+        Examples of A+B+C
+        1. folfiri+pacl(w)+ramu
+        2. folfiri+mfolfox6+beva
+        """
+        cols = self.get_indcols(data.columns, 'regimen_')
+        drop_cols = []
+        for col, mask in data[cols].items():
+            regimens = col.replace('regimen_', '').split('+')
+            if len(regimens) == 1: 
+                continue
+
+            for regimen in regimens:
+                regimen_col = f'regimen_{regimen}'
+                data[regimen_col] = data.get(regimen_col, 0) | mask
+            drop_cols.append(col)
+        data = data.drop(columns=drop_cols)
+        
+        if verbose:
+            mask = self.get_indcols(data.columns, 'regimen_').isin(cols)
+            msg = (f'Separated and dropped {len(drop_cols)} treatment set '
+                   f'indicator columns, and added {sum(~mask)} new treatment '
+                   'indicator columns')
+            logging.info(msg)
+        
+        return data
+        
+    def encode(self, data, separate_regimen_sets=True, verbose=True):
+        """
+        Args:
+            separate_regimen_sets (bool): If True, convert the regimen set 
+                (regimen_A+B) indicator column into its individual regimen 
+                (regimen_A, regimen_B) indicator columns (combine if already 
+                exists)
+        """
+        # convert sex from a categorical column into a binary column
+        data['sex'] = data['sex'] == 'F'
+        
+        # one-hot encode categorical columns
+        # use only the columns that exist in the data
+        cols = [col for col in self.encode_cols if col in data.columns]
+        data = pd.get_dummies(data, columns=cols)
+        
+        if separate_regimen_sets:
+            data = self.separate_regimen_sets(data, verbose=verbose)
+        
+        if self.final_columns is None:
+            self.final_columns = data.columns
+            return data
+        
+        # reassign any indicator columns that did not exist in final columns
+        # as other
+        for feature in cols:
+            indicator_cols = self.get_indcols(data.columns, feature)
+            extra_cols = indicator_cols.difference(self.final_columns)
+            if extra_cols.empty: continue
+            
+            if verbose:
+                count = data[extra_cols].sum()
+                msg = (f'Reassigning the following {feature} indicator columns '
+                       f'that did not exist in train set as other:\n{count}')
+                logging.info(msg)
+                
+            other_col = f'{feature}_other'
+            if other_col not in data: data[other_col] = 0
+            data[other_col] |= data[extra_cols].any(axis=1)
+            data = data.drop(columns=extra_cols)
+            
+        # fill in any missing columns
+        missing_cols = self.final_columns.difference(data.columns)
+        data[missing_cols] = 0 
+        
+        return data
         
 class PrepData:
     """Prepare the data for model training"""
-    def __init__(self):
+    def __init__(self, target_keyword='target'):
+        self.target_keyword = target_keyword
         self.imp = Imputer()
+        self.ohe = OneHotEncoder()
         # keep event dates, separate from the main output data
         self.event_dates = pd.DataFrame()
-        self.datetime_cols = ['visit_date']
-        self.datetime_cols += [f'{col}_survey_date' for col in symptom_cols]
+        self.datetime_cols = [
+            DATE, 'death_date', 'birth_date', 'landing_date',
+            'diabetes_diag_date', 'hypertension_diag_date'
+        ] + [f'{col}_survey_date' for col in symptom_cols]
         self.norm_cols = [
             'age', BSA, 'chemo_cycle', 'days_since_last_chemo',
             'days_since_starting_chemo', 'line_of_therapy', 
             'neighborhood_income_quintile', 'visit_month_cos', 'visit_month_sin',
             'years_since_immigration'
-        ] 
-        self.norm_cols += observation_cols + observation_change_cols + symptom_cols
+        ] + observation_cols + observation_change_cols + symptom_cols
+        self.clip_cols = [BSA] + observation_cols + observation_change_cols
         self.main_dir = None
         self.scaler = None # normalizer
         self.clip_thresh = None # outlier clippers
@@ -112,10 +223,11 @@ class PrepData:
         df, 
         drop_cols=None, 
         missing_thresh=None, 
-        reduce_sparsity=False, 
+        reduce_sparsity=True, 
         treatment_intents=None, 
         regimens=None,
         first_course_treatment=False, 
+        include_comorbidity=False,
         verbose=True
     ):
         """
@@ -134,6 +246,8 @@ class PrepData:
                 treatment regimens are kept.
             first_course_treatment (bool): If True, keep only first course 
                 treatments of a new line of therapy
+            include_comorbidity (bool): If True, include features indicating if
+                patients had hypertension and/or diabetes
         """
         if drop_cols is None: drop_cols = []
             
@@ -157,6 +271,10 @@ class PrepData:
         
         if first_course_treatment: 
             df = self.get_first_course_treatments(df, verbose=verbose)
+        
+        if include_comorbidity:
+            for col in ['hypertension', 'diabetes']:
+                df[col] = df[f'{col}_diag_date'] < df[DATE]
 
         # save patient's first visit date 
         # NOTE: It may be the case that a patient's initial chemo sessions may 
@@ -167,7 +285,7 @@ class PrepData:
         # We have decided to use the date a patient first appeared in the 
         # final dataset instead of a patient's actual first visit date (before 
         # any filtering)
-        first_visit_date = df.groupby('ikn')['visit_date'].min()
+        first_visit_date = df.groupby('ikn')[DATE].min()
         self.event_dates['first_visit_date'] = df['ikn'].map(first_visit_date)
         
         # save the date columns before dropping them
@@ -185,47 +303,60 @@ class PrepData:
         df = self.get_missingness_feature(df)
         
         if reduce_sparsity:
-            # reduce sparse matrix by replacing rare categories with less 
-            # than 6 patients with 'Other'
-            cols = ['regimen', 'curr_morph_cd', 'curr_topog_cd']
+            # recategorize regimens/cancers/lhins with less than 6 patients to 
+            # other
+            cols = ['regimen', 'cancer_morph_cd', 'cancer_topog_cd', 'lhin_cd']
             df = replace_rare_categories(df, cols, verbose=verbose)
-        
-        # remove filtered rows (by intent, first course, inpatient, 
-        # death dates, etc) from event dates
-        self.event_dates = self.event_dates.loc[df.index]
         
         return df
     
-    def split_data(
+    def split_and_transform_data(
         self, 
         data, 
-        target_keyword='target', 
+        one_hot_encode=True,
+        clip=True, 
         impute=True, 
         normalize=True, 
-        clip=True, 
+        remove_immediate_events=False,
+        separate_regimen_sets=True,
         split_date=None, 
-        verbose=True):
+        verbose=True,
+        ohe_kwargs=None
+    ):
         """Split data into training, validation and test sets based on patient 
-        ids (and optionally split temporally based patient first visit dates)
+        ids (and optionally split temporally based patient first visit dates).
         
-        Optionally clip, impute, and normalize the datasets
+        Optionally transform (one-hot encode, clip, impute, normalize) the data.
         
         Args:
             split_date (str): Date on which to split the data temporally. 
                 String format: 'YYYY-MM-DD' (e.g. 2017-06-30).
                 Train/val set (aka development cohort) will contain all patients
                 whose first chemo session date was on or before split_date.
-                Test set (aka test cohort) will contain all patients whose first 
+                Test set (aka test cohort) will contain all patients whose first
                 chemo session date was after split_date. 
                 If None, data won't be split temporally.
+            ohe_kwargs (dict): a mapping of keyword arguments fed into 
+                OneHotEncoder.encode
         """
+        if ohe_kwargs is None: ohe_kwargs = {}
+        
         # create training, validation, testing set
         train_data, valid_data, test_data = self.create_splits(
             data, split_date=split_date, verbose=verbose
         )
         
-        # IMPORTANT: always make sure train data is done first for clipping, 
-        # imputing, and scaling
+        # IMPORTANT: always make sure train data is done first for one-hot 
+        # encoding, clipping, imputing, scaling
+        if one_hot_encode:
+            # One-hot encode categorical data
+            if verbose: logging.info('One-hot encoding train data')
+            train_data = self.ohe.encode(train_data.copy(), **ohe_kwargs)
+            if verbose: logging.info('One-hot encoding valid data')
+            valid_data = self.ohe.encode(valid_data.copy(),**ohe_kwargs)
+            if verbose: logging.info('One-hot encoding test data')
+            test_data = self.ohe.encode(test_data.copy(), **ohe_kwargs)
+            
         if clip:
             # Clip the outliers based on the train data quantiles
             train_data = self.clip_outliers(train_data.copy())
@@ -234,69 +365,81 @@ class PrepData:
 
         if impute:
             # Impute missing data based on the train data mode/median/mean
-            train_data = self.imp.impute(train_data.copy())
-            valid_data = self.imp.impute(valid_data.copy())
-            test_data = self.imp.impute(test_data.copy())
+            train_data = self.imp.impute(train_data)
+            valid_data = self.imp.impute(valid_data)
+            test_data = self.imp.impute(test_data)
             
         if normalize:
             # Scale the data based on the train data distribution
-            train_data = self.normalize_data(train_data.copy())
-            valid_data = self.normalize_data(valid_data.copy())
-            test_data = self.normalize_data(test_data.copy())
-
-        # split into input features and target labels
-        cols = train_data.columns
-        feature_cols = cols[~cols.str.contains(target_keyword)].drop('ikn')
-        target_cols = cols[cols.str.contains(target_keyword)]
-        X_train = train_data[feature_cols]
-        X_valid = valid_data[feature_cols]
-        X_test = test_data[feature_cols]
-        Y_train = self.convert_labels(train_data[target_cols])
-        Y_valid = self.convert_labels(valid_data[target_cols])
-        Y_test = self.convert_labels(test_data[target_cols])
+            train_data = self.normalize_data(train_data)
+            valid_data = self.normalize_data(valid_data)
+            test_data = self.normalize_data(test_data)
+            
+        if remove_immediate_events:
+            # Remove sessions where event occured immediately afterwards on the
+            # train and valid set ONLY
+            train_data = self.remove_immediate_events(train_data, verbose=verbose)
+            valid_data = self.remove_immediate_events(valid_data, verbose=verbose)
+            
+        # create a split column and combine the data for convenienceR
+        train_data[['cohort', 'split']] = ['Development', 'Train']
+        valid_data[['cohort', 'split']] = ['Development', 'Valid']
+        test_data[['cohort', 'split']] = 'Test'
+        data = pd.concat([train_data, valid_data, test_data])
+        self.event_dates = self.event_dates.loc[data.index]
+            
+        # split into input features, output labels, and tags
+        tag_cols = ['ikn', 'cohort', 'split']
+        cols = data.columns.drop(tag_cols)
+        mask = cols.str.contains(self.target_keyword)
+        target_cols, feature_cols = cols[mask], cols[~mask]
         
-        return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
+        X = data[feature_cols]
+        Y = self.convert_labels(data[target_cols].copy())
+        tag = data[tag_cols]
+        
+        if verbose:
+            df = pd.DataFrame({
+                'Number of sessions': tag.groupby('split').apply(len), 
+                'Number of patients': tag.groupby('split')['ikn'].nunique()}
+            ).T
+            df['Total'] = df.sum(axis=1)
+            logging.info(f'\n{df.to_string()}')
+        
+        return X, Y, tag
     
     def get_label_distribution(
         self, 
-        Y_train, 
-        Y_valid=None, 
-        Y_test=None, 
+        Y, 
+        tag, 
+        with_respect_to='sessions',
         save_path=''
     ):
-        dists, cols = [], []
-        def update_distribution(Y, split):
-            dists.append(Y.apply(pd.value_counts))
-            cols.append(split)
-        update_distribution(Y_train, 'Train')
-        if Y_valid is not None: update_distribution(Y_valid, 'Valid')
-        if Y_test is not None: update_distribution(Y_test, 'Test')
-    
-        dists = pd.concat(dists)
-        total = pd.DataFrame(
-            [dists.loc[False].sum(), dists.loc[True].sum()],
-            index=[False, True]
-        )
-        dists = pd.concat([dists, total]).T
-        cols = pd.MultiIndex.from_product([cols+['Total'], ['False', 'True']])
-        dists.columns = cols
-
+        if with_respect_to == 'patients':
+            dists = {}
+            for split, group in Y.groupby(tag['split']):
+                ikn = tag.loc[group.index, 'ikn']
+                count = {True: group.apply(lambda mask: ikn[mask].nunique())}
+                count[False] = ikn.nunique() - count[True] 
+                dists[split] = pd.DataFrame(count).T
+        elif with_respect_to == 'sessions':
+            dists = {split: group.apply(pd.value_counts) 
+                     for split, group in Y.groupby(tag['split'])}
+        dists['Total'] = dists['Train'] + dists['Valid'] + dists['Test']
+        dists = pd.concat(dists).T
         if save_path: dists.to_csv(save_path, index=False)
         return dists
     
     def clip_outliers(
         self, 
         data, 
-        cols=None, 
         lower_percentile=0.001, 
         upper_percentile=0.999
     ):
         """Clip the upper and lower percentiles for the columns indicated below
         """
-        if not cols:
-            cols = observation_cols + observation_change_cols + [BSA]
-            # use only the columns that exist in the data
-            cols = list(set(cols).intersection(data.columns))
+        # use only the columns that exist in the data
+        cols = [col for col in self.clip_cols if col in data.columns]
         
         if self.clip_thresh is None:
             percentiles = [lower_percentile, upper_percentile]
@@ -309,15 +452,9 @@ class PrepData:
         )
         return data
 
-    def dummify_data(self, data):
-        # convert sex from a nominal column into a binary column
-        data['sex'] = data['sex'] == 'F'
-        # one-hot encode categorical columns
-        return pd.get_dummies(data)
-        
     def normalize_data(self, data):
         # use only the columns that exist in the data
-        norm_cols = list(set(self.norm_cols).intersection(data.columns))
+        norm_cols = [col for col in self.norm_cols if col in data.columns]
         
         if self.scaler is None:
             self.scaler = StandardScaler()
@@ -333,68 +470,46 @@ class PrepData:
         mask = self.event_dates['first_visit_date'] <= split_date
         dev_cohort, test_cohort = df[mask], df[~mask]
         if verbose:
-            logging.info("Development Cohort: "
-                         f"NSessions={len(dev_cohort)}. "
-                         f"NPatients={dev_cohort['ikn'].nunique()}. "
-                         "Contains all patients that had their first visit on "
-                         f"or before {split_date}")
-            logging.info("Testing Cohort: "
-                         f"NSessions={len(test_cohort)}. "
-                         f"NPatients={test_cohort['ikn'].nunique()}. "
-                         "Contains all patients that had their first visit "
-                         f"after {split_date}")
+            disp = lambda x: f"NSessions={len(x)}. NPatients={x.ikn.nunique()}"
+            logging.info(f"Development Cohort: {disp(dev_cohort)}. Contains all "
+                         f"patients whose first visit was on or before {split_date}")
+            logging.info(f"Test Cohort: {disp(test_cohort)}. Contains all patients "
+                         f"whose first visit was after {split_date}")
         return dev_cohort, test_cohort
+    
+    def create_split(self, df, test_size, random_state=42):
+        """Split data based on patient ids"""
+        gss = GroupShuffleSplit(
+            n_splits=1, test_size=test_size, random_state=random_state
+        )
+        patient_ids = df['ikn']
+        train_idxs, test_idxs = next(gss.split(df, groups=patient_ids))
+        train_data, test_data = df.iloc[train_idxs], df.iloc[test_idxs]
+        return train_data, test_data
     
     def create_splits(self, data, split_date=None, verbose=True):
         if split_date is None: 
-            # split data based on patient ids (60-20-20 split)
-            # create training set
-            gss = GroupShuffleSplit(n_splits=1, test_size=0.4, random_state=42)
-            patient_ids = data['ikn']
-            train_idxs, test_idxs = next(gss.split(data, groups=patient_ids))
-            train_data = data.iloc[train_idxs]
-            test_data = data.iloc[test_idxs]
-
-            # crate validation and testing set
-            gss = GroupShuffleSplit(n_splits=1, test_size=0.5, random_state=42)
-            patient_ids = test_data['ikn']
-            valid_idxs, test_idxs = next(gss.split(test_data, groups=patient_ids))
-
-            valid_data = test_data.iloc[valid_idxs]
-            test_data = test_data.iloc[test_idxs]
+            # create training, validation, and testing set (60-20-20 split)
+            train_data, test_data = self.create_split(data, test_size=0.4)
+            valid_data, test_data = self.create_split(test_data, test_size=0.5)
         else:
             # split data temporally based on patients first visit date
             train_data, test_data = self.create_cohort(
                 data, split_date, verbose=verbose
             )
-                
             # create validation set from train data (80-20 split)
-            gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-            patient_ids = train_data['ikn']
-            train_idxs, valid_idxs = next(gss.split(train_data, groups=patient_ids))
-            valid_data = train_data.iloc[valid_idxs]
-            train_data = train_data.iloc[train_idxs]
+            train_data, valid_data = self.create_split(train_data, test_size=0.2)
 
         # sanity check - make sure there are no overlap of patients in the splits
         assert(not set.intersection(set(train_data['ikn']), 
                                     set(valid_data['ikn']), 
                                     set(test_data['ikn'])))
-
-        if verbose:
-            logging.info('Size of splits: '
-                         f'Train:{len(train_data)}, '
-                         f'Val:{len(valid_data)}, '
-                         f'Test:{len(test_data)}')
-            logging.info("Number of patients: "
-                         f"Train:{train_data['ikn'].nunique()}, "
-                         f"Val:{valid_data['ikn'].nunique()}, "
-                         f"Test:{test_data['ikn'].nunique()}")
         
         return train_data, valid_data, test_data
     
     def get_visit_date_feature(self, df):
         # convert to cyclical features
-        month = df['visit_date'].dt.month - 1
+        month = df[DATE].dt.month - 1
         df['visit_month_sin'] = np.sin(2*np.pi*month/12)
         df['visit_month_cos'] = np.cos(2*np.pi*month/12)
         return df
@@ -412,9 +527,10 @@ class PrepData:
     
     def fill_missing_feature(self, df):
         cols = df.columns
-        for col in ['num_prior_EDs', 'num_prior_Hs']:
+        for event in ['H', 'ED']:
+            col = f'num_prior_{event}s_within_5_years'
             if col in cols: df[col] = df[col].fillna(0)
-        for col in ['days_since_last_chemo', 'chemo_interval']:
+        for col in ['days_since_last_chemo']:
             if col in cols: df[col] = df[col].fillna(df[col].max())
         return df
     
@@ -449,114 +565,37 @@ class PrepData:
         if verbose: 
             logging.info(f'Removing {sum(~mask)} sessions in which {catcol} '
                          f'is not {keep_cats}')
-        df = df[mask]
+        df = df[mask].copy()
         return df
     
     def load_data(self, dtypes=None):
-        if dtypes is None: dtypes={'curr_morph_cd': str, 'lhin_cd': str}
-        df = pd.read_csv(f'{self.main_dir}/data/model_data.csv', dtype=dtypes)
-        for col in self.datetime_cols: 
-            df[col] = pd.to_datetime(df[col])
+        df = pd.read_parquet(f'{self.main_dir}/data/final_data.parquet.gzip')
+        df['ikn'] = df['ikn'].astype(int)
         # self.test_visit_dates_sorted(df)  
         return df
     
     def test_visit_dates_sorted(self, df):
         # make sure chemo visit dates are sorted for each patient
         for ikn, group in tqdm(df.groupby('ikn')):
-            assert all(group['visit_date'] == group['visit_date'].sort_values())
+            assert all(group[DATE] == group[DATE].sort_values())
     
     def convert_labels(self, target):
         """You can overwrite this to do custom operations"""
         return target
     
+    def remove_immediate_events(self, df, verbose=False):
+        """You can overwrite this to do custom operations"""
+        logging.warning('remove_immeidate_events have not been implemented yet!')
+        return df
+    
 class PrepDataCYTO(PrepData):
     """Prepare data for cytopenia model training/prediction"""
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.main_dir = f'{root_path}/{cyto_folder}'
-        self.transfusion_cols = [
-            'H_hemoglobin_transfusion_date', 'H_platelet_transfusion_date', 
-            'ED_hemoglobin_transfusion_date', 'ED_platelet_transfusion_date'
-        ]
-        self.datetime_cols += self.transfusion_cols + ['next_visit_date']
+        self.datetime_cols += [f'next_{DATE}', 'target_date']
         self.norm_cols += ['cycle_length']
         
-        str_dtype_cols = self.transfusion_cols + ['curr_morph_cd', 'lhin_cd']
-        self.chemo_dtypes = {col: str for col in str_dtype_cols}
-    
-    def read_main_blood_count_data(self, blood_type, chemo_df):
-        df = pd.read_csv(f'{self.main_dir}/data/{blood_type}.csv')
-
-        # turn string of numbers columns into integer column 
-        df.columns = df.columns.astype(int)
-        max_day = df.columns[-1]
-
-        # get baseline and target blood counts
-        df['baseline_blood_count'] = chemo_df[f'baseline_{blood_type}_count']
-        df['regimen'] = chemo_df['regimen']
-        df['chemo_interval'] = chemo_df['chemo_interval']
-        cycle_lengths = dict(chemo_df[['regimen', 'cycle_length']].values)
-        result, indices = [], []
-        for regimen, regimen_group in tqdm(df.groupby('regimen')):
-            cycle_length = int(cycle_lengths[regimen])
-            for chemo_interval, group in regimen_group.groupby('chemo_interval'):
-                # get the min between actual vs expected days until next chemo
-                day = int(min(chemo_interval, cycle_length))
-                # forward fill blood counts from a days before to the day 
-                # after expected/actual administration
-                ffill_window = (range(day-2, day+1) if day == max_day
-                                else range(day-1,day+2))
-                result += numpy_ffill(group[ffill_window]).tolist()
-                indices += group.index.tolist()
-        df.loc[indices, 'target_blood_count'] = result
-
-        mask = (df['baseline_blood_count'].notnull() & 
-                df['target_blood_count'].notnull())
-        df = df[mask]
-        return df
-
-    def get_main_blood_count_data(self, chemo_df):
-        data = {bt: self.read_main_blood_count_data(bt, chemo_df) 
-                for bt in blood_types}
-
-        # keep only rows where all blood types are present
-        n_indices = data['neutrophil'].index
-        h_indices = data['hemoglobin'].index
-        p_indices = data['platelet'].index
-        mask = n_indices.isin(h_indices) & n_indices.isin(p_indices)
-        keep_indices = n_indices[mask]
-        data = {blood_type: data[blood_type].loc[keep_indices] 
-                for blood_type in blood_types}
-        return data
-    
-    def process_blood_transfusion(self, df, verbose=False):
-        for col in self.transfusion_cols:
-            bt = col.split('_')[1]
-            new_col = f"{bt}_transfusion"
-            if new_col not in df: df[new_col] = False
-
-            # if transfusion occurs from day -5 to day 0, flag feature as true
-            earliest_date = df['visit_date'] - pd.Timedelta('5 days') 
-            latest_date = df['visit_date']
-            df[new_col] |= df[col].between(earliest_date, latest_date)
-            if verbose: 
-                logging.info(f"{df[new_col].sum()} sessions with "
-                             f"{col.replace('_', ' ').replace('date', '')} "
-                             "feature")
-
-            # if transfusion occurs from day 4 to 3 days after next chemo 
-            # administration, set target label (low blood count) as positive 
-            # via setting target counts to 0
-            earliest_date = df['visit_date'] + pd.Timedelta('4 days') 
-            latest_date = df['next_visit_date'] + pd.Timedelta('3 days') 
-            mask = df[col].between(earliest_date, latest_date)
-            if verbose: 
-                logging.info(f"{mask.sum()} sessions will be labeled as positive "
-                             f"for low {bt} blood count regardless of actual "
-                             f"target {bt} blood count")
-            df.loc[mask, f'target_{bt}_count'] = 0
-        return df
-    
     def get_data(self, verbose=False, **kwargs):
         """Extract and organize data to create input features and target labels
         
@@ -578,30 +617,114 @@ class PrepDataCYTO(PrepData):
         Args:
             **kwargs (dict): the parameters of PrepData.prepare_features
         """
-        # extract data
-        chemo_df = self.load_data(dtypes=self.chemo_dtypes)
-        main_blood_count_data = self.get_main_blood_count_data(chemo_df)
-        
-        # combine data
-        # indices are same for all blood types
-        df = chemo_df.loc[main_blood_count_data['neutrophil'].index]
-        for bt, blood_count_data in main_blood_count_data.items():
-            df[f'target_{bt}_count'] = blood_count_data['target_blood_count']
-        df = self.process_blood_transfusion(df, verbose=verbose)
-        df = self.prepare_features(
-            df, drop_cols=['chemo_interval'], verbose=verbose, **kwargs
-        )
+        df = self.load_data()
+        df = self.get_target_date(df)
+        df = self.get_target_blood_measurements(df, verbose=verbose)
+        df = self.get_blood_transfusion_data(df, verbose=verbose)
+        df = self.prepare_features(df, verbose=verbose, **kwargs)
         return df
     
-    def convert_labels(self, target):
-        """Convert regression labels (last blood count value) to classification
-        labels (if last blood count value is below corresponding threshold)
+    def get_target_date(self, df):
+        """Compute the minimum between the anticipated and actual next visit 
+        date
+        """
+        cycle_length = pd.to_timedelta(df['cycle_length'], unit='d')
+        expect_next_date = df[DATE] + cycle_length
+        actual_next_date = df[f'next_{DATE}']
+        dates = [expect_next_date, actual_next_date]
+        df['target_date'] = pd.concat(dates, axis=1).min(axis=1)
+        return df
+
+    def get_target_blood_measurements(self, df, verbose=True):
+        missing_baseline_mask, missing_target_mask = False, False
+        for bt in blood_types:
+            df = self._get_target_blood_measurements(df, blood_type=bt)
+            missing_baseline_mask |= df[f'baseline_{bt}_value'].isnull()
+            missing_target_mask |= df[f'target_{bt}_value'].isnull()
+        
+        # keep only rows in which both baseline and target measurements for all
+        # blood types are present
+        # NOTE: I separated the masks in case I want to know each of its 
+        # numbers in the future
+        mask = missing_baseline_mask | missing_target_mask
+        if verbose:
+            logging.info(f'Removing {sum(mask)} sessions that did not have '
+                         'baseline/target blood measurements for the 3 blood '
+                         'types')
+        df = df[~mask]
+        return df
+    
+    def _get_target_blood_measurements(self, df, blood_type='neutrophil'):
+        bm = pd.read_parquet(f'{self.main_dir}/data/{blood_type}.parquet.gzip')
+        bm.columns = bm.columns.astype(int)
+        max_day = bm.columns[-1]
+        
+        bm['regimen'] = df['regimen']
+        bm['days_until_next_visit'] = (df['target_date'] - df[DATE]).dt.days
+
+        result, idxs = [], []
+        for day, group in bm.groupby('days_until_next_visit'):
+            # forward fill values from a day before to the day after target date
+            adjustment = int(day == max_day) # prevent out of bound error
+            ffill_window = range(day - 1, day + 2 - adjustment)
+            result += numpy_ffill(group[ffill_window]).tolist()
+            idxs += group.index.tolist()
+        df.loc[idxs, f'target_{blood_type}_value'] = result
+        return df
+    
+    def get_blood_transfusion_data(
+        self, 
+        df, 
+        days_prior=5, 
+        days_after=3, 
+        adjust_targets=True, 
+        verbose=True
+    ):
+        days_prior = pd.Timedelta(days=days_prior)
+        days_after = pd.Timedelta(days=days_after)
+        bt = pd.read_parquet(f'{self.main_dir}/data/blood_transfusion.parquet.gzip')
+        for col in [DATE, 'target_date']: bt[col] = bt['chemo_idx'].map(df[col])
+
+        # create the features
+        feats = bt.query('feat_or_targ == "feature"')
+        # Feature 1: Whether blood transfusion occured between x days before to
+        # the day of treatment date
+        mask = feats['transfusion_date'] >= feats[DATE] - days_prior
+        feats = feats[mask]
+        for blood_type, group in feats.groupby('type'):
+            idxs = group['chemo_idx'].unique()
+            new_col = f"{blood_type}_transfusion"
+            df[new_col] = False
+            df.loc[idxs, new_col] = True
+
+        if not adjust_targets:
+            return df
+
+        # adjust the targets
+        targs = bt.query('feat_or_targ == "target"')
+        # if blood transfusion occured between 4 days after treatment date to 
+        # x days after target date, set target label (low blood count) as
+        # positive by setting target blood measurement to 0
+        mask = targs['transfusion_date'] <= targs['target_date'] + days_after
+        targs = targs[mask]
+        for blood_type, group in targs.groupby('type'):
+            idxs = group['chemo_idx'].unique()
+            if verbose: 
+                msg = (f"{len(idxs)} sessions will be labeled as positive for "
+                       f"low {blood_type} count regardless of actual target "
+                       f"{blood_type} count")
+                logging.info(msg)
+            df.loc[idxs, f'target_{blood_type}_value'] = 0
+        return df
+    
+    def convert_labels(self, target, grade=2):
+        """Convert regression labels (target blood value) to classification
+        labels (if target blood value is below a threshold)
         """
         for bt, blood_info in blood_types.items():
             cyto_name = blood_info['cytopenia_name']
-            cyto_thresh = blood_info['cytopenia_threshold']
-            target[cyto_name] = target[f'target_{bt}_count'] < cyto_thresh
-            target = target.drop(columns=[f'target_{bt}_count'])
+            cyto_thresh = cytopenia_grades[f'Grade {grade}'][cyto_name]
+            target[cyto_name] = target.pop(f'target_{bt}_value') < cyto_thresh
         return target
     
 class PrepDataEDHD(PrepData):   
@@ -612,9 +735,9 @@ class PrepDataEDHD(PrepData):
     H - Hospitalizations
     D - Deaths
     """
-    def __init__(self, adverse_event, target_days=None):
-        super().__init__()
-        if adverse_event not in {'acu', 'death'}: 
+    def __init__(self, adverse_event, target_days=None, **kwargs):
+        super().__init__(**kwargs)
+        if adverse_event not in ['acu', 'death']: 
             raise ValueError('advese_event must be either acu (acute case use) '
                              'or death')
         self.adverse_event = adverse_event
@@ -622,129 +745,17 @@ class PrepDataEDHD(PrepData):
             self.main_dir = f'{root_path}/{acu_folder}'
         elif self.adverse_event == 'death':
             self.main_dir = f'{root_path}/{death_folder}'
-            self.datetime_cols += ['first_PCCS_date', 'last_seen_date']
+            self.datetime_cols += ['first_PCCS_date', 'last_seen_date', 'death_date']
             self.target_days = ([14, 30, 90, 180, 365] if target_days is None 
                                 else target_days)
         self.norm_cols += [
-            'num_prior_EDs', 'num_prior_Hs', 'days_since_prev_H', 
-            'days_since_prev_ED'
+            'num_prior_EDs_within_5_years', 'num_prior_Hs_within_5_years', 
+            'days_since_prev_H', 'days_since_prev_ED'
         ]
-    
-    def load_event_data(self, event='H'):
-        df = pd.read_csv(f'{self.main_dir}/data/{event}_dates.csv')
-        df['arrival_date'] = pd.to_datetime(df['arrival_date'])
-        df['depart_date'] = pd.to_datetime(df['depart_date'])
-        df = df.set_index('chemo_idx')
-        return df
-
-    def get_event_data(self, df, target_keyword, event='H', create_targets=True):
-        if self.event_dates.empty:
-            # intialize the indices of self.event_dates, which stores all dates
-            # (chemo visit date, survey dates, etc)
-            self.event_dates['index'] = df.index
-            self.event_dates = self.event_dates.set_index('index')
-            
-        event_dates = self.load_event_data(event=event) # ED/H event dates
-        event_cause_cols = event_map[event]['event_cause_cols']
-
-        # create the features
-        features = event_dates[event_dates['feature_or_target'] == 'feature']
-        idxs = features.index
-        # Feature 1: Number of days since previous event occured
-        col = f'days_since_prev_{event}'
-        date_diff = df.loc[idxs, 'visit_date'] - features['arrival_date']
-        df.loc[idxs, col] = (date_diff).dt.days
-        # fill rows where patients had no prev event with the max value
-        df[col] = df[col].fillna(df[col].max())
-        # Feature 2: Number of events prior to visit
-        col = f'num_prior_{event}s'
-        df.loc[features.index, col] = features[col]
-        # Feature 3: Cause of prev event occurence
-        for cause in event_cause_cols:
-            df[f'prev_{cause}'] = False # initialize
-            df.loc[features.index, f'prev_{cause}'] = features[cause]
-
-        if create_targets:
-            targets = event_dates[event_dates['feature_or_target'] == 'target']
-            idxs = targets.index
-            
-            # store the event dates
-            col = f'next_{event}_date'
-            self.event_dates.loc[idxs, col] = targets['arrival_date']
-            
-            # create the event targets - event within x days after visit date
-            days_until_event = targets['arrival_date'] - df.loc[idxs, 'visit_date']
-            days = target_keyword.split('_')[-1] # Assumes the form target_within_Xdays
-            targets[event] = days_until_event < pd.Timedelta(days)
-            targets = targets[targets[event]]
-            for col in event_cause_cols+[event]:
-                df[col+target_keyword] = False # initialize
-                df.loc[targets.index, col+target_keyword] = targets[col]
-            
-        return df
-            
-    def get_death_data(self, df, target_keyword, verbose=False):
-        df['D_date'] = pd.to_datetime(df['D_date'])
         
-        # Allow ample time for follow up of death by filtering out sessions 
-        # after max death date minus max target days. For example, if we only 
-        # collected death dates up to July 31 2021 (max death date), and max 
-        # target days is 365 days, we should only consider treatments up to 
-        # July 30 2020. If we considered treatments on June 2021, its
-        # impossible to get the ground truth of whether patient died within 365
-        # days, since we stopped collecting death dates a month later
-        min_date = df['D_date'].max() - pd.Timedelta(days=max(self.target_days))
-        mask = df['visit_date'] > min_date
-        if verbose: 
-            logging.info(f'Removing {sum(mask)} sessions whose date occured '
-                         f'after {min_date} to allow ample follow up time of '
-                         'death')
-        df = df[~mask]
-
-        # create the death targets
-        days_until_d = df['D_date'] - df['visit_date']
-        for day in self.target_days:
-            days = f'{day}d'
-            df[f'{days} {target_keyword}'] = days_until_d < pd.Timedelta(days)
-            
-        # store the death dates
-        self.event_dates['D_date'] = df['D_date']
+        self.add_tk = lambda x: f'{x} {self.target_keyword}'
         
-        df = df.drop(columns=['D_date'])
-        return df
-            
-    def remove_inpatients(self, df, verbose=False):
-        inpatient_indices = np.load(f'{self.main_dir}/data/inpatient_indices.npy')
-        df = df.drop(index=inpatient_indices)
-        if verbose: logging.info(f'Dropped {len(inpatient_indices)} samples of inpatients')
-        return df
-    
-    def remove_immediate_events(self, df, event, verbose=False):
-        """Remove sessions in which patients experienced events in less than 
-        2 days. We do not care about model identifying immediate events
-        
-        E.g. (within 14 days) if chemo visit is on Nov 1, a positive example is
-             when event occurs between Nov 3rd to Nov 14th. We do not include 
-             the day of chemo visit and the day after
-        """
-        if event not in {'death', 'H', 'ED'}:
-            raise ValueError('event must be either death, H or ED')
-            
-        col = 'D_date' if event == 'death' else f'next_{event}_date'
-        days_until_event = self.event_dates.loc[df.index, col] - df['visit_date']
-        mask = days_until_event < pd.Timedelta('2 days')
-        df = df[~mask]
-        if verbose: 
-            logging.info(f'Removing {sum(mask)} sessions in which patients '
-                         f'experienced {event} in less than 2 days')
-            if event == 'death': 
-                mask = days_until_event < pd.Timedelta('0 days')
-                logging.info(f'Among those sessions, {sum(mask)} had patients '
-                             f'experience {event} BEFORE the session')
-                
-        return df
-    
-    def get_data(self, target_keyword, verbose=False, **kwargs):
+    def get_data(self, verbose=False, **kwargs):
         """Extract and organize data to create input features and target labels
         
         input features:
@@ -774,32 +785,134 @@ class PrepDataEDHD(PrepData):
         if self.adverse_event == 'acu':
             # get event features and targets
             for event in ['H', 'ED']: 
-                df = self.get_event_data(df, target_keyword, event=event)
+                df = self.get_event_data(df, event=event)
             # create target column for acute care (ACU = ED + H) and treatment 
             # related acute care (TR_ACU = TR_ED + TR_H)
-            add_tk = lambda x: x + target_keyword
-            df[add_tk('ACU')] = df[add_tk('ED')] | df[add_tk('H')]
-            df[add_tk('TR_ACU')] = df[add_tk('TR_ED')] | df[add_tk('TR_H')]
+            acu = df[self.add_tk('ED')] | df[self.add_tk('H')]
+            tr_acu = df[self.add_tk('TR_ED')] | df[self.add_tk('TR_H')]
+            df[self.add_tk('ACU')], df[self.add_tk('TR_ACU')] = acu, tr_acu
             # remove errorneous inpatients
             df = self.remove_inpatients(df, verbose=verbose)
-            # remove immediate events
-            for event in ['H', 'ED']: 
-                df = self.remove_immediate_events(df, event, verbose=verbose)
         elif self.adverse_event == 'death':
             # get event features
             for event in ['H', 'ED']: 
-                df = self.get_event_data(
-                    df, None, event=event, create_targets=False
-                )
+                df = self.get_event_data(df, event=event, create_targets=False)
             # get death targets
-            df = self.get_death_data(df, target_keyword, verbose=verbose)
-            # remove immediate deaths
-            df = self.remove_immediate_events(
-                df, self.adverse_event, verbose=verbose
-            )
+            df = self.get_death_data(df, verbose=verbose)
         
         df = self.prepare_features(df, verbose=verbose, **kwargs)
+        return df
+
+    def get_event_data(self, df, event='H', create_targets=True):
+        event_df = self.load_event_data(event=event)
+        event_cause_cols = event_map[event]['event_cause_cols']
+
+        # create the features
+        features = event_df.query('feat_or_targ == "feature"')
+        idxs = features.index
+        # Feature 1: Number of days since previous event occured
+        col = f'days_since_prev_{event}'
+        date_diff = df.loc[idxs, DATE] - features['date']
+        df.loc[idxs, col] = (date_diff).dt.days
+        # fill rows where patients had no prev event with the max value
+        df[col] = df[col].fillna(df[col].max())
+        # Feature 2: Number of events prior to visit
+        col = f'num_prior_{event}s_within_5_years'
+        df.loc[idxs, col] = features[col]
+        # Feature 3: Cause of prev event occurence
+        for cause in event_cause_cols:
+            df[f'prev_{cause}'] = False # initialize
+            df.loc[idxs, f'prev_{cause}'] = features[cause]
+
+        if not create_targets:
+            return df
+        
+        # create the targets
+        targets = event_df.query('feat_or_targ == "target"').copy()
+        idxs = targets.index
+
+        # store the event dates
+        col = f'next_{event}_date'
+        self.datetime_cols += [col]
+        df.loc[idxs, col] = targets['date']
+
+        # create the event targets - event within x days after visit date
+        days_until_event = targets['date'] - df.loc[idxs, DATE]
+        days = self.target_keyword.split('_')[-2] # assumes the form within_X_days
+        targets[event] = days_until_event < pd.Timedelta(days=int(days))
+        targets = targets[targets[event]]
+        for col in event_cause_cols+[event]:
+            df[self.add_tk(col)] = False # initialize
+            df.loc[targets.index, self.add_tk(col)] = targets[col]
+
+        return df
             
+    def get_death_data(self, df, verbose=False):
+        # Allow ample time for follow up of death by filtering out sessions 
+        # after max death date minus max target days. For example, if we only 
+        # collected death dates up to July 31 2021 (max death date), and max 
+        # target days is 365 days, we should only consider treatments up to 
+        # July 30 2020. If we considered treatments on June 2021, its
+        # impossible to get the ground truth of whether patient died within 365
+        # days, since we stopped collecting death dates a month later
+        min_date = df['death_date'].max() - pd.Timedelta(days=max(self.target_days))
+        mask = df[DATE] > min_date
+        if verbose: 
+            logging.info(f'Removing {sum(mask)} sessions whose date occured '
+                         f'after {min_date} to allow ample follow up time of '
+                         'death')
+        df = df[~mask].copy()
+        
+        # remove ghost sessions (visits occured after death date)
+        mask = df[DATE] > df['death_date']
+        if verbose: 
+            logging.info(f'Removing {sum(mask)} sessions whose date occured '
+                         f'AFTER death')
+        df = df[~mask].copy()
+
+        # create the death targets
+        days_until_d = df['death_date'] - df[DATE]
+        for day in self.target_days:
+            days = f'{day}d'
+            df[self.add_tk(days)] = days_until_d < pd.Timedelta(days)
+            
+        return df
+            
+    def remove_inpatients(self, df, verbose=False):
+        idxs = np.load(f'{self.main_dir}/data/inpatient_idxs.npy')
+        df = df.drop(index=idxs)
+        if verbose: logging.info(f'Dropped {len(idxs)} samples of inpatients')
+        return df
+    
+    def load_event_data(self, event='H'):
+        df = pd.read_parquet(f'{self.main_dir}/data/{event}.parquet.gzip')
+        df = df.set_index('chemo_idx')
+        return df
+    
+    def remove_immediate_events(self, df, verbose=False):
+        """Remove sessions in which patients experienced events in less than 
+        2 days. We do not care about model identifying immediate events
+        
+        E.g. (within 14 days) if chemo visit is on Nov 1, a positive example is
+             when event occurs between Nov 3rd to Nov 14th. We do not include 
+             the day of chemo visit and the day after
+        """ 
+        if self.adverse_event == 'death':
+            df = self._remove_immediate_events(df, 'death', verbose=verbose)
+        elif self.adverse_event == 'acu':
+            for event in ['H', 'ED']:
+                df = self._remove_immediate_events(df, event, verbose=verbose)
+        return df
+    
+    def _remove_immediate_events(self, df, event, verbose=False):
+        event_dates = self.event_dates.loc[df.index]
+        col = 'death_date' if event == 'death' else f'next_{event}_date'
+        days_until_event = event_dates[col] - event_dates[DATE]
+        mask = days_until_event < pd.Timedelta('2 days')
+        df = df[~mask]
+        if verbose: 
+            logging.info(f'Removing {sum(mask)} sessions in which patients '
+                         f'experienced {event} in less than 2 days')            
         return df
 
 class PrepDataCAN(PrepData):
@@ -809,90 +922,17 @@ class PrepDataCAN(PrepData):
     AKI - Acute Kdiney Injury
     CKD - Chronic Kidney Disease
     """
-    def __init__(self, adverse_event):
-        super().__init__()
-        if adverse_event not in {'aki', 'ckd'}: 
+    def __init__(self, adverse_event, **kwargs):
+        super().__init__(**kwargs)
+        if adverse_event not in ['aki', 'ckd']: 
             raise ValueError('advese_event must be either aki (acute kidney '
                              'injury) or ckd (chronic kidney disease)')
         self.adverse_event = adverse_event
         self.main_dir = f'{root_path}/{can_folder}'
-        self.datetime_cols += ['next_visit_date']
+        self.datetime_cols += [f'next_{DATE}']
         self.norm_cols += ['cisplatin_dosage', 'baseline_eGFR']
-    
-    def get_creatinine_data(self, df, verbose=False, remove_over_thresh=False):
-        """
-        Args:
-            remove_over_thresh (bool): If True, remove sessions where baseline 
-                creatinine count is over SCr_max_threshold (e.g. 1.5mg/dL)
-        """
-        scr = pd.read_csv(f'{self.main_dir}/data/serum_creatinine.csv')
-        scr.columns = scr.columns.astype(int)
-
-        base_scr = 'baseline_creatinine_count'
-
-        # Get serum creatinine measurement taken within the month before visit 
-        # date. If there are multiple values, take the value closest to index 
-        # date / prev visit via forward filling
-        # NOTE: this overwrites the prev baseline_creatinine_count
-        df[base_scr] = numpy_ffill(scr[range(-30,1)])
+        self.clip_cols += ['cisplatin_dosage', 'baseline_eGFR']
         
-        # get estimated glomerular filtration rate (eGFR) prior to treatment
-        df = get_eGFR(df, col=base_scr, prefix='baseline_')
-        
-        # exclude sessions where any of the baseline creatinine measurements 
-        # are missing
-        mask = df[base_scr].notnull()
-        if verbose: 
-            logging.info(f'Removing {sum(~mask)} sessions where any of the '
-                         'baseline creatinine measurements are missing')
-        df = df[mask]
-        
-        if remove_over_thresh:
-            # exclude sessions where baseline creatinine count is over the 
-            # threshold
-            mask = df[base_scr] > SCr_max_threshold
-            if verbose: 
-                logging.info(f'Removing {sum(mask)} sessions where baseline '
-                             f'creatinine levels were above {SCr_max_threshold} '
-                             'umol/L (1.5mg/dL)')
-            df = df[~mask]
-
-        if self.adverse_event == 'aki':
-            # get highest creatinine value within 28 days after the visit date
-            # or up to next chemotherapy administration, whichever comes first
-            peak_scr = 'SCr_peak'
-            for chemo_interval, group in df.groupby('chemo_interval'):
-                index = group.index
-                min_day = min(int(chemo_interval), 28)
-                days = range(1, min_days+1)
-                df.loc[index, peak_scr] = scr.loc[index, days].max(axis=1)
-        
-            # exclude sessions where any of the peak creatinine measurements 
-            # are missing
-            mask = df[peak_scr].notnull()
-            if verbose: 
-                logging.info(f'Removing {sum(~mask)} sessions where any of the '
-                             'peak creatinine measurements are missing')
-            df = df[mask]
-        
-            # get rise / fold increase in serum creatinine from baseline to 
-            # peak measurements
-            df['SCr_rise'] = df[peak_scr] - df[base_scr]
-            df['SCr_fold_increase'] = df[peak_scr] / df[base_scr]
-
-        elif self.adverse_event == 'ckd':
-            next_scr = 'next_SCr_count'
-            mask = df[next_scr].notnull()
-            if verbose: 
-                logging.info(f'Removing {sum(~mask)} sessions where any of the '
-                             'next creatinine levels are missing')
-            df = df[mask]
-            
-            # get estimated glomerular filtration rate (eGFR) after treatment
-            df = get_eGFR(df, col=next_scr, prefix='next_')
-        
-        return df
-
     def get_data(self, verbose=False, **kwargs):
         """Extract and organize data to create input features and target labels
         
@@ -917,9 +957,81 @@ class PrepDataCAN(PrepData):
         """
         df = self.load_data()
         df = self.get_creatinine_data(df, verbose=verbose)
-        df = self.prepare_features(
-            df, drop_cols=['chemo_interval'], verbose=verbose, **kwargs
-        )
+        df = self.prepare_features(df, verbose=verbose, **kwargs)
+        return df
+    
+    def get_creatinine_data(self, df, verbose=False, remove_over_thresh=False):
+        """
+        Args:
+            remove_over_thresh (bool): If True, remove sessions where baseline 
+                creatinine is over SCr_max_threshold (e.g. 1.5mg/dL)
+        """
+        scr = pd.read_parquet(f'{self.main_dir}/data/creatinine.parquet.gzip')
+        scr.columns = scr.columns.astype(int)
+
+        base_scr = 'baseline_creatinine_value'
+
+        # Get serum creatinine measurement taken within the month before visit 
+        # date. If there are multiple values, take the value closest to index 
+        # date / prev visit via forward filling
+        # NOTE: this overwrites the prev baseline_creatinine_value
+        df[base_scr] = numpy_ffill(scr[range(-30,1)])
+        
+        # get estimated glomerular filtration rate (eGFR) prior to treatment
+        df = get_eGFR(df, col=base_scr, prefix='baseline_')
+        
+        # exclude sessions where any of the baseline creatinine measurements 
+        # are missing
+        mask = df[base_scr].notnull()
+        if verbose: 
+            logging.info(f'Removing {sum(~mask)} sessions where any of the '
+                         'baseline creatinine measurements are missing')
+        df = df[mask].copy()
+        
+        if remove_over_thresh:
+            # exclude sessions where baseline creatinine is over the threshold
+            mask = df[base_scr] > SCr_max_threshold
+            if verbose: 
+                logging.info(f'Removing {sum(mask)} sessions where baseline '
+                             f'creatinine levels were above {SCr_max_threshold} '
+                             'umol/L (1.5mg/dL)')
+            df = df[~mask].copy()
+
+        if self.adverse_event == 'aki':
+            # get highest creatinine value within 28 days after the visit date
+            # or up to next chemotherapy administration, whichever comes first
+            peak_scr = 'SCr_peak'
+            intervals = (df[f'next_{DATE}'] - df[DATE]).dt.days
+            intervals = intervals.clip(upper=28)
+            for chemo_interval, group in intervals.groupby(intervals):
+                idx = group.index
+                days = range(1, int(chemo_interval)+1)
+                df.loc[idx, peak_scr] = scr.loc[idx, days].max(axis=1)
+        
+            # exclude sessions where any of the peak creatinine measurements 
+            # are missing
+            mask = df[peak_scr].notnull()
+            if verbose: 
+                logging.info(f'Removing {sum(~mask)} sessions where any of the '
+                             'peak creatinine measurements are missing')
+            df = df[mask].copy()
+        
+            # get rise / fold increase in serum creatinine from baseline to 
+            # peak measurements
+            df['SCr_rise'] = df[peak_scr] - df[base_scr]
+            df['SCr_fold_increase'] = df[peak_scr] / df[base_scr]
+
+        elif self.adverse_event == 'ckd':
+            next_scr = 'next_SCr_value'
+            mask = df[next_scr].notnull()
+            if verbose: 
+                logging.info(f'Removing {sum(~mask)} sessions where any of the '
+                             'next creatinine levels are missing')
+            df = df[mask].copy()
+            
+            # get estimated glomerular filtration rate (eGFR) after treatment
+            df = get_eGFR(df, col=next_scr, prefix='next_')
+        
         return df
     
     def convert_labels(self, target):

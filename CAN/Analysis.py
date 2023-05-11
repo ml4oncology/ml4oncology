@@ -26,92 +26,65 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[3]:
+# In[2]:
 
 
 import json
 import pandas as pd
-pd.options.mode.chained_assignment = None
 
-from src.config import (root_path, can_folder, split_date, SCr_rise_threshold, SCr_rise_threshold2)
-from src.preprocess import filter_y3_data
+from src.config import (
+    root_path, can_folder, split_date, 
+    DATE,
+    SCr_rise_threshold, SCr_rise_threshold2
+)
 from src.utility import numpy_ffill
-from src.prep_data import (PrepDataCAN)
+from src.prep_data import PrepDataCAN
 
-
-# # Cohort Numbers
 
 # In[3]:
 
 
-y3 = pd.read_csv(f'{root_path}/data/y3.csv')
-y3 = filter_y3_data(y3, include_death=True)
-y3['ikn'] = y3['ikn'].astype(int)
-ikn_death_date = y3.set_index('ikn')['D_date']
+main_dir = f'{root_path}/{can_folder}'
+prep = PrepDataCAN(adverse_event='ckd')
+chemo_df = prep.load_data()
 
+
+# # Cohort Numbers Before and After Exclusions
 
 # In[4]:
 
 
-scr = pd.read_csv(f'{root_path}/{can_folder}/data/serum_creatinine.csv')
-scr.columns = scr.columns.astype(int)
-base_scr, next_scr = 'baseline_creatinine_count', 'next_SCr_count'
+# cohort after exclusions (of treatments without one or more of baseline/target blood values)
+model_data = prep.get_data()
+dev_cohort, test_cohort = prep.create_cohort(model_data, split_date, verbose=False)
+
+# cohort before exclusions
+first_visit_date = chemo_df.groupby('ikn')[DATE].min()
+mask = chemo_df['ikn'].map(first_visit_date) <= split_date
+dev_cohort2, test_cohort2 = chemo_df[mask], chemo_df[~mask]
 
 
 # In[5]:
 
 
-prep = PrepDataCAN(adverse_event='ckd')
-# get data before filtering procedures
-orig_df = prep.load_data()
-# get data after filtering procedures
-df = prep.get_data()
-# get the finalized development and test cohort
-dev_cohort, test_cohort = prep.create_cohort(df, split_date, verbose=False)
-# get the mock development and test cohort
-assert not set(dev_cohort['ikn']).intersection(set(test_cohort['ikn']))
-mask = orig_df['ikn'].isin(dev_cohort['ikn'])
-mock_dev_cohort, mock_test_cohort = orig_df[mask], orig_df[~mask]
-assert not set(mock_dev_cohort['ikn']).intersection(set(mock_test_cohort['ikn']))
-
-
-# In[6]:
-
-
-cohorts = {'Development': mock_dev_cohort, 'Testing': mock_test_cohort}
-for name, cohort in cohorts.items():
-    # get serum creatinine measurement taken within the month before visit date, instead of 5 days before
-    cohort[base_scr] = numpy_ffill(scr.loc[cohort.index, range(-30,1)])
-    
-    print(f'\n{name} cohort')
-    print(f'Before any filtering: NSessions={len(cohort)}. NPatients={cohort["ikn"].nunique()}')
-    
-    cohort = cohort[cohort[base_scr].notnull()]
-    print('After Excluding Samples with no Baseline SCr (measured 30 days before chemo visit): ' +\
-          f'NSessions={len(cohort)}. NPatients={cohort["ikn"].nunique()}')
-    
-    mask = cohort[next_scr].notnull()
-    print('After Excluding Samples with no Next SCr (measured 9-24 months after chemo visit): '+\
-          f'NSessions={sum(mask)}. NPatients={cohort.loc[mask, "ikn"].nunique()}')
-    
-    no_mes = cohort[~mask]
-    print(f'Samples with no Next SCr: NSessions={len(no_mes)}. NPatients={no_mes["ikn"].nunique()}')
-    no_mes['d_date'] = no_mes['ikn'].map(ikn_death_date)
-    died_before_mes = no_mes['d_date'] < no_mes['visit_date'] + pd.Timedelta('270 days')
-    print('Died within 9 months after visit date: ' +\
-          f'NSessions={sum(died_before_mes)}, NPatients={no_mes.loc[died_before_mes, "ikn"].nunique()}')
+show = lambda x: f"NSessions={len(x)}. NPatients={x['ikn'].nunique()}"
+cohorts = {'Development': (dev_cohort, dev_cohort2), 'Testing': (test_cohort, test_cohort2)}
+for name, (post_exc_cohort, pre_exc_cohort) in cohorts.items():
+    print(f'{name} cohort')
+    print(f'Before exclusions: {show(pre_exc_cohort)}')
+    print(f'After exclusions: {show(post_exc_cohort)}\n')
 
 
 # # Create Alluvial Plot Numbers
 
-# In[7]:
+# In[82]:
 
 
 events = ['ckd', 'aki']
 cohorts = ['Development', 'Testing']
 
 
-# In[8]:
+# In[83]:
 
 
 data = {cohort: {} for cohort in cohorts}
@@ -123,7 +96,7 @@ for event in events:
     data['Testing'][event] = test_cohort
 
 
-# In[9]:
+# In[84]:
 
 
 for event in events:
@@ -132,25 +105,25 @@ for event in events:
     print(f'{df}\n')
 
 
-# In[10]:
+# In[85]:
 
 
 for cohort in cohorts:
     for event in events:
         # keep only the first treatment session
-        event_data = data[cohort][event]
-        mask = event_data['days_since_starting_chemo'] == 0 # take first treatment session only
-        total_ikns = set(event_data['ikn'].unique())
-        dropped_ikns = total_ikns - set(event_data.loc[mask, 'ikn'].unique())
-        print(f"Removing {(~mask).sum()} non-first treatment sessions out of " + \
-              f"{len(mask)} total sessions from {event.upper()} {cohort} cohort")
-        print(f"Removing {len(dropped_ikns)} patients out of " + \
-              f"{len(total_ikns)} total patients from {event.upper()} {cohort} cohort")
-        data[cohort][event] = event_data[mask]
+        df = data[cohort][event]
+        mask = df['days_since_starting_chemo'] == 0 # take first treatment session only
+        all_ikns = set(df['ikn'])
+        dropped_ikns = all_ikns - set(df.loc[mask, 'ikn'])
+        print(f"Removing {(~mask).sum()} non-first treatment sessions out of {len(mask)} total sessions from "
+              f"{event.upper()} {cohort} cohort")
+        print(f"Removing {len(dropped_ikns)} patients out of {len(all_ikns)} total patients from {event.upper()} "
+              f"{cohort} cohort")
+        data[cohort][event] = df[mask]
     
     # get the union of aki and ckd data
     aki_data, ckd_data = data[cohort]['aki'].align(data[cohort]['ckd'], join='outer')
-    df = aki_data.fillna(ckd_data)
+    df = aki_data.fillna(ckd_data).astype(df.dtypes)
 
     # sanity check
     combined_idxs = data[cohort]['aki'].index.union(data[cohort]['ckd'].index)
@@ -159,20 +132,23 @@ for cohort in cohorts:
     data[cohort] = df
 
 
-# In[11]:
+# In[86]:
 
 
 pd.DataFrame({cohort: df['ikn'].nunique() for cohort, df in data.items()}, index=['NPatients'])
 
 
-# In[12]:
+# In[113]:
 
+
+rise = 'SCr_rise'
+growth = 'SCr_fold_increase'
 
 pretreatment_ckd_filters = {} # all sessions has baseline_eGFR (since all sessions has baseline_creatinine_count)
-pretreatment_ckd_filters['Pre-Treatment CKD (stage1-2)'] = lambda df: df[df['baseline_eGFR'] > 60]
-pretreatment_ckd_filters['Pre-Treatment CKD (stage3a)'] = lambda df: df[df['baseline_eGFR'].between(45, 60, inclusive='left')]
-pretreatment_ckd_filters['Pre-Treatment CKD (stage3b)'] = lambda df: df[df['baseline_eGFR'].between(30, 45, inclusive='left')]
-pretreatment_ckd_filters['Pre-Treatment CKD (stage4-5)'] = lambda df: df[df['baseline_eGFR'] < 30]
+pretreatment_ckd_filters['Pre-Treatment CKD (stage1-2)'] = lambda df: df.query('baseline_eGFR > 60')
+pretreatment_ckd_filters['Pre-Treatment CKD (stage3a)'] = lambda df: df.query('45 <= baseline_eGFR < 60')
+pretreatment_ckd_filters['Pre-Treatment CKD (stage3b)'] = lambda df: df.query('30 <= baseline_eGFR < 45')
+pretreatment_ckd_filters['Pre-Treatment CKD (stage4-5)'] = lambda df: df.query('baseline_eGFR < 30')
 
 """
 Need to make each stage mutually exclusive
@@ -185,25 +161,25 @@ AKI Stage 3 and below: creatinine increase greater than or equal to 353.58umol/d
 aki_filters = {}
 aki_filters['No Information'] = lambda df: df[df['SCr_peak'].isnull()]
 # creatinine increase less than 26.53umol/dl and creatinine level less than 1.5 times the baseline
-aki_filters['No AKI'] = lambda df: df[(df['SCr_rise'] < SCr_rise_threshold) & (df['SCr_fold_increase'] < 1.5)]
+aki_filters['No AKI'] = lambda df: df[(df[rise] < SCr_rise_threshold) & (df[growth] < 1.5)]
 # creatinine increase between 26.53umol/dl and 353.68umol/dl and creatinine level equal or less than 2 times the baseline OR
 # creatinine increase less than 353.68umol/dl and creatinine level between 1.5-2 times the baseline
-aki_filters['Worst AKI (stage1)'] = lambda df: df[((df['SCr_rise'].between(SCr_rise_threshold, SCr_rise_threshold2) & (df['SCr_fold_increase'] <= 2)) | 
-                                                   ((df['SCr_rise'] < SCr_rise_threshold2) & df['SCr_fold_increase'].between(1.5, 2)))]
+aki_filters['Worst AKI (stage1)'] = lambda df: df[((df[rise].between(SCr_rise_threshold, SCr_rise_threshold2) & (df[growth] <= 2)) | 
+                                                   ((df[rise] < SCr_rise_threshold2) & df[growth].between(1.5, 2)))]
 # creatinine increas less than 353.68umol/dl and creatinine level between 2.001-3 times the baseline
-aki_filters['Worst AKI (stage2)'] = lambda df: df[(df['SCr_rise'] < SCr_rise_threshold2) & df['SCr_fold_increase'].between(2.001, 3, inclusive=False)]
+aki_filters['Worst AKI (stage2)'] = lambda df: df[(df[rise] < SCr_rise_threshold2) & df[growth].between(2.001, 3, inclusive='neither')]
 # creatinine increas greater than or equal to 353.68umol/dl and creatinine level at least 3 times the baseline
-aki_filters['Worst AKI (stage3)'] = lambda df: df[(df['SCr_rise'] >= SCr_rise_threshold2) | (df['SCr_fold_increase'] >= 3)]
+aki_filters['Worst AKI (stage3)'] = lambda df: df[(df[rise] >= SCr_rise_threshold2) | (df[growth] >= 3)]
 
 posttreatment_ckd_filters = {}
-posttreatment_ckd_filters['No Information'] = lambda df: df[df['next_SCr_count'].isnull()]
-posttreatment_ckd_filters['Post-Treatment CKD (stage1-2)'] = lambda df: df[df['next_eGFR'] > 60]
-posttreatment_ckd_filters['Post-Treatment CKD (stage3a)'] = lambda df: df[df['next_eGFR'].between(45, 60, inclusive='left')]
-posttreatment_ckd_filters['Post-Treatment CKD (stage3b)'] = lambda df: df[df['next_eGFR'].between(30, 45, inclusive='left')]
-posttreatment_ckd_filters['Post-Treatment CKD (stage4-5)'] = lambda df: df[df['next_eGFR'] < 30]
+posttreatment_ckd_filters['No Information'] = lambda df: df[df['next_SCr_value'].isnull()]
+posttreatment_ckd_filters['Post-Treatment CKD (stage1-2)'] = lambda df: df.query('next_eGFR > 60')
+posttreatment_ckd_filters['Post-Treatment CKD (stage3a)'] = lambda df: df.query('45 <= next_eGFR < 60')
+posttreatment_ckd_filters['Post-Treatment CKD (stage3b)'] = lambda df: df.query('30 <= next_eGFR < 45')
+posttreatment_ckd_filters['Post-Treatment CKD (stage4-5)'] = lambda df: df.query('next_eGFR < 30')
 
 
-# In[13]:
+# In[114]:
 
 
 result = {cohort: {} for cohort in cohorts}
@@ -224,10 +200,7 @@ for cohort in cohorts:
                 result[cohort][pretreatment_ckd_name][aki_name][posttreatment_ckd_stage] = posttreatment_ckd_df['ikn'].nunique()
 
 
-# In[14]:
+# In[115]:
 
 
 print(json.dumps(result, indent=2))
-
-
-# In[ ]:

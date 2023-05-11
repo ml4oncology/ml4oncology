@@ -20,6 +20,7 @@ from lifelines import KaplanMeierFitter
 from lifelines.plotting import add_at_risk_counts
 from lifelines.statistics import logrank_test
 from sklearn import tree
+from statsmodels.stats.proportion import proportion_confint
 from tqdm import tqdm
 from xgboost import plot_tree
 import graphviz
@@ -28,7 +29,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from src.config import (root_path, cyto_folder, cytopenia_gradings, blood_types)
+from src import logging
+from src.config import root_path, cyto_folder, cytopenia_grades, blood_types
 from src.utility import (
     twolevel, 
     load_ml_model, 
@@ -36,22 +38,12 @@ from src.utility import (
     pred_thresh_binary_search,
     time_to_x_after_y,
 )
-from src.summarize import (
-    get_pccs_analysis_data, 
-    get_eol_treatment_analysis_data
-)
-
-import logging
-logging.basicConfig(
-    level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s', 
-    datefmt='%I:%M:%S'
-)
 
 ###############################################################################
 # Feature Importance
 ###############################################################################
 def importance_plot(
-    algorithm, 
+    alg, 
     target_events, 
     save_dir, 
     figsize, 
@@ -62,7 +54,7 @@ def importance_plot(
 ):
     # NOTE: run `python scripts/perm_importance.py` in the command line before 
     # running this function
-    if importance_by not in {'feature', 'group'}: 
+    if importance_by not in ['feature', 'group']: 
         raise ValueError('importance_by must be either "feature" or "group"')
     if padding is None: padding = {}
         
@@ -71,22 +63,22 @@ def importance_plot(
     N = len(target_events)
     if colors is None: colors = [None,]*N
     
-    filename = f'{algorithm}_{importance_by}_importance'
+    filename = f'{alg}_{importance_by}_importance'
     df = pd.read_csv(f'{save_dir}/perm_importance/{filename}.csv')
     df = df.set_index('index')
     df.index = get_clean_variable_names(df.index)
     
     summary = pd.DataFrame()
     for idx, target_event in tqdm(enumerate(target_events)):
-        feature_importances = df[target_event]
-        feature_importances = feature_importances.sort_values(ascending=False)
-        feature_importances = feature_importances[0:top]
-        feature_importances = feature_importances.round(4)
+        feat_importances = df[target_event]
+        feat_importances = feat_importances.sort_values(ascending=False)
+        feat_importances = feat_importances[0:top]
+        feat_importances = feat_importances.round(4)
         summary[target_event] = [f'{feat} ({importance})' 
-                                 for feat, importance in feature_importances.items()]
+                                 for feat, importance in feat_importances.items()]
         ax = fig.add_subplot(N,1,idx+1)
         ax.barh(
-            feature_importances.index, feature_importances.values, 
+            feat_importances.index, feat_importances.values, 
             color=colors[idx]
         )
         ax.invert_yaxis()
@@ -94,13 +86,13 @@ def importance_plot(
         remove_top_right_axis(ax)
         
         # write the results
-        filename = f'{algorithm}_{target_event}'
+        filename = f'{alg}_{target_event}'
         filepath = f'{save_dir}/figures/important_{importance_by}s/{filename}.jpg'
         fig.savefig(filepath, bbox_inches=get_bbox(ax, fig, **padding), dpi=300)
         
         ax.set_title(target_event) # set title AFTER saving individual figures
         
-    filepath = f'{save_dir}/figures/important_{importance_by}s/{algorithm}.jpg'
+    filepath = f'{save_dir}/figures/important_{importance_by}s/{alg}.jpg'
     plt.savefig(filepath, bbox_inches='tight', dpi=300)
     plt.show()
     
@@ -117,61 +109,72 @@ def subgroup_performance_plot(
     padding=None,                     
     figsize=(16,24), 
     xtick_rotation=45,
-    save=False, 
+    ylim=None,
     save_dir=None
 ):
-    if save_dir is None: 
-        if save: 
-            raise ValueError('Please provide save_dir if you want to save '
-                             'figures')
-    elif not os.path.exists(save_dir): 
-        os.makedirs(save_dir)
-        
+    # Setup
     if subgroups is None: 
-        subgroups = df.index.levels[0]
-    if padding is None: 
-        padding = {}
+        # NOTE: dict is guaranteed to preserve order (as of Python 3.7) while set 
+        # does not. Reference: https://stackoverflow.com/questions/1653970
+        subgroups = [idx[0] for idx in df.index]
+        subgroups = list(dict.fromkeys(subgroups))
+    if padding is None: padding = {}
+    if save_dir is not None and not os.path.exists(save_dir): 
+        os.makedirs(save_dir)
+    
     df = df.loc[subgroups]
     df.index = df.index.remove_unused_levels()
     metrics = df.columns.levels[1].tolist()
+    bar_names = [idx[1] for idx in df.index]
+    bar_names = [name.split('(')[0].strip() for name in bar_names]
+    bar_names[0] = subgroups[0] # Edge Case: Entire Test Cohort
     
-    def get_metric_scores(metric, subgroup_name=None):
+    start_pos = 0
+    x_bar_pos = []
+    nrows = len(metrics)
+    to_float = lambda arr: np.array([float(x) for x in arr])
+    
+    def get_perf(metric, subgroup_name=None):
         if subgroup_name is None:
             tmp = df[(target_event, metric)]
         else:
             tmp = df.loc[subgroup_name, (target_event, metric)]
-        tmp = tmp.astype(str).str.split('(')
-        return tmp.str[0].astype(float)
-    
-    # Get the bar names
-    bar_names = df.index.levels[1]
-    bar_names = bar_names.str.split(pat='(').str[0].str.strip()
-    bar_names = bar_names.tolist()
-    bar_names[0] = df.index.levels[0][0] # Entire Test Cohort
+        scores = tmp.to_numpy()
+        if scores.dtype == float: return scores, None, None
+        scores, ci = zip(*[score.split(' ') for score in scores])
+        lower, upper = zip(*[x.strip('()').split('-') for x in ci])
+        return to_float(scores), to_float(lower), to_float(upper)
 
-    # Bar plot
-    start_pos = 0
-    x_bar_pos = []
-    nrows = len(metrics)
     fig, axes = plt.subplots(nrows=nrows, ncols=1, figsize=figsize)
     axes = [axes] if nrows == 1 else axes.flatten()
     plt.subplots_adjust(hspace=0.6)
-    for idx, subgroup_name in enumerate(df.index.levels[0]):
+    
+    # Create the Bar Plots
+    for idx, subgroup_name in enumerate(subgroups):
         N = len(df.loc[subgroup_name])
         bar_pos = np.arange(start_pos, start_pos+N).tolist()
         x_bar_pos += bar_pos
         start_pos += N + 1
         for i, metric in enumerate(metrics):
-            metric_scores = get_metric_scores(metric, subgroup_name)
-            axes[i].bar(bar_pos, metric_scores, label=subgroup_name, width=0.8)
+            scores, lower, upper = get_perf(metric, subgroup_name)
+            yerr = None if lower is None else [scores - lower, upper - scores]
+            axes[i].bar(
+                bar_pos, scores, label=subgroup_name, width=0.8, yerr=yerr, 
+                capsize=5
+            )
         
     for i, metric in enumerate(metrics):
-        scores = get_metric_scores(metric)
-        if min(scores) > 0.2: 
-            axes[i].set_ylim(bottom=min(scores)-0.1)
-        if max(scores) > 0.95: 
-            axes[i].set_ylim(top=1.0)
+        scores, lower, upper = get_perf(metric)
+        
+        # create reference line
         axes[i].axhline(y=scores[0], color='black', linestyle='--')
+        
+        # adjust y-axis
+        if ylim is None:
+            y_bottom = 0 if min(scores) <= 0.2 else min(scores) - 0.1
+            axes[i].set_ylim(bottom=y_bottom)
+        else:
+            axes[i].set_ylim(**ylim[metric])
         
         # adjust x-axis position of bars 
         # Alternative way: plt.xticks(x_bar_pos, bar_names, rotation=xtick_rotation)
@@ -183,30 +186,28 @@ def subgroup_performance_plot(
         remove_top_right_axis(axes[i])
         
         # write the results
-        if save: 
+        if save_dir is not None: 
             fig.savefig(
                 f'{save_dir}/{target_event}_{metric}.jpg', 
                 bbox_inches=get_bbox(axes[i], fig, **padding), dpi=300
             )
-    if save: 
-        filepath = f'{save_dir}/{target_event}.jpg'
-        plt.savefig(filepath, bbox_inches='tight', dpi=300)
     plt.show()
     
 ###############################################################################
 # Time Interval
 ###############################################################################
 def time_to_event_plot(time_to_event, ax, plot_type='cdf', **kwargs):
-    if plot_type not in {'cdf', 'hist'}:
+    if plot_type not in ['cdf', 'hist']:
         raise NotImplementedError('plot_type only supports cdf (Cumulative '
                                   'Distribution Function) and hist (Histogram)')
     ax.grid(zorder=0)
     if plot_type == 'hist':
-        bins = int(time_to_event.max() - time_to_event.min())
+        bins = int(max(time_to_event) - min(time_to_event))
         sns.histplot(
             time_to_event, ax=ax, bins=bins, zorder=2
         )
     elif plot_type == 'cdf':
+        time_to_event = sorted(time_to_event)
         N = len(time_to_event)
         ax.plot(time_to_event,  np.arange(N) / float(N))
     ax.set(**kwargs)
@@ -272,7 +273,7 @@ def below_threshold_bar_plot(
         transform=ax.transAxes, fontsize=12
     )
     if save:
-        filepath = f'{root_path}/{cyto_folder}/plots/{filename}.jpg'
+        filepath = f'{root_path}/{cyto_folder}/analysis/figures/{filename}.jpg'
         plt.savefig(filepath, bbox_inches='tight', dpi=300)
     plt.show()
 
@@ -310,7 +311,7 @@ def iqr_plot(
         plt.plot(days+1, medians, color='red')
 
     if save:
-        filepath = f'{root_path}/{cyto_folder}/plots/{filename}.jpg'
+        filepath = f'{root_path}/{cyto_folder}/analysis/figures/{filename}.jpg'
         plt.savefig(filepath, bbox_inches='tight', dpi=300)    
     plt.show()
     
@@ -327,11 +328,11 @@ def event_rate_stacked_bar_plot(
 ):
     """Plot cytopenia event rate over days since chemo administration
     """
-    if cytopenia not in {'Neutropenia', 'Anemia', 'Thrombocytopenia'}: 
+    if cytopenia not in ['Neutropenia', 'Anemia', 'Thrombocytopenia']: 
         raise ValueError('cytopenia must be one of Neutropneia, Anemia, or '
                          'Thrombocytopenia')
         
-    cycle_lengths = dict(df[['regimen', 'cycle_length']].values)
+    cycle_lengths = dict(df[['regimen', 'cycle_length']].to_numpy())
     kwargs = {'nrows': 1, 'ncols': 3, 'figsize': figsize}
     fig, axes = plt.subplots(**kwargs)
     axes = axes.flatten()
@@ -340,9 +341,9 @@ def event_rate_stacked_bar_plot(
     for i, regimen in enumerate(regimens):
         if regimen not in cycle_lengths: continue
         days = np.arange(cycle_lengths[regimen]+1)
-        group = df.loc[df['regimen'] == regimen, days]
+        group = df.query('regimen == @regimen')[days]
         
-        for grade, thresholds in cytopenia_gradings.items():
+        for grade, thresholds in cytopenia_grades.items():
             if cytopenia not in thresholds: continue
             thresh = thresholds[cytopenia]
             cyto_rates = [(group[day].dropna() < thresh).mean() for day in days]
@@ -360,49 +361,151 @@ def event_rate_stacked_bar_plot(
         if i == len(regimens) - 1:
             axes[i].legend(bbox_to_anchor=(1,0), loc='lower left', frameon=False)
     if save: 
-        filepath = f'{save_dir}/plots/{cytopenia}_{"_".join(regimens)}.jpg'
+        filepath = f'{save_dir}/analysis/figures/{cytopenia}_{"_".join(regimens)}.jpg'
         plt.savefig(filepath, bbox_inches='tight', dpi=300)
     plt.show()
     
 ###############################################################################
 # Palliative Care Consultation Service (PCCS)
 ###############################################################################
-def pccs_receival_plot(summary, target_event='365d Mortality'):
-    """Plot the proportion of patients that died without receiving early 
-    palliative care consultation service (PCCS) (e.g. did not receive PCCS 
-    prior to 6 months before death) for different subgroup populations
+def epc_subgroup_plot(
+    summaries, 
+    target_event='365d Mortality', 
+    y_top=0.4, 
+    **kwargs
+):
+    """Plot the proportion of patients who died and received early palliative 
+    care (EPC) (defined as receival of palliative care consultation service 
+    (PCCS) 6 months before death) for different subgroup populations.
     
     Args:
-        summary (dict): A mapping of subgroup population (str) and their 
-            associated service receival summary (pd.DataFrame)
+        summaries (dict): A nested map of care type (str) and each of the 
+            subgroup population's (str) service receival summary (pd.DataFrame)
+            e.g. {'usual': {'Sex': pd.DataFrame, 'Age': pd.DataFrame}}
+        **kwargs: keyword arguments fed into subgroup_performance_plot
     """
     # Setup the dataframe to call subgroup_performance_plot
-    proportion_col, event_col = 'Not Got Early PCCS (%)', 'Dead'
     df = pd.DataFrame(index=twolevel, columns=twolevel)
-
-    metric = 'Proportion of Patients Who Died\nWithout Early Palliative Care'
-    for subgroup_name, matrix in summary.items():
-        # Edge Case
-        if subgroup_name == 'Language': subgroup_name = 'Immigration'
-
+    care_map = {'usual': 'Usual Care', 'system': 'System-Guided Care'}
+    ylim = {}
+    for care_name, summary in summaries.items():
+        care_name = care_map[care_name]
+        metric = ('Proportion of Patients Who Died\nWith Early Palliative '
+                  f'Care in {care_name}')
         col = (target_event, metric)
-        if subgroup_name.startswith('Entire'):
-            receival_rate = matrix.loc[proportion_col, event_col]
-            df.loc[(subgroup_name, ''), col] = receival_rate
-        else:
-            for subgroup_id in matrix.columns.levels[0]:
-                matrix_col = (subgroup_id, event_col)
-                receival_rate = matrix.loc[proportion_col, matrix_col]
-                df.loc[(subgroup_name, subgroup_id), col] = receival_rate
-    df /= 100
-    padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
+        _epc_subgroup_helper(summary, care_name, col, df)
+        ylim[metric] = {'bottom': 0, 'top': y_top}
     subgroup_performance_plot(
-        df, target_event=target_event, padding=padding, figsize=(18,3)
+        df, target_event=target_event, ylim=ylim, **kwargs
     )
     
+def _epc_subgroup_helper(summary, care_name, col, df):
+    get_total = lambda m: m.loc[['Got PCCS', 'Not Got PCCS']].sum().sum()
+    for subgroup, result in summary.items():
+        for category in result.columns.levels[0]:
+            counts = result[category]
+            rate = counts.loc['Got Early PCCS (%)', 'Dead'] / 100
+            total = get_total(counts)
+            lower, upper = proportion_confint(int(total * rate), total)
+            score = f'{rate:.3f} ({lower:.3f}-{upper:.3f})'
+            df.loc[(subgroup, category), col] = score
+        
+def epc_impact_plot(impact, N, epc=True):
+    """Plot the model's clinical impact on early palliative care (EPC)."""
+    receival_status = 'With' if epc else 'Without'
+    rate = impact.loc[f'Died {receival_status} Early PCCS'] / N
+    lower_ci, upper_ci = proportion_confint(N * rate, N)
+
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6,6))
+    yerr = [rate - lower_ci, upper_ci - rate]
+    bar = ax.bar(
+        x=rate.index, height=rate, yerr=yerr, capsize=10, 
+        color=['#1f77b4', '#ff7f0e']
+    )
+    ax.margins(0.1)
+    ax.set_ylabel(f'Proportion Of Patients Who Died\n{receival_status} Early '
+                  'Palliative Care')
+    remove_top_right_axis(ax)
+    
+    df = pd.concat([rate, upper_ci, lower_ci], axis=1).T
+    df.index = [f'Died {receival_status} EPC Rate', 'Upper CI', 'Lower CI']
+    df['Difference'] = df['System-Guided Care'] - df['Usual Care']
+    return df
+        
+def post_pccs_survival_plot(
+    df,
+    months_after=24,
+    time_frame=None,
+    verbose=True, 
+    **kwargs
+):
+    """Plot the survival analysis of patients after they receive their first
+    palliative care consulation service (PCCS).
+    
+    Args:
+        df (pd.DataFrame): table of patients and their relevant data (PCCS 
+            receival, vital status, etc) (from output of get_pccs_analysis_data)
+        months_after (int): the number of months after patients' first PCCS of 
+            which we report their survival probability
+        **kwargs: keyword arguments fed into time_to_x_after_y
+    """
+    if time_frame is None: time_frame = np.arange(0, 37, 6)
+    is_dead = df['status'] == 'Dead'
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6,6))
+    
+    care_names = ['Usual Care', 'System-Guided Care']
+    times, statuses, kmfs = [], [], []
+    prob = pd.DataFrame(index=['Survival Probability', 'Upper CI', 'Lower CI'])
+    
+    for care_name in care_names:
+        if verbose:
+            logging.info('Analyzing Time to Death After Initial PCCS for '
+                         f'{care_name}...')
+        
+        time_to_death = time_to_x_after_y(
+            df.copy(), x='last_obs', y='first_pccs', care_name=care_name, 
+            **kwargs
+        )
+        status = is_dead.loc[time_to_death.index]
+        
+        kmf = KaplanMeierFitter()
+        kmf.fit(time_to_death, status)
+        kmf.plot(ax=ax, label=care_name, loc=slice(time_frame[-1]))
+        
+        # report survival probability
+        ci = kmf.confidence_interval_survival_function_
+        lower, upper = ci[ci.index > months_after].iloc[0]
+        surv_prob = kmf.predict(months_after)
+        prob[care_name] = [surv_prob, upper, lower]
+        
+        # clip number of patients at risk to 6 for privacy policy
+        kmf.event_table['at_risk'].clip(lower=6+1, inplace=True)
+        
+        times.append(time_to_death)
+        statuses.append(status)
+        kmfs.append(kmf)
+
+    xlabel = 'Months After First Palliative Care Consultation'
+    add_at_risk_counts(
+        *kmfs, ax=ax, xticks=time_frame[1:], labels=care_names, 
+        rows_to_show=['At risk']
+    )
+    ax.set(
+        xticks=time_frame, ylim=(-0.05,1.05), xlabel=xlabel, 
+        ylabel='Survival Probability'
+    )
+    ax.legend(frameon=False)
+    
+    # Show p-value
+    p_value = logrank_test(*times, *statuses).p_value
+    logging.info(f'P-value = {p_value}')
+    
+    prob['Difference'] = prob['System-Guided Care'] - prob['Usual Care']
+    return prob
+
 def pccs_graph_plot(df):
     """Visualize the number and proportion of patients who are dead, alive,
-    received palliative care consultation service (PCCS), did not receive PCCS, 
+    received palliative care consultation service (PCCS), did not receive PCCS,
     alerted, not alerted, etc, as a tree-based graph.
     
     Args:
@@ -427,7 +530,7 @@ def pccs_graph_plot(df):
         # Patient PCCS receival status
         mask = vital_group['first_PCCS_date'].notnull()
         for receival_status, receival_group in vital_group.groupby(mask):
-            name = 'Received PCCS' if receival_status else 'Not Received PCCS'
+            name = 'Received PCCS' if receival_status else 'No PCCS'
             receival_str = f'{name}\n{f(len(receival_group))}'
             d.edge(vital_str, receival_str)
 
@@ -466,11 +569,12 @@ def epc_bias_mitigation_plot(
     eval_models, 
     pccs_result, 
     subgroup_masks,
-    split='Test',
-    algorithm='ENS',
+    alg='ENS',
     target_event='365d Mortality',
-    save=True,
-    save_path='',
+    split='Test',
+    colors=None,
+    save_path=None,
+    padding=None,
 ):
     """Plot the bias among subgroups for receival of early palliative care (EPC)
     and how the model performs comparably among these subgroups (indicating 
@@ -482,105 +586,100 @@ def epc_bias_mitigation_plot(
             indicates which samples in the original data belongs to the subgroup
             e.g. {'Area of Residence': {'Urban': pd.Series, 'Rural': pd.Series}}
     """
+    if colors is None:
+        colors = plt.rcParams['axes.prop_cycle'].by_key()['color'][:3]
+    if padding is None: 
+        padding = {}
+        
+    Y_true = eval_models.labels[split][target_event]
+    Y_pred_prob = eval_models.preds[split][alg][target_event]
+
     N = len(subgroup_masks)
-    fig, axes = plt.subplots(nrows=N, ncols=3, figsize=(18,6*N))
-        
-    catcol = 'subgroup'
-    pccs_col = 'Not Got Early PCCS (%)'
-    
+    fig, axes = plt.subplots(nrows=N, ncols=5, figsize=(30,6*N))
+    if N == 1: axes = [axes]
+
+    def get_rates(df):
+        total = df.loc[['Got PCCS', 'Not Got PCCS'], ['Alive', 'Dead']].sum().sum()
+        rate = df.loc['Got Early PCCS (%)', 'Dead'] / 100
+        lower_ci, upper_ci = proportion_confint(int(total * rate), total)
+        return [rate, lower_ci, upper_ci]
+
     for i, (catname, masks) in enumerate(subgroup_masks.items()):
-        (subgroup1, mask1), (subgroup2, mask2) = masks.items()
-        
-        df = pd.DataFrame(
-            data = [
-                ['Overall', pccs_result[f'Entire {split} Cohort'].loc[pccs_col, 'Dead']],
-                [subgroup1, pccs_result[catname].loc[pccs_col, (subgroup1, 'Dead')]],
-                [subgroup2, pccs_result[catname].loc[pccs_col, (subgroup2, 'Dead')]],
-            ], 
-            columns=[catcol, pccs_col]
-        )
-        df[pccs_col] /= 100
-        sns.barplot(data=df, x=catcol, y=pccs_col, ax=axes[i][0])
-        if min(df[pccs_col]) > 0.2: 
-            axes[i][0].set_ylim(bottom=min(df[pccs_col])-0.1)
-        axes[i][0].set_xlabel(f'Subgroup Population - {catname}')
-        axes[i][0].set_ylabel('Proportion of Patients Who Died\n'
-                           'Without Receiving Early Palliative Care')
+        masks = {'Overall': Y_true.notnull(), **masks}
+        data = []
+        for j, (subgroup, mask) in enumerate(masks.items()):
+            # Plot AUPRC and AUROC
+            for k, curve_type in enumerate(['pr', 'roc']):
+                eval_models.plot_auc_curve(
+                    axes[i][2+k], Y_true[mask], Y_pred_prob[mask], 
+                    curve_type=curve_type, color=colors[j], 
+                    label_prefix=f'{subgroup}\n', 
+                    ci_name=f'{alg}_{split}_{target_event}_{subgroup}'
+                )
 
-        # AUPRC
-        args = (axes[i][1], algorithm, [target_event])
-        kwargs = {'split': split, 'curve_type': 'pr'}
-        eval_models.plot_auc_curve(*args, **kwargs, mask_name='Overall')
-        eval_models.plot_auc_curve(*args, **kwargs, mask=mask1, mask_name=subgroup1)
-        eval_models.plot_auc_curve(*args, **kwargs, mask=mask2, mask_name=subgroup2)
+            # Plot calibration
+            last = bool(j == len(masks) - 1)
+            eval_models.plot_calib(
+                axes[i][4], Y_true[mask], Y_pred_prob[mask], 
+                color=colors[j], show_perf_calib=last, 
+                label_prefix=f'{subgroup}\n',
+            )
+            
+            # Compute rate (95% CI) of death without EPC
+            if subgroup == 'Overall': 
+                usual_rates = get_rates(pccs_result['usual'][f'Entire {split} Cohort'][''])
+                system_rates = get_rates(pccs_result['system'][f'Entire {split} Cohort'][''])
+            else:
+                usual_rates = get_rates(pccs_result['usual'][catname][subgroup])
+                system_rates = get_rates(pccs_result['system'][catname][subgroup])
+            
+            # Some long subgroup names need to be split up for visualization
+            subgroup = subgroup.replace(' ', '\n')
+            data.append([subgroup] + usual_rates + system_rates)
 
-        # Calibration
-        args = (axes[i][2], algorithm, [target_event])
-        kwargs = {'split': split}
-        eval_models.plot_calib(*args, **kwargs, mask_name='Overall', show_perf_calib=False)
-        eval_models.plot_calib(*args, **kwargs, mask=mask1, mask_name=subgroup1, show_perf_calib=False)
-        eval_models.plot_calib(*args, **kwargs, mask=mask2, mask_name=subgroup2)
-
-    # save results
-    if save: plt.savefig(f'{save_path}/bias.jpg', bbox_inches='tight', dpi=300)
+        # Plot rate of death with EPC
+        cols = [
+            'subgroup', 'usual_rate', 'usual_lower_ci', 'usual_upper_ci', 
+            'system_rate', 'system_lower_ci', 'system_upper_ci'
+        ]
+        df = pd.DataFrame(data=data, columns=cols)
+        for x, care in enumerate(['usual', 'system']):
+            rate_col = f'{care}_rate'
+            yerr = [
+                df[rate_col] - df[f'{care}_lower_ci'],
+                df[f'{care}_upper_ci'] - df[rate_col]
+            ]
+            # sns.barplot(data=df, x='subgroup', y=f'{care}_rate', ax=axes[i][0], yerr=yerr)
+            axes[i][x].bar(
+                df['subgroup'], df[rate_col], yerr=yerr, capsize=5, color=colors
+            )
+            remove_top_right_axis(axes[i][x])
+            if min(df[rate_col]) > 0.2: 
+                axes[i][x].set_ylim(bottom=min(df[rate_col])-0.2)
+            axes[i][x].set_xlabel(f'Subgroup Population - {catname}')
+            care_name = 'System-Guided' if care == 'system' else 'Usual'
+            axes[i][x].set_ylabel('Proportion of Patients Who Died\nWith Early '
+                                  f'Palliative Care in {care_name} Care')
+        # set ylim of usual care to be same as system care
+        axes[i][0].set_ylim(axes[i][1].get_ylim())
         
-def post_pccs_survival_plot(eval_models, event_dates, verbose=True, **kwargs):
-    """Plot the survival analysis of patients after they receive initial
-    palliative care consulation service (PCCS)
-    
-    Args:
-       **kwargs: keyword arguments fed into time_to_x_after_y
-    """
-    is_dead = event_dates.groupby('ikn')['D_date'].last().notnull()
-    time_frame = np.arange(0, 37, 6)
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6,6))
-    care_names = ['Usual Care', 'Model-Guided Care']
-    times, statuses, kmfs = [], [], []
-    for care_name in care_names:
-        if verbose:
-            logging.info('Analyzing Time to Death After Initial PCCS for '
-                         f'{care_name}...')
+        # write the results
+        if save_path is not None: 
+            for idx, ax in enumerate(axes[i]):
+                fig.savefig(
+                    f'{save_path}/{catname}_bias{idx}.jpg', 
+                    bbox_inches=get_bbox(ax, fig, **padding), dpi=300
+                )
         
-        time_to_death = time_to_x_after_y(
-            eval_models, event_dates, x='last_obs', y='first_pccs', 
-            verbose=True, care_name=care_name, **kwargs
-        )
-        status = is_dead.loc[time_to_death.index]
-        
-        kmf = KaplanMeierFitter()
-        kmf.fit(time_to_death, status)
-        kmf.plot(ax=ax, label=care_name, loc=slice(time_frame[-1]))
-        
-        times.append(time_to_death)
-        statuses.append(status)
-        kmfs.append(kmf)
-
-    xlabel = 'Months After First Palliative Care Consultation Service'
-    add_at_risk_counts(
-        *kmfs, ax=ax, xticks=time_frame[1:], labels=care_names, 
-        rows_to_show=['At risk']
-    )
-    ax.set(
-        xticks=time_frame, ylim=(-0.05,1.05), xlabel=xlabel, 
-        ylabel='Survival Probability'
-    )
-    ax.legend(frameon=False)
-    
-    # Show p-value
-    p_value = logrank_test(*times, *statuses).p_value
-    logging.info(f'P-value = {p_value}')
-    
-    return zip(kmfs, care_names)
-    
 ###############################################################################
 # Misc Cytopenia Plots
 ###############################################################################
-def blood_count_dist_plot(df, include_sex=True):
+def blood_count_dist_plot(df, include_sex=True, bins=51):
     fig = plt.figure(figsize=(20,5))
     for idx, blood_type in enumerate(blood_types):
         ax = fig.add_subplot(1,3,idx+1)
-        col = f'baseline_{blood_type}_count'
-        kwargs = {'data': df, 'x': col, 'ax': ax, 'kde': True, 'bins': 50}
+        col = f'baseline_{blood_type}_value'
+        kwargs = {'data': df, 'x': col, 'ax': ax, 'kde': True, 'bins': bins}
         if include_sex: kwargs['hue'] = 'sex'
         sns.histplot(**kwargs)
         plt.xlabel('Blood Count Value')
@@ -604,12 +703,12 @@ def day_dist_plot(df, regimens):
 def regimen_dist_plot(df, by='patient'):
     if by == 'patients':
         # number of patients per cancer regiment
-        n_patients = df.groupby('regimen').apply(lambda g: g['ikn'].nunique())
+        n_patients = df.groupby('regimen')['ikn'].nunique()
         dist = n_patients.sort_values()
         ylabel = 'Number of Patients'
     elif by == 'blood_counts':
         # number of blood counts per regimen
-        cycle_lengths = dict(df[['regimen', 'cycle_length']].values)
+        cycle_lengths = dict(df[['regimen', 'cycle_length']].to_numpy())
         def func(group):
             cycle_length = int(cycle_lengths[group.name])
             days_range = range(-5,cycle_length)
@@ -625,7 +724,7 @@ def regimen_dist_plot(df, by='patient'):
         ylabel = 'Number of Sessions'
     fig = plt.figure(figsize=(15,5))
     plt.bar(dist.index, dist.values) 
-    plt.xlabel('Chemotherapy Regiments')
+    plt.xlabel('Treatment Regiments')
     plt.ylabel(ylabel)
     plt.xticks(rotation=90, fontsize=7)
     plt.show()
@@ -648,7 +747,7 @@ def scatter_plot(df, unit='10^9/L', save=False, filename="scatter_plot"):
         plt.xlabel('Day')
         plt.xticks(get_day_xticks(days))
     if save: 
-        filepath = f'{root_path}/{cyto_folder}/plots/{filename}.jpg'
+        filepath = f'{root_path}/{cyto_folder}/analysis/figures/{filename}.jpg'
         plt.savefig(filepath, bbox_inches='tight', dpi=300)
     plt.show()
 
@@ -674,7 +773,7 @@ def violin_plot(df, unit='10^9/L', save=False, filename='violin_plot'):
         sns.violinplot(x='Day', y=f'Blood Count ({unit})', data=data, ax=ax)
         plt.title(regimen)
     if save:
-        filepath = f'{root_path}/{cyto_folder}/plots/{filename}.jpg'
+        filepath = f'{root_path}/{cyto_folder}/analysis/figures/{filename}.jpg'
         plt.savefig(filepath, bbox_inches='tight', dpi=300)    
 
 def mean_cycle_plot(df, unit='10^9/L', save=False, filename='mean_cycle_plot'):
@@ -699,14 +798,14 @@ def mean_cycle_plot(df, unit='10^9/L', save=False, filename='mean_cycle_plot'):
         plt.xticks(get_day_xticks(days))
         plt.legend([f'cycle{c}' for c in cycles])
     if save:
-        filepath = f'{root_path}/{cyto_folder}/plots/{filename}.jpg'
+        filepath = f'{root_path}/{cyto_folder}/analysis/figures/{filename}.jpg'
         plt.savefig(filepath, bbox_inches='tight', dpi=300)
     plt.show()
     
 ###############################################################################
 # Pearson Correlation
 ###############################################################################
-def pearson_plot(pearson_matrix, output_path, main_target='ACU'):
+def pearson_plot(pearson_matrix, main_target='ACU', save_path=None):
     fig, ax = plt.subplots(figsize=(15,6))
     indices = pearson_matrix[main_target].sort_values().index
     indices = indices[~indices.str.contains('Is Missing')]
@@ -714,36 +813,37 @@ def pearson_plot(pearson_matrix, output_path, main_target='ACU'):
     ax.set_ylabel('Pearson Correlation Coefficient', fontsize=12)
     ax.set_xlabel('Feature Columns', fontsize=12)
     plt.legend(pearson_matrix.columns, fontsize=10)
-    plt.xticks(rotation='90')
-    filepath = f'{output_path}/figures/pearson_coefficient.jpg'
-    plt.savefig(filepath, bbox_inches='tight', dpi=300)
+    plt.xticks(rotation=90)
+    if save_path is not None:
+        filepath = f'{save_path}/figures/pearson_coefficient.jpg'
+        plt.savefig(filepath, bbox_inches='tight', dpi=300)
 
 ###############################################################################
 # Tree Models
 ###############################################################################   
-def tree_plot(train, target_event='Neutropenia', algorithm='RF'):
+def tree_plot(train, target_event='Neutropenia', alg='RF'):
     """Plot a decision tree from Random Forest model or XGBoost model as a 
     visualization/interpretation example
     """
-    if algorithm not in {'RF', 'XGB'}: 
-        raise ValueError('algorithm must be either RF or XGB')
+    if alg not in ['RF', 'XGB']: 
+        raise ValueError('alg must be either RF or XGB')
     
     # the model is a multioutput calibrated classifier (made up of multiple 
     # classifiers )
-    model = load_ml_model(train.output_path, algorithm)
+    model = load_ml_model(train.output_path, alg)
     
     # get a single example classifier
     idx = train.target_events.index(target_event)
     cv_fold = 0
-    clf = model.estimators_[idx].calibrated_classifiers_[cv_fold].base_estimator
+    clf = model.estimators_[idx].calibrated_classifiers_[cv_fold].estimator
     
-    if algorithm == 'RF': 
+    if alg == 'RF': 
         feature_names = clf.feature_names_in_
         clf = clf.estimators_[0]
         
     # plot the tree
     fig, ax = plt.subplots(figsize=(150,20))
-    if algorithm == 'RF':
+    if alg == 'RF':
         tree.plot_tree(
             clf, feature_names=feature_names, 
             class_names=[f'Not {target_event}', target_event], fontsize=10, 

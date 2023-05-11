@@ -15,6 +15,7 @@ TERMS OF USE:
 ========================================================================
 """
 from collections import defaultdict
+from difflib import SequenceMatcher
 from functools import partial
 import itertools
 import os
@@ -23,30 +24,20 @@ import pickle
 from tqdm import tqdm
 from scipy.stats import pearsonr
 from sklearn.metrics import (
-    average_precision_score, 
     precision_score, 
-    recall_score, 
-    roc_auc_score
+    recall_score,
 )
 import multiprocessing as mp
 import numpy as np
 import pandas as pd
 
+from src import logging
 from src.config import (
-    max_chemo_date,
-    all_observations,
-    clean_variable_mapping, 
-    eGFR_params, 
-    intent_mapping, 
-    nn_solvers, nn_activations,
-    regiments_folder, root_path, 
+    root_path, regimens_folder, max_chemo_date,
+    DATE,
     symptom_cols, 
-)
-
-import logging
-logging.basicConfig(
-    level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s', 
-    datefmt='%I:%M:%S'
+    all_observations, cancer_code_mapping, intent_mapping, clean_variable_mapping,
+    eGFR_params, nn_solvers, nn_activations,
 )
 
 twolevel = pd.MultiIndex.from_product([[], []])
@@ -55,19 +46,21 @@ twolevel = pd.MultiIndex.from_product([[], []])
 # I/O
 ###############################################################################
 def initialize_folders(output_path, extra_folders=None):
+    if extra_folders is None: extra_folders = []
     if not os.path.exists(output_path):
         os.makedirs(output_path)
-        if extra_folders is None: extra_folders = []
-        main_folders = [
-            'confidence_interval', 'perm_importance', 'best_params', 
-            'predictions', 'tables', 'figures'
-        ]
-        figure_folders = [
-            'important_features', 'curves', 'subgroup_performance', 
-            'rnn_train_performance', 'decision_curve'
-        ]
-        figure_folders = [f'figures/{folder}' for folder in figure_folders]
-        for folder in main_folders + figure_folders + extra_folders:
+        
+    main_folders = [
+        'confidence_interval', 'perm_importance', 'best_params', 
+        'predictions', 'tables', 'figures'
+    ]
+    figure_folders = [
+        'curves', 'subgroup_performance', 'important_features', 
+        'important_groups', 'rnn_train_performance', 
+    ]
+    figure_folders = [f'figures/{folder}' for folder in figure_folders]
+    for folder in main_folders + figure_folders + extra_folders:
+        if not os.path.exists(f'{output_path}/{folder}'):
             os.makedirs(f'{output_path}/{folder}')
 
 def load_ml_model(model_dir, algorithm, name='classifier'):
@@ -93,20 +86,11 @@ def load_ensemble_weights(save_dir):
         ensemble_weights = pickle.load(file)
     return ensemble_weights
 
-def load_chemo_df(main_dir, includes_next_visit=True):
-    dtype = {'ikn': str, 'lhin_cd': str, 'curr_morph_cd': str}
-    chemo_df = pd.read_csv(f'{main_dir}/data/chemo_processed.csv', dtype=dtype)
-    chemo_df['visit_date'] = pd.to_datetime(chemo_df['visit_date'])
-    if includes_next_visit:
-        col = 'next_visit_date'
-        chemo_df[col] = pd.to_datetime(chemo_df[col])
-    return chemo_df
-
 def load_reviewed_regimens():
     """Get the annotated regimens with their cycle lengths, name relabelings, 
     splits, etc
     """
-    df = pd.read_csv(f'{root_path}/{regiments_folder}/regimens.csv', dtype=str)
+    df = pd.read_csv(f'{root_path}/{regimens_folder}/regimens.csv', dtype=str)
     df = clean_string(df, df.columns)
 
     # convert select columns to floats
@@ -140,7 +124,7 @@ def load_included_regimens(criteria=None):
             1. 'cytotoxic' for CYTOPENIA
             2. 'cisplatin_containing' for CAN
     """
-    if criteria not in {None, 'cytotoxic', 'cisplatin_containing'}:
+    if criteria not in [None, 'cytotoxic', 'cisplatin_containing']:
         raise ValueError('criteria must be either None, "cytotoxic", or '
                          '"cisplatin_containing"')
     df = load_reviewed_regimens()
@@ -239,20 +223,32 @@ def replace_rare_categories(
     verbose=False
 ):
     for col in catcols:
-        if with_respect_to == 'patients':
-            # replace unique categories with less than n patients to 'Other'
-            counts = df.groupby(col).apply(lambda g: g['ikn'].nunique())
-        elif with_respect_to == 'rows':
-            # replace unique categories that appears less than n number of rows
-            # in the dataset to 'Other'
-            counts = df[col].value_counts()
+        if col == 'regimen':
+            mask = ~df[col].str.contains('+', regex=False)
+        else:
+            mask = df['ikn'].notnull()
+        counts = get_counts_per_category(
+            df[mask], col, with_respect_to=with_respect_to
+        )
         replace_cats = counts.index[counts < n]
         if verbose:
             logging.info(f'The following {col} categories have less than {n} '
-                         f'{with_respect_to} and will be replaced with "Other"'
+                         f'{with_respect_to} and will be replaced with "other"'
                          f': {replace_cats.tolist()}')
-        df.loc[df[col].isin(replace_cats), col] = 'Other'
+        mask = df[col].isin(replace_cats)
+        df.loc[mask, col] = 'other'
     return df
+
+def get_counts_per_category(df, col, with_respect_to='patients'):
+    if with_respect_to == 'patients':
+        # replace unique categories with less than n patients to 'Other'
+        return df.groupby(col)['ikn'].nunique()
+    elif with_respect_to == 'sessions':
+        # replace unique categories with less than n sessions to 'Other'
+        return df[col].value_counts()
+    else:
+        err_msg = f'Count with respect to {with_respect_to} not supported'
+        raise NotImplementedError(err_msg)
 
 def group_observations(observations, freq_map):
     grouped_observations = {}
@@ -290,6 +286,25 @@ def clean_string(df, cols):
         df.loc[mask, col] = df.loc[mask, col].str[2:-1].values
     return df
 
+def clean_unit(unit):
+    unit = unit.lower()
+    unit = unit.replace(' of ', '')
+    splits = unit.split(' ')
+    if splits[-1].startswith('cr'): # e.g. mg/mmol creat
+        assert(len(splits) == 2)
+        unit = splits[0] # remove the last text
+    
+    for c in ['"', ' ', '.']: unit = unit.replace(c, '')
+    for c in ['-', '^', '*']: unit = unit.replace(c, 'e')
+    if ((SequenceMatcher(None, unit, 'x10e9/l').ratio() > 0.5) or 
+        (unit == 'bil/l')): 
+        unit = 'x10e9/l'
+    if unit in {'l/l', 'ratio', 'fract', '%cv'}: 
+        unit = '%'
+    unit = unit.replace('u/', 'unit/')
+    unit = unit.replace('/l', '/L')
+    return unit
+
 def get_years_diff(df, col1, col2):
     return df[col1].dt.year - df[col2].dt.year
 
@@ -311,73 +326,6 @@ def get_first_alarms_or_last_treatment(df, pred_thresh, verbose=False):
     return df
 
 ###############################################################################
-# Bootstrap Confidence Interval 
-###############################################################################
-def bootstrap_sample(data, random_seed):
-    np.random.seed(random_seed)
-    N = len(data)
-    weights = np.random.random(N) 
-    return data.sample(
-        n=N, replace=True, random_state=random_seed, weights=weights
-    )
-    
-def bootstrap_worker(bootstrap_partition, Y_true, Y_pred):
-    """Compute bootstrapped AUROC/AUPRC scores by resampling the labels and 
-    predictions together and recomputing the AUROC/AUPRC
-    """
-    scores = []
-    for random_seed in bootstrap_partition:
-        y_true = bootstrap_sample(Y_true, random_seed)
-        y_pred = Y_pred[y_true.index]
-        if y_true.nunique() < 2:
-            continue
-        scores.append((
-            roc_auc_score(y_true, y_pred), 
-            average_precision_score(y_true, y_pred)
-        ))
-    return scores
-
-def compute_bootstrap_scores(Y_true, Y_pred, n_bootstraps=10000, processes=32):
-    worker = partial(bootstrap_worker, Y_true=Y_true, Y_pred=Y_pred)
-    scores = split_and_parallelize(
-        range(n_bootstraps), worker, split_by_ikns=False, processes=processes
-    )
-    
-    n_skipped = n_bootstraps - len(scores)
-    if n_skipped > 0: 
-        logging.warning(f'{n_skipped} bootstraps with no pos examples were '
-                        'skipped, skipped bootstraps will be replaced with '
-                        'original score')
-        # fill skipped boostraps with the original score
-        orig_score = [(
-            roc_auc_score(Y_true, Y_pred), 
-            average_precision_score(Y_true, Y_pred),
-        )]
-        scores += orig_score * n_skipped
-        
-    return scores
-
-def nadir_bootstrap_worker(bootstrap_partition, df, days, thresh):
-    """Compute bootstrapped nadir days by resampling patients with replacement 
-    and recomputing nadir day. Used for computing confidence interval of actual
-    nadir day
-    """
-    nadir_days = []
-    ikns = df['ikn'].unique()
-    for i in bootstrap_partition:
-        np.random.seed(i)
-        sampled_ikns = np.random.choice(ikns, len(ikns), replace=True)
-        sampled_df = df.loc[df['ikn'].isin(sampled_ikns), days]
-        cytopenia_rates_per_day = get_cyto_rates(sampled_df, thresh)
-        if all(cytopenia_rates_per_day == 0):
-            # if no event, pick random day in the cycle
-            nadir_day = np.random.choice(days)
-        else:
-            nadir_day = np.argmax(cytopenia_rates_per_day)
-        nadir_days.append(nadir_day+1)
-    return nadir_days
-
-###############################################################################
 # Data Descriptions
 ###############################################################################
 def get_nunique_categories(df):
@@ -394,8 +342,8 @@ def get_nmissing(df, verbose=False):
         
     if verbose:
         other = [
-            'intent_of_systemic_treatment', 'lhin_cd', 'curr_morph_cd', 
-            'curr_topog_cd', 'body_surface_area'
+            'intent_of_systemic_treatment', 'lhin_cd', 'cancer_morph_cd', 
+            'cancer_topog_cd', 'body_surface_area'
         ]
         idx = missing.index
         mapping = {
@@ -450,7 +398,7 @@ def get_clean_variable_name(name):
     for mapping in [clean_variable_mapping, rename_variable_mapping]:
         for orig, new in mapping.items():
             name = name.replace(orig, new)
-            
+    
     if name.startswith('world_region'):
         var, region = name.rsplit('_', 1)
         name = f"{var.replace('_', ' ').title()} {region}"
@@ -470,6 +418,11 @@ def get_clean_variable_name(name):
     elif name.startswith('Regimen '):
         # capitalize all regimen names
         name = f"Regimen {name.split(' ')[-1].upper()}"
+    elif name.startswith('Topography ') or name.startswith('Morphology '):
+        # get full cancer description 
+        code = name.split(' ')[-1]
+        if code in cancer_code_mapping:
+            name = f"{name}, {cancer_code_mapping[code]}"
     elif name.endswith(')'):
         name, unit = name.split('(')
         name = '('.join([name, unit.lower()]) # lowercase the units
@@ -485,7 +438,7 @@ def get_observation_units():
     # group the observation units together with same observation name
     grouped_units_map = {}
     for obs_code, obs_name in all_observations.items():
-        obs_name = f'baseline_{obs_name}_count'
+        obs_name = f'baseline_{obs_name}_value'
         if obs_name in grouped_units_map:
             grouped_units_map[obs_name].append(units_map[obs_code])
         else:
@@ -518,7 +471,7 @@ def get_cyto_rates(df, thresh):
     measurements
     """
     cytopenia_rates_per_day = []
-    for day, measurements in df.iteritems():
+    for day, measurements in df.items():
         measurements = measurements.dropna()
         cytopenia_rate = (measurements < thresh).mean()
         cytopenia_rates_per_day.append(cytopenia_rate)
@@ -534,8 +487,7 @@ def most_common_categories(
     # most common categories in a categorical column (e.g. regimen, 
     # cancer location, cancer type) with respect to patients or sessions
     if with_respect_to == 'patients':
-        get_num_patients = lambda group: group['ikn'].nunique()
-        category_count = data.groupby(catcol).apply(get_num_patients)
+        category_count = data.groupby(catcol)['ikn'].nunique()
     elif with_respect_to == 'sessions':
         category_count = data.groupby(catcol).apply(len)
     else:
@@ -545,78 +497,9 @@ def most_common_categories(
     return most_common
 
 ###############################################################################
-# Predictions & Metrics 
+# Prediction & Thresholds
 ###############################################################################
-def outcome_recall_score(
-    Y_true, 
-    Y_pred_bool, 
-    target_event, 
-    event_dates=None, 
-    lookback_window='30d'
-):
-    """Compute the outcome-level recall/sensitivity. The proportion of events 
-    where at least one warning was issued prior to the event 
-    
-    Args:
-        event_dates (pd.DataFrame): table of relevant event dates (e.g. D_date,
-            next_ED_date, visit_date, etc) associated with each session. Also 
-            includes ikn (patient id)
-        lookback_window (str): number of days prior to the event in which a 
-            warning is valid, in the format '{int}d'
-    """
-    event_col_map = {
-        'ACU': ['next_H_date', 'next_ED_date'], 
-        'H': ['next_H_date'], 
-        'ED': ['next_ED_date'], 
-        'D': ['D_date']
-    }
-    if event_dates is None: 
-        raise ValueError('Please provide the event dates')
-    event_dates = event_dates.loc[Y_true.index]
-    event_dates['true'] = Y_true
-    event_dates['pred'] = Y_pred_bool
-    
-    if target_event.endswith('Mortality'):
-        # e.g. target_event = '14d Mortality'
-        lookback_window = target_event.split(' ')[0] 
-        event = 'D'
-    else:
-        # event will be either ACU, ED, or H
-        # e.g. target_event = 'INFX_H'
-        event = target_event.split('_')[-1]
-        
-    if event not in event_col_map:
-        raise ValueError(f'Does not support {target_event}')
-    event_cols = event_col_map[event]
-    
-    # exclude sessions without outcome dates
-    mask = False
-    for col in event_cols:
-        mask |= event_dates[col].notnull()
-    
-    # group predictions by outcome
-    worker = partial(
-        group_pred_by_outcome, event_cols=event_cols, 
-        lookback_window=lookback_window
-    )
-    grouped_preds = split_and_parallelize(
-        event_dates[mask], worker, processes=8
-    )
-    grouped_preds = pd.DataFrame(grouped_preds, columns=['chemo_idx', 'pred'])
-    grouped_preds = grouped_preds.set_index('chemo_idx')
-    
-    # select the rows of interest
-    result = pd.concat([
-        event_dates.loc[grouped_preds.index], 
-        event_dates[~mask]
-    ])
-    
-    # update the predictions
-    result.loc[grouped_preds.index, 'pred'] = grouped_preds['pred']
-    
-    return recall_score(result['true'], result['pred'], zero_division=1)
-    
-def group_pred_by_outcome(df, event_cols, lookback_window='30d'):
+def group_pred_by_outcome(df, lookback_window=30):
     """Group the predictions by outcome, collapse multiple chemo treatments 
     into one outcome.
 
@@ -627,22 +510,20 @@ def group_pred_by_outcome(df, event_cols, lookback_window='30d'):
 
     Currrently only supports ED/H event and Death outcomes
     """
-    lookback_window = pd.Timedelta(lookback_window)
-    result = defaultdict(bool) # {index: prediction}, default to False
+    lookback_window = pd.Timedelta(days=lookback_window)
+    result = {} # {index: prediction}
     for ikn, ikn_group in df.groupby('ikn'):
-        for event in event_cols:
-            for date, date_group in ikn_group.groupby(event):
-                # only keep samples in which event occured within lookback 
-                # window
-                mask = date_group['visit_date'] >= date - lookback_window
-                idx = date_group.index[-1]
-                result[idx] = result[idx] or any(date_group.loc[mask, 'pred'])
+        for event_date, date_group in ikn_group.groupby('event_date'):
+            # only keep samples in which event occured within lookback window
+            mask = date_group[DATE] >= event_date - lookback_window
+            idx = date_group.index[-1]
+            result[idx] = any(date_group.loc[mask, 'pred'])
     return list(result.items())
 
 def equal_rate_pred_thresh(
     eval_models, 
     event_dates, 
-    split='Valid', 
+    split='Test', 
     alg='ENS', 
     target_event='365d Mortality'
 ):
@@ -657,11 +538,11 @@ def equal_rate_pred_thresh(
     df = pd.DataFrame()
     df['predicted_prob'] = eval_models.preds[split][alg][target_event]
     df['ikn'] = eval_models.orig_data.loc[df.index, 'ikn']
+    df = df.join(event_dates)
     
     # Get intervention rate (by patient, not session)
     if target_event == '365d Mortality':
-        tmp = event_dates.loc[df.index, ['first_PCCS_date', 'ikn']]
-        tmp = tmp.drop_duplicates()
+        tmp = df[['first_PCCS_date', 'ikn']].drop_duplicates()
         intervention_rate = tmp['first_PCCS_date'].notnull().mean()
     else:
         raise NotImplementedError(f'Target {target_event} is not supported yet')
@@ -679,8 +560,8 @@ def equal_rate_pred_thresh(
     )
     
 def pred_thresh_binary_search(
-    Y_pred_prob, 
     Y_true, 
+    Y_pred_prob, 
     desired_target, 
     metric='precision',
     **kwargs
@@ -698,7 +579,7 @@ def pred_thresh_binary_search(
         Y_pred_bool = Y_pred_prob > thresh
         return score_func[metric](Y_true, Y_pred_bool, **kwargs)
     
-    swap_adjustment = metric in {'sensitivity', 'warning_rate'}
+    swap_adjustment = metric in ['sensitivity', 'warning_rate']
     
     return binary_search(
         scorer, desired_target, metric, Y_true, Y_pred_prob, 
@@ -739,16 +620,12 @@ def binary_search(
 # Time Intervals
 ###############################################################################
 def time_to_x_after_y(
-    eval_models, 
-    event_dates,   
-    x=None,
-    y=None,
-    split='Test', 
-    algorithm='ENS', 
-    target_event='365d Mortality',
-    pred_thresh=0.5,
+    df,
+    x='death',
+    y='first_alarm',
     verbose=True,
     care_name=None,
+    no_alarm_strategy='no_pccs',
     clip=False
 ):
     """Get the time (in months) to event x after event y for each patient
@@ -757,26 +634,26 @@ def time_to_x_after_y(
     service (PCCS), last observation, etc.
     
     Args:
+        df (pd.DataFrame): table of patients and their relevant data (death
+            date, visit date, alert status, etc, where index is patient ids)
         x (str): event, either 'first_alarm', 'death', 'first_pccs', 'last_obs'
         y (str): event, either 'first_alarm', 'death', 'first_pccs', 'last_obs'
+        care_name (str): If event x or y is some intervention, which type of
+            care is used for applying the intervention. Either 
+            'System-Guided Care' or 'Usual Care'
+        no_alarm_strategy (str): which strategy to use in the absence of an
+            alarm for system-guided care for first PCCS events. Either 
+            'no_pccs' (patient will not receive PCCS) or 'uc' (default to 
+            whatever action occured in usual care)
     """
     if x == y: raise ValueError('x and y must be different')
-    
-    # Get relevant data
-    df = pd.DataFrame()
-    df['predicted_prob'] = eval_models.preds[split][algorithm][target_event]
-    df['ikn'] = eval_models.orig_data.loc[df.index, 'ikn']
-    df[event_dates.columns] = event_dates.loc[df.index]
-    
-    # Take the first session in which an alarm was triggered for each patient
-    # or the last session if alarms were never triggered
-    df = get_first_alarms_or_last_treatment(df, pred_thresh, verbose=verbose)
+    df = df.copy()
     
     # get the time to event x after event y
     cols = {
         'last_obs': 'last_seen_date',
-        'death': 'D_date',
-        'first_alarm': 'visit_date', 
+        'death': 'death_date',
+        'first_alarm': DATE,
         'first_pccs': 'first_PCCS_date'
     }
     
@@ -801,11 +678,18 @@ def time_to_x_after_y(
     if x == 'first_pccs' or y == 'first_pccs':
         col = cols['first_pccs']
         
-        if care_name == 'Model-Guided Care':
-            # update where warning system initiated PCCS earlier than usual care
+        if care_name == 'System-Guided Care':
             mask = df['predicted']
-            dates = df.loc[mask, [col, 'visit_date']]
-            df[col][mask] = dates.min(axis=1)
+            if no_alarm_strategy == 'no_pccs':
+                # replace first PCCS date with first alarm date 
+                # (NaN if no alarm occured)
+                df[col] = pd.NaT
+                df[col] = df.loc[mask, [DATE]]
+            elif no_alarm_strategy == 'uc':
+                # keep first PCCS date from usual care
+                # update where system initiated PCCS earlier than usual care
+                dates = df.loc[mask, [col, DATE]]
+                df[col][mask] = dates.min(axis=1)
             
         # remove patients who never received PCCS or 
         # received PCCS after cohort end date
@@ -885,7 +769,7 @@ def get_hyperparameters(output_path, days=None, algorithms=None):
 ###############################################################################
 # Pearson Correlation
 ###############################################################################
-def get_pearson_matrix(df, target_keyword, output_path):
+def get_pearson_matrix(df, target_keyword, save_path=None):
     dtypes = df.dtypes
     cols = dtypes[~(dtypes == object)].index
     cols = cols.drop('ikn')
@@ -903,7 +787,8 @@ def get_pearson_matrix(df, target_keyword, output_path):
     pearson_matrix.columns = pearson_matrix.columns.str.replace(target_keyword, '')
     
     # write the results
-    filepath = f'{output_path}/tables/pearson_matrix.csv'
-    pearson_matrix.to_csv(filepath, index_label='index')
+    if save_path is not None:
+        filepath = f'{save_path}/tables/pearson_matrix.csv'
+        pearson_matrix.to_csv(filepath, index_label='index')
     
     return pearson_matrix

@@ -29,28 +29,27 @@ get_ipython().run_line_magic('autoreload', '2')
 # In[2]:
 
 
-import os
-import tqdm
-import pickle
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
-pd.options.mode.chained_assignment = None
 pd.set_option('display.max_columns', 150)
 pd.set_option('display.max_rows', 150)
-import numpy as np
-import matplotlib.pyplot as plt
+import seaborn as sns
 
-from src.config import (root_path, can_folder, split_date, SCr_rise_threshold)
-from src.utility import (initialize_folders, load_predictions, 
-                         get_nunique_categories, get_nmissing, most_common_categories,
-                         get_hyperparameters)
-from src.summarize import (data_characteristic_summary, feature_summary, subgroup_performance_summary)
-from src.visualize import (importance_plot, subgroup_performance_plot)
-from src.prep_data import (PrepData, PrepDataCAN)
-from src.train import (TrainML, TrainRNN, TrainENS)
-from src.evaluate import (Evaluate)
+from src.config import root_path, can_folder, split_date, SCr_rise_threshold
+from src.utility import (
+    initialize_folders, load_predictions, 
+    get_nunique_categories, get_nmissing, most_common_categories,
+    get_hyperparameters
+)
+from src.summarize import data_description_summary, feature_summary
+from src.visualize import importance_plot, subgroup_performance_plot
+from src.prep_data import PrepDataCAN
+from src.train import TrainML, TrainRNN, TrainENS
+from src.evaluate import Evaluate
 
 
-# In[4]:
+# In[3]:
 
 
 processes = 64
@@ -60,7 +59,7 @@ main_dir = f'{root_path}/{can_folder}'
 
 # # Acute Kidney Injury
 
-# In[4]:
+# In[133]:
 
 
 adverse_event = 'aki'
@@ -73,107 +72,126 @@ initialize_folders(output_path)
 # In[5]:
 
 
-# Preparing Data for Model Input
-prep = PrepDataCAN(adverse_event=adverse_event)
+prep = PrepDataCAN(adverse_event=adverse_event, target_keyword=target_keyword)
+model_data = prep.get_data(verbose=True)
+model_data
 
 
 # In[6]:
 
 
-model_data = prep.get_data(verbose=True)
-model_data
+most_common_categories(model_data, catcol='regimen', with_respect_to='patients', top=10)
 
 
 # In[7]:
 
 
-most_common_categories(model_data, catcol='regimen', with_respect_to='patients', top=10)
+sorted(model_data.columns.tolist())
 
 
 # In[8]:
 
 
-sorted(model_data.columns.tolist())
+get_nunique_categories(model_data)
 
 
 # In[9]:
 
 
-get_nunique_categories(model_data)
-
-
-# In[10]:
-
-
 get_nmissing(model_data)
 
 
-# In[11]:
+# In[134]:
 
 
-model_data = prep.get_data(missing_thresh=80, verbose=True)
-print(f"Size of model_data: {model_data.shape}")
-print(f"Number of unique patients: {model_data['ikn'].nunique()}")
-mask = (model_data['SCr_rise'] >= SCr_rise_threshold) | (model_data['SCr_fold_increase'] > 1.5)
-N = model_data.loc[mask, 'ikn'].nunique()
-print(f"Number of unique patients that had Acute Kidney Injury (AKI) " +\
-      f"within 28 days or right before treatment session: {N}")
+prep = PrepDataCAN(adverse_event=adverse_event, target_keyword=target_keyword) # need to reset
+model_data = prep.get_data(missing_thresh=80, include_comorbidity=True, verbose=True)
+X, Y, tag = prep.split_and_transform_data(model_data, split_date=split_date)
+# remove sessions in model_data that were excluded during split_and_transform
+model_data = model_data.loc[tag.index]
+
+
+# In[107]:
+
+
+prep.get_label_distribution(Y, tag, with_respect_to='sessions')
 
 
 # In[12]:
 
 
-kwargs = {'target_keyword': target_keyword, 'split_date': split_date}
-# NOTE: any changes to X_train, X_valid, etc will also be seen in dataset
-dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), **kwargs)
+prep.get_label_distribution(Y, tag, with_respect_to='patients')
 
 
-# In[13]:
+# In[137]:
 
 
-prep.get_label_distribution(Y_train, Y_valid, Y_test)
+# Convenience variables
+train_mask, valid_mask, test_mask = tag['split'] == 'Train', tag['split'] == 'Valid', tag['split'] == 'Test'
+X_train, X_valid, X_test = X[train_mask], X[valid_mask], X[test_mask]
+Y_train, Y_valid, Y_test = Y[train_mask], Y[valid_mask], Y[test_mask]
 
 
-# ## Train ML Models
-
-# In[14]:
-
-
-# Initialize Training class
-train_ml = TrainML(dataset, output_path, n_jobs=processes)
-
-
-# In[15]:
-
-
-skip_alg = []
-train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True, skip_alg=skip_alg)
-
-
-# ## Train RNN Model
+# ### Study Characteristics
 
 # In[14]:
 
 
-# Include ikn to the input data (recall that any changes to X_train, X_valid, etc will also be seen in dataset)
-X_train['ikn'] = model_data['ikn']
-X_valid['ikn'] = model_data['ikn']
-X_test['ikn'] = model_data['ikn']
+subgroups = [
+    'sex', 'immigration', 'birth_region', 'language', 'income', 'area_density',
+    'regimen', 'cancer_type', 'cancer_location', 'target', 'comorbidity', 'dialysis', 'ckd'
+]
+data_description_summary(
+    model_data, Y, tag, save_dir=f'{output_path}/tables', partition_method='cohort', target_event='AKI', subgroups=subgroups
+)
 
-# Initialize Training class 
-train_rnn = TrainRNN(dataset, output_path)
 
+# ### Feature Characteristic
 
 # In[15]:
 
 
-train_rnn.tune_and_train(run_bayesopt=True, run_training=True, run_calibration=True, 
-                         calibrate_pred=True, save_preds=True)
+df = prep.ohe.encode(model_data.copy(), verbose=False) # get original (non-normalized, non-imputed) data one-hot encoded
+df = df[train_mask].drop(columns=['ikn'])
+feature_summary(
+    df, save_dir=f'{output_path}/tables', deny_old_survey=True, event_dates=prep.event_dates[train_mask]
+).head(60)
 
 
-# ## Train ENS Model 
+# ## Train Models
+
+# ### Main ML Models
+
+# In[16]:
+
+
+train_ml = TrainML(X, Y, tag, output_path, n_jobs=processes)
+train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True)
+
+
+# ### RNN Model
 
 # In[17]:
+
+
+# Distrubution of the sequence lengths in the training set
+dist_seq_lengths = X_train.groupby(tag.loc[train_mask, 'ikn']).apply(len)
+dist_seq_lengths = dist_seq_lengths.clip(upper=dist_seq_lengths.quantile(q=0.999))
+fig, ax = plt.subplots(figsize=(15, 3))
+ax.grid(zorder=0)
+sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
+
+
+# In[18]:
+
+
+train_rnn = TrainRNN(X, Y, tag, output_path)
+train_rnn.tune_and_train(run_bayesopt=False, run_training=True, run_calibration=True, save_preds=True)
+
+
+# ### ENS Model 
+
+# In[108]:
 
 
 # combine rnn and ml predictions
@@ -182,10 +200,10 @@ preds_rnn = load_predictions(save_dir=f'{output_path}/predictions', filename='rn
 for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
 del preds_rnn
 # Initialize Training Class
-train_ens = TrainENS(dataset, output_path, preds)
+train_ens = TrainENS(X, Y, tag, output_path, preds)
 
 
-# In[18]:
+# In[109]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -193,116 +211,132 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # ## Evaluate Models
 
-# In[19]:
+# In[110]:
 
 
-eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
+preds, labels = train_ens.preds, train_ens.labels
 
 
-# In[52]:
+# In[22]:
+
+
+eval_models = Evaluate(output_path=output_path, preds=preds, labels=labels, orig_data=model_data)
+
+
+# In[23]:
 
 
 baseline_cols = ['regimen', 'baseline_eGFR']
-kwargs = {'baseline_cols': baseline_cols, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False}
+kwargs = {'baseline_cols': baseline_cols, 'display_ci': True, 'load_ci': False, 'save_ci': True}
 eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[53]:
+# In[24]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_location='lower left', figsize=(12,18), save=False)
-eval_models.plot_curves(curve_type='roc', legend_location='lower right', figsize=(12,18), save=False)
-eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,18), save=False) # cumulative distribution function of model prediction
-eval_models.plot_calibs(legend_location='upper left', figsize=(12,18), save=False) 
-# eval_models.plot_calibs(include_pred_hist=True, legend_location='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
+eval_models.plot_curves(curve_type='pr', legend_loc='lower left', save=False)
+eval_models.plot_curves(curve_type='roc', legend_loc='lower right', save=False)
+eval_models.plot_curves(curve_type='pred_cdf', save=False) # cumulative distribution function of model prediction
+eval_models.plot_calibs(legend_loc='upper left', save=False) 
+# eval_models.plot_calibs(include_pred_hist=True, legend_loc='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
 
 
 # ## Post-Training Analysis
 
-# ### Study Population Characteristics
-
-# In[90]:
-
-
-data_characteristic_summary(eval_models, save_dir=f'{output_path}/tables', partition='cohort', target_event='AKI',
-                            include_combordity=True, include_ckd=True, include_dialysis=True)
-
-
-# ### Feature Characteristic
-
-# In[70]:
-
-
-feature_summary(eval_models, prep, target_keyword=target_keyword, save_dir=f'{output_path}/tables').head(60)
-
-
 # ### Threshold Op Points
 
-# In[56]:
+# In[25]:
 
 
-pred_thresholds = np.arange(0, 1.01, 0.05)
-thresh_df = eval_models.operating_points(algorithm='ENS', points=pred_thresholds, metric='threshold')
+pred_thresholds = np.arange(0.05, 0.51, 0.05)
+perf_metrics = [
+    'warning_rate', 'precision', 'recall', 'NPV', 'specificity', 
+]
+thresh_df = eval_models.operating_points(points=pred_thresholds, alg='ENS', op_metric='threshold', perf_metrics=perf_metrics)
 thresh_df
 
 
 # ### All the Plots
 
-# In[57]:
+# In[26]:
 
 
-eval_models.all_plots_for_single_target(algorithm='ENS', target_event='AKI', save=True)
+eval_models.all_plots_for_single_target(alg='ENS', target_event='AKI')
 
 
-# ### Most important features
+# ### Most Important Features/Feature Groups
 
-# In[ ]:
-
-
-get_ipython().system('python scripts/perm_importance.py --adverse-event CAAKI')
+# In[27]:
 
 
-# In[17]:
+get_ipython().system('python scripts/feat_imp.py --adverse-event AKI --output-path {output_path} ')
+
+
+# In[28]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
 importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,5), top=10, importance_by='feature', padding={'pad_x0': 2.7})
 
 
-# ### Performance on Subgroups
-
-# In[20]:
+# In[29]:
 
 
-subgroups = {'all', 'age', 'sex', 'immigrant', 'income', 'regimen', 'cancer_location', 'days_since_starting', 'ckd'}
-df = subgroup_performance_summary('ENS', eval_models, pred_thresh=0.1, subgroups=subgroups, 
-                                  display_ci=False, load_ci=False, save_ci=False)
-df # @ pred threshold = 0.1
+get_ipython().system('python scripts/feat_imp.py --adverse-event AKI --output-path {output_path} --permute-group')
 
 
 # In[30]:
 
 
+# importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
+importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,5), top=10, importance_by='group', padding={'pad_x0': 1.2})
+
+
+# ### Performance on Subgroups
+
+# In[31]:
+
+
+subgroups = [
+    'all', 'age', 'sex', 'immigrant', 'language', 'arrival', 'income', 
+    'area_density', 'ckd', 'regimen', 'cancer_location', 'days_since_starting', 
+]
+perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate']}
+subgroup_performance = eval_models.get_perf_by_subgroup(
+    subgroups=subgroups, pred_thresh=0.1, alg='ENS', display_ci=True, load_ci=False, perf_kwargs=perf_kwargs
+)
+subgroup_performance
+
+
+# In[32]:
+
+
+subgroup_performance = pd.read_csv(f'{output_path}/tables/subgroup_performance.csv', index_col=[0,1], header=[0,1])
+groupings = {
+    'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Language', 'Neighborhood Income Quintile'],
+    'Treatment': ['Entire Test Cohort', 'Regimen', 'Topography ICD-0-3', 'Days Since Starting Regimen', 'CKD Prior to Treatment']
+}
+padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
+for name, subgroups in groupings.items():
+    subgroup_performance_plot(
+        subgroup_performance, target_event='AKI', subgroups=subgroups, padding=padding,
+        figsize=(12,30), save_dir=f'{output_path}/figures/subgroup_performance/{name}'
+    )
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
 # Event Rate = 0.15 means true alarms occur 15% of the time
-groupings = {'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Neighborhood Income Quintile'],
-             'Treatment': ['Entire Test Cohort', 'Regimen', 'Cancer Location', 'Days Since Starting Regimen', 'CKD Prior to Treatment']}
-padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
-for name, subgroups in groupings.items():
-    subgroup_performance_plot(df, target_event='AKI', subgroups=subgroups, padding=padding,
-                              figsize=(12,24), save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}')
 
 
 # ### Decision Curve Plot
 
-# In[78]:
+# In[33]:
 
 
-_ = eval_models.plot_decision_curves('ENS')
+result = eval_models.plot_decision_curves('ENS')
+result['AKI'].tail(n=100)
 
 
-# In[79]:
+# In[34]:
 
 
 get_hyperparameters(output_path)
@@ -310,7 +344,7 @@ get_hyperparameters(output_path)
 
 # # Chronic Kidney Disease
 
-# In[31]:
+# In[143]:
 
 
 adverse_event = 'ckd'
@@ -320,67 +354,98 @@ initialize_folders(output_path)
 
 # ## Prepare Data for Model Training
 
-# In[32]:
+# In[144]:
 
 
-prep = PrepDataCAN(adverse_event=adverse_event)
-model_data = prep.get_data(missing_thresh=80, verbose=True)
+prep = PrepDataCAN(adverse_event=adverse_event, target_keyword=target_keyword)
+model_data = prep.get_data(missing_thresh=80, include_comorbidity=True, verbose=True)
 model_data['next_eGFR'].hist(bins=100)
-print(f"Size of model_data: {model_data.shape}")
-print(f"Number of unique patients: {model_data['ikn'].nunique()}")
-mask = (model_data['next_eGFR'] < 60) | model_data['dialysis']
-N = model_data.loc[mask, 'ikn'].nunique()
-print(f"Number of unique patients that had Chronic Kidney Disease (CKD): {N}")
-kwargs = {'target_keyword': target_keyword, 'split_date': split_date}
-# NOTE: any changes to X_train, X_valid, etc will also be seen in dataset
-dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(prep.dummify_data(model_data.copy()), **kwargs)
+X, Y, tag = prep.split_and_transform_data(model_data, split_date=split_date)
+# remove sessions in model_data that were excluded during split_and_transform
+model_data = model_data.loc[tag.index]
 
 
-# In[33]:
+# In[37]:
 
 
-prep.get_label_distribution(Y_train, Y_valid, Y_test)
+prep.get_label_distribution(Y, tag, with_respect_to='sessions')
 
 
-# ## Train ML Models
-
-# In[19]:
+# In[38]:
 
 
-# Initialize Training class
-train_ml = TrainML(dataset, output_path, n_jobs=processes)
+prep.get_label_distribution(Y, tag, with_respect_to='patients')
 
 
-# In[20]:
+# In[145]:
 
 
-skip_alg = []
-train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True, skip_alg=skip_alg)
+# Convenience variables
+train_mask, valid_mask, test_mask = tag['split'] == 'Train', tag['split'] == 'Valid', tag['split'] == 'Test'
+X_train, X_valid, X_test = X[train_mask], X[valid_mask], X[test_mask]
+Y_train, Y_valid, Y_test = Y[train_mask], Y[valid_mask], Y[test_mask]
 
 
-# ## Train RNN Model
+# ### Study Characteristics
 
-# In[20]:
-
-
-# Include ikn to the input data (recall that any changes to X_train, X_valid, etc will also be seen in dataset)
-X_train['ikn'] = model_data['ikn']
-X_valid['ikn'] = model_data['ikn']
-X_test['ikn'] = model_data['ikn']
-
-# Initialize Training class 
-train_rnn = TrainRNN(dataset, output_path)
+# In[40]:
 
 
-# In[21]:
+subgroups = [
+    'sex', 'immigration', 'birth_region', 'language', 'income', 'area_density',
+    'regimen', 'cancer_type', 'cancer_location', 'target', 'comorbidity', 'dialysis', 'ckd'
+]
+data_description_summary(
+    model_data, Y, tag, save_dir=f'{output_path}/tables', partition_method='cohort', target_event='CKD', subgroups=subgroups
+)
 
 
-train_rnn.tune_and_train(run_bayesopt=True, run_training=True, run_calibration=True, save_preds=True)
+# ### Feature Characteristic
+
+# In[41]:
 
 
-# ## Train ENS Model 
+df = prep.ohe.encode(model_data.copy(), verbose=False) # get original (non-normalized, non-imputed) data one-hot encoded
+df = df[train_mask].drop(columns=['ikn'])
+feature_summary(
+    df, save_dir=f'{output_path}/tables', deny_old_survey=True, event_dates=prep.event_dates[train_mask]
+).head(60)
 
-# In[34]:
+
+# ## Train Models
+
+# ### Main ML Models
+
+# In[42]:
+
+
+train_ml = TrainML(X, Y, tag, output_path, n_jobs=processes)
+train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True)
+
+
+# ### RNN Model
+
+# In[43]:
+
+
+# Distrubution of the sequence lengths in the training set
+dist_seq_lengths = X_train.groupby(tag.loc[train_mask, 'ikn']).apply(len)
+dist_seq_lengths = dist_seq_lengths.clip(upper=dist_seq_lengths.quantile(q=0.999))
+fig, ax = plt.subplots(figsize=(15, 3))
+ax.grid(zorder=0)
+sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
+
+
+# In[44]:
+
+
+train_rnn = TrainRNN(X, Y, tag, output_path)
+train_rnn.tune_and_train(run_bayesopt=False, run_training=True, run_calibration=True, save_preds=True)
+
+
+# ### ENS Model 
+
+# In[148]:
 
 
 # combine rnn and ml predictions
@@ -389,10 +454,10 @@ preds_rnn = load_predictions(save_dir=f'{output_path}/predictions', filename='rn
 for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
 del preds_rnn
 # Initialize Training Class
-train_ens = TrainENS(dataset, output_path, preds)
+train_ens = TrainENS(X, Y, tag, output_path, preds)
 
 
-# In[35]:
+# In[149]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -400,118 +465,132 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # ## Evaluate Models
 
-# In[36]:
+# In[150]:
 
 
-eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
+preds, labels = train_ens.preds, train_ens.labels
 
 
-# In[99]:
+# In[48]:
+
+
+eval_models = Evaluate(output_path=output_path, preds=preds, labels=labels, orig_data=model_data)
+
+
+# In[49]:
 
 
 baseline_cols = ['regimen', 'baseline_eGFR']
-kwargs = {'get_baseline': True, 'baseline_cols': baseline_cols, 'display_ci': True, 'load_ci': False, 'save_ci': True, 'verbose': False}
+kwargs = {'baseline_cols': baseline_cols, 'display_ci': True, 'load_ci': False, 'save_ci': True}
 eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[100]:
+# In[50]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_location='upper right', figsize=(12,18))
-eval_models.plot_curves(curve_type='roc', legend_location='lower right', figsize=(12,18))
-eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,18)) # cumulative distribution function of model prediction
-eval_models.plot_calibs(legend_location='upper left', figsize=(12,18)) 
-# eval_models.plot_calibs(include_pred_hist=True, legend_location='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
+eval_models.plot_curves(curve_type='pr', legend_loc='lower left', save=False)
+eval_models.plot_curves(curve_type='roc', legend_loc='lower right', save=False)
+eval_models.plot_curves(curve_type='pred_cdf', save=False) # cumulative distribution function of model prediction
+eval_models.plot_calibs(legend_loc='upper left', save=False) 
+# eval_models.plot_calibs(include_pred_hist=True, legend_loc='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
 
 
 # ## Post-Training Analysis
 
-# ### Study Population Characteristics
-
-# In[101]:
-
-
-data_characteristic_summary(eval_models, save_dir=f'{output_path}/tables', partition='cohort', target_event='CKD',
-                            include_combordity=True, include_ckd=True, include_dialysis=True)
-
-
-# ### Feature Characteristic
-
-# In[102]:
-
-
-feature_summary(eval_models, prep, target_keyword=target_keyword, save_dir=f'{output_path}/tables').head(60)
-
-
 # ### Threshold Op Points
 
-# In[103]:
+# In[51]:
 
 
-pred_thresholds = np.arange(0, 1.01, 0.05)
-thresh_df = eval_models.operating_points(algorithm='ENS', points=pred_thresholds, metric='threshold')
+pred_thresholds = np.arange(0.05, 0.51, 0.05)
+perf_metrics = [
+    'warning_rate', 'precision', 'recall', 'NPV', 'specificity', 
+]
+thresh_df = eval_models.operating_points(points=pred_thresholds, alg='ENS', op_metric='threshold', perf_metrics=perf_metrics)
 thresh_df
 
 
 # ### All the Plots
 
-# In[104]:
+# In[52]:
 
 
-eval_models.all_plots_for_single_target(algorithm='ENS', target_event='CKD', save=True)
+eval_models.all_plots_for_single_target(alg='ENS', target_event='CKD')
 
 
-# ### Most important features
+# ### Most Important Features/Feature Groups
 
-# In[ ]:
-
-
-get_ipython().system('python scripts/perm_importance.py --adverse-event CACKD')
+# In[53]:
 
 
-# In[24]:
+get_ipython().system('python scripts/feat_imp.py --adverse-event CKD --output-path {output_path} ')
+
+
+# In[54]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
 importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,15), top=10, importance_by='feature', padding={'pad_x0': 2.7})
 
 
+# In[55]:
+
+
+get_ipython().system('python scripts/feat_imp.py --adverse-event CKD --output-path {output_path} --permute-group')
+
+
+# In[56]:
+
+
+# importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
+importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,15), top=10, importance_by='group', padding={'pad_x0': 1.2})
+
+
 # ### Performance on Subgroups
 
-# In[37]:
+# In[57]:
 
 
-subgroups = {'all', 'age', 'sex', 'immigrant', 'income', 'regimen', 'cancer_location', 'days_since_starting', 'ckd'}
-df = subgroup_performance_summary('ENS', eval_models, pred_thresh=[0.4, 0.25, 0.1], 
-                                  subgroups=subgroups, display_ci=False, load_ci=False, save_ci=False)
-df # @ pred threshold = 0.4
+subgroups = [
+    'all', 'age', 'sex', 'immigrant', 'language', 'arrival', 'income', 
+    'area_density', 'ckd', 'regimen', 'cancer_location', 'days_since_starting', 
+]
+perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate']}
+subgroup_performance = eval_models.get_perf_by_subgroup(
+    subgroups=subgroups, pred_thresh=0.1, alg='ENS', display_ci=True, load_ci=False, perf_kwargs=perf_kwargs
+)
+subgroup_performance
 
 
-# In[38]:
+# In[58]:
 
 
+subgroup_performance = pd.read_csv(f'{output_path}/tables/subgroup_performance.csv', index_col=[0,1], header=[0,1])
+groupings = {
+    'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Language', 'Neighborhood Income Quintile'],
+    'Treatment': ['Entire Test Cohort', 'Regimen', 'Topography ICD-0-3', 'Days Since Starting Regimen', 'CKD Prior to Treatment']
+}
+padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
+for name, subgroups in groupings.items():
+    subgroup_performance_plot(
+        subgroup_performance, target_event='CKD', subgroups=subgroups, padding=padding,
+        figsize=(12,30), save_dir=f'{output_path}/figures/subgroup_performance/{name}'
+    )
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
 # Event Rate = 0.15 means true alarms occur 15% of the time
-groupings = {'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Neighborhood Income Quintile'],
-             'Treatment': ['Entire Test Cohort', 'Regimen', 'Cancer Location', 'Days Since Starting Regimen', 'CKD Prior to Treatment']}
-padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
-for name, subgroups in groupings.items():
-    for target_event in eval_models.target_events:
-        print(f'Plotted {name} Subgroup Performance Plot for {target_event}')
-        subgroup_performance_plot(df, target_event=target_event, subgroups=subgroups, padding=padding,
-                                  figsize=(12,24), save=True, save_dir=f'{output_path}/figures/subgroup_performance/{name}')
 
 
 # ### Decision Curve Plot
 
-# In[107]:
+# In[59]:
 
 
-eval_models.plot_decision_curves('ENS')
+result = eval_models.plot_decision_curves('ENS')
+result['CKD'].tail(n=100)
 
 
-# In[108]:
+# In[60]:
 
 
 get_hyperparameters(output_path)
@@ -521,21 +600,21 @@ get_hyperparameters(output_path)
 
 # ## CKD + AKI Summaries
 
-# In[127]:
+# In[61]:
 
 
 from src.prep_data import PrepData
-aki_prep = PrepDataCAN(adverse_event='aki')
-ckd_prep = PrepDataCAN(adverse_event='ckd')
+aki_prep = PrepDataCAN(adverse_event='aki', target_keyword=target_keyword)
+ckd_prep = PrepDataCAN(adverse_event='ckd', target_keyword=target_keyword)
 
 # get the union of ckd and aki dataset
-ckd_data = ckd_prep.get_data(missing_thresh=80)
-aki_data = aki_prep.get_data(missing_thresh=80)
+ckd_data = ckd_prep.get_data(missing_thresh=80, include_comorbidity=True)
+aki_data = aki_prep.get_data(missing_thresh=80, include_comorbidity=True)
 df = pd.concat([aki_data, ckd_data])
 df = df.reset_index().drop_duplicates(subset=['index']).set_index('index')
 
 # set up a new prep object and combine the event_dates
-prep = PrepData()
+prep = PrepData(target_keyword=target_keyword)
 event_dates = pd.concat([aki_prep.event_dates, ckd_prep.event_dates])
 event_dates = event_dates.reset_index().drop_duplicates(subset=['index']).set_index('index')
 # aki and ckd may have different patient first visit dates in their dataset
@@ -551,34 +630,40 @@ cols = df.columns
 cols = cols[cols.str.contains('_is_missing')]
 df[cols] = df[cols].fillna(False) 
 
-# set up the labels
+# set up the data
 create_labels = lambda target: pd.concat([aki_prep.convert_labels(target), ckd_prep.convert_labels(target)], axis=1)
-kwargs = {'target_keyword': target_keyword, 'split_date': split_date, 'impute': False, 
-          'normalize': False, 'verbose': False}
-_, _, _, Y_train, Y_valid, Y_test = prep.split_data(df, **kwargs)
-labels = {'Train': create_labels(Y_train), 'Valid': create_labels(Y_valid), 'Test': create_labels(Y_test)}
-
-# set up the Evaluate object
-pred_placeholder = {'Test': {}}
-eval_models = Evaluate(output_path='placeholder', preds=pred_placeholder, labels=labels, orig_data=df)
+kwargs = {'split_date': split_date, 'impute': False, 'normalize': False, 'verbose': False, 'ohe_kwargs': {'verbose': False}}
+X, Y, tag = prep.split_and_transform_data(df, **kwargs)
+Y = create_labels(Y)
+df = df.loc[tag.index]
+train_mask = tag['split'] == 'Train'
 
 
-# In[128]:
+# In[62]:
 
 
-data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models', partition='cohort', 
-                            include_combordity=True, include_ckd=True, include_dialysis=True)
+subgroups = [
+    'sex', 'immigration', 'birth_region', 'language', 'income', 'area_density',
+    'regimen', 'cancer_type', 'cancer_location', 'target', 'comorbidity', 'dialysis', 'ckd'
+]
+data_description_summary(
+    df, Y, tag, save_dir=f'{main_dir}/models', partition_method='cohort', target_event='CKD', subgroups=subgroups
+)
 
 
-# In[129]:
+# In[63]:
 
 
-feature_summary(eval_models, prep, target_keyword=target_keyword, save_dir=f'{main_dir}/models').head(60)
+df = prep.ohe.encode(df.copy(), verbose=False) # get original (non-normalized, non-imputed) data one-hot encoded
+df = df[train_mask].drop(columns=['ikn'])
+feature_summary(
+    df, save_dir=f'{main_dir}/models', deny_old_survey=True, event_dates=prep.event_dates[train_mask]
+).head(60)
 
 
 # ## Spline Baseline Model
 
-# In[13]:
+# In[64]:
 
 
 from sklearn.preprocessing import StandardScaler
@@ -587,76 +672,84 @@ from src.evaluate import EvaluateBaselineModel
 from src.visualize import get_bbox
 
 
-# In[28]:
+# In[70]:
 
 
-class End2EndPipeline():
-    def __init__(self, event='ckd', algorithm='SPLINE'):
+class BaselinePipeline():
+    def __init__(self, event='ckd', alg='SPLINE'):
         Trains = {'LOESS': TrainLOESSModel, 'SPLINE': TrainPolynomialModel, 'POLY': TrainPolynomialModel}
         self.event = event
-        self.algorithm = algorithm
-        self.Train = Trains[algorithm]
-        self.base_col = base_col = 'baseline_eGFR'
+        self.alg = alg
+        self.Train = Trains[alg]
+        self.base_col = 'baseline_eGFR'
         self.regimen_subgroups = {'ALL', 'cisp(rt)', 'cisp(rt-w)'}
         self.output_path = f'{root_path}/{can_folder}/models/{event.upper()}'
         self.target_keyword = 'SCr|dialysis|next'
         
     def get_dataset(self):
-        prep = PrepDataCAN(adverse_event=self.event)
-        data = prep.get_data(missing_thresh=80)
-        data, clip_thresholds = prep.clip_outliers(data, lower_percentile=0.001, upper_percentile=0.999)
-        kwargs = {'target_keyword': self.target_keyword, 'split_date': split_date, 'verbose': False}
-        dataset = prep.split_data(prep.dummify_data(data.copy()), **kwargs)
-        return data, dataset
+        prep = PrepDataCAN(adverse_event=self.event, target_keyword=self.target_keyword)
+        model_data = prep.get_data(missing_thresh=80, include_comorbidity=True)
+        X, Y, tag = prep.split_and_transform_data(
+            model_data, split_date=split_date, clip=False, verbose=False, ohe_kwargs={'verbose': False}
+        )
+        model_data = model_data.loc[tag.index]
+        return model_data, X, Y, tag
     
-    def train_and_eval_model(self, dataset, split='Test', name=None, 
-                             task_type='classification', best_param_filename=''):
+    def train_and_eval_model(
+        self, 
+        X, 
+        Y,
+        tag, 
+        split='Test', 
+        name=None, 
+        task_type='classification', 
+        best_param_filename=''
+    ):
         if name is None: name = self.event.upper()
-        print(f'Training {self.algorithm} for {name}')
-        train = self.Train(dataset, self.output_path, base_col=self.base_col, algorithm=self.algorithm, task_type=task_type)
+        print(f'Training {self.alg} for {name}')
+        
+        train = self.Train(X, Y, tag, self.output_path, base_col=self.base_col, alg=self.alg, task_type=task_type)
         best_param = train.bayesopt(filename=best_param_filename, verbose=0)
         model = train.train_model(**best_param)
 
-        print(f'Evaluating {self.algorithm} for {name}')
-        (preds, preds_min, preds_max), Y = train.predict(model, split=split)
+        print(f'Evaluating {self.alg} for {name}')
+        preds, preds_min, preds_max = train.predict(model, split=split)
 
-        return (preds, preds_min, preds_max), Y
+        return preds, preds_min, preds_max
     
     def run(self, split='Test'):
-        data, dataset = self.get_dataset()
-        (preds, preds_min, preds_max), Y = self.train_and_eval_model(dataset, split=split)
-        data = data.loc[Y.index]
+        orig_data, X, Y, tag = self.get_dataset()
+        preds, preds_min, preds_max = self.train_and_eval_model(X, Y, tag, split=split)
+        mask = tag['split'] == split
+        data = orig_data[mask]
+        Y = Y[mask]
+        
         for i, regimen in enumerate(self.regimen_subgroups):
             df = data if regimen == 'ALL' else data[data['regimen'] == regimen]
             idxs = df.index
 
-            predictions, labels = {split: {self.algorithm: preds.loc[idxs]}},  {split: Y.loc[idxs]}
-            eval_loess = EvaluateBaselineModel(base_col=self.base_col, preds_min=preds_min.loc[idxs], preds_max=preds_max.loc[idxs], 
-                                               output_path=self.output_path, preds=predictions, labels=labels, orig_data=df)
+            predictions, labels = {split: {self.alg: preds.loc[idxs]}},  {split: Y.loc[idxs]}
+            eval_loess = EvaluateBaselineModel(
+                base_col=self.base_col, preds_min=preds_min.loc[idxs], preds_max=preds_max.loc[idxs], 
+                output_path=self.output_path, preds=predictions, labels=labels, orig_data=df
+            )
         
-            print(f'{self.algorithm} plot for regimen {regimen}')
-            eval_loess.all_plots(algorithm=self.algorithm, filename=f'{regimen}_{self.algorithm}')
-            
-        return data, preds
+            print(f'{self.alg} plot for regimen {regimen}')
+            eval_loess.all_plots(alg=self.alg, filename=f'{regimen}_{self.alg}')
+            plt.show()
     
-class End2EndPipelineRegression(End2EndPipeline):
-    def __init__(self, event='next_eGFR', algorithm='SPLINE'):
-        super().__init__(event='ckd', algorithm=algorithm)
+class RegressionBaselinePipeline(BaselinePipeline):
+    def __init__(self, event='next_eGFR', alg='SPLINE'):
+        super().__init__(event='ckd', alg=alg)
         self.reg_event = event
         self.name = 'Next eGFR'
     
-    def scale_targets(self, dataset, data):
-        cols = [self.reg_event]
-        X_train, X_valid, X_test, _, _, _ = dataset
-        Y_train, Y_valid, Y_test =  data.loc[X_train.index, cols], data.loc[X_valid.index, cols], data.loc[X_test.index, cols]
-
+    def scale_targets(self, Y, tag):
         scaler = StandardScaler()
-        Y_train[:] = scaler.fit_transform(Y_train)
-        Y_valid[:] = scaler.transform(Y_valid)
-        Y_test[:] = scaler.transform(Y_test)
-
-        dataset = (X_train, X_valid, X_test, Y_train, Y_valid, Y_test)
-        return dataset, scaler
+        Y[tag['split'] == 'Train'] = scaler.fit_transform(Y[tag['split'] == 'Train'])
+        Y[tag['split'] == 'Valid'] = scaler.transform(Y[tag['split'] == 'Valid'])
+        Y[tag['split'] == 'Test'] = scaler.transform(Y[tag['split'] == 'Test'])
+        return Y, scaler
     
     def inverse_scale_preds(self, predictions, scaler):
         preds, preds_min, preds_max = predictions
@@ -666,187 +759,185 @@ class End2EndPipelineRegression(End2EndPipeline):
         return preds, preds_min, preds_max
 
     def run(self, split='Test'):
-        data, dataset = self.get_dataset()
-        dataset, scaler = self.scale_targets(dataset, data)
+        orig_data, X, Y, tag = self.get_dataset()
+        Y, scaler = self.scale_targets(orig_data[[self.reg_event]].copy(), tag)
         kwargs = {'split': split, 'name': self.name, 'task_type': 'regression', 
-                  'best_param_filename': f'{self.algorithm}_regressor_best_param'}
-        predictions, Y = self.train_and_eval_model(dataset, **kwargs)
+                  'best_param_filename': f'{self.alg}_regressor_best_param'}
+        predictions = self.train_and_eval_model(X, Y, tag, **kwargs)
         (preds, preds_min, preds_max) = self.inverse_scale_preds(predictions, scaler)
+        
+        mask = tag['split'] == split
+        data = orig_data[mask]
+        Y = Y[mask]
         
         fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(12,12))
         axes = axes.flatten()
         plt.subplots_adjust(hspace=0.2, wspace=0.2)
         
-        data = data.loc[Y.index]
         for i, regimen in enumerate(self.regimen_subgroups):
             df = data if regimen == 'ALL' else data[data['regimen'] == regimen]
             idxs = df.index
 
-            predictions, labels = {split: {self.algorithm: preds.loc[idxs]}},  {split: Y.loc[idxs]}
-            eval_loess = EvaluateBaselineModel(base_col=self.base_col, preds_min=preds_min.loc[idxs], preds_max=preds_max.loc[idxs], 
-                                               output_path=self.output_path, preds=predictions, labels=labels, orig_data=df)
+            predictions, labels = {split: {self.alg: preds.loc[idxs]}},  {split: Y.loc[idxs]}
+            eval_loess = EvaluateBaselineModel(
+                base_col=self.base_col, preds_min=preds_min.loc[idxs], preds_max=preds_max.loc[idxs], 
+                output_path=self.output_path, preds=predictions, labels=labels, orig_data=df
+            )
         
-            eval_loess.plot_loess(axes[i], self.algorithm, self.reg_event, split=split)
+            eval_loess.plot_loess(axes[i], self.alg, self.reg_event, split=split)
 
-            filename = f'{self.output_path}/figures/baseline/{self.reg_event}_{regimen}_{self.algorithm}.jpg'
+            filename = f'{self.output_path}/figures/baseline/{self.reg_event}_{regimen}_{self.alg}.jpg'
             fig.savefig(filename, bbox_inches=get_bbox(axes[i], fig), dpi=300) 
             axes[i].set_title(regimen)
             
-        filename = f'{self.output_path}/figures/baseline/{self.reg_event}_{self.algorithm}.jpg'
+        filename = f'{self.output_path}/figures/baseline/{self.reg_event}_{self.alg}.jpg'
         plt.savefig(filename, bbox_inches='tight', dpi=300)
 
 
-# In[21]:
+# In[71]:
 
 
-pipeline = End2EndPipeline(event='ckd')
+pipeline = BaselinePipeline(event='ckd')
 pipeline.run()
 
 
-# In[22]:
+# In[72]:
 
 
-pipeline = End2EndPipeline(event='aki')
-pipeline.run()
-
-
-# In[29]:
-
-
-pipeline = End2EndPipelineRegression(event='next_eGFR')
+pipeline = RegressionBaselinePipeline(event='next_eGFR')
 pipeline.run()
 
 
 # ### Save the CKD Spline Baseline Model as a Threshold Table
 
-# In[30]:
+# In[74]:
 
 
-pipeline = End2EndPipeline(event='ckd')
-data, dataset = pipeline.get_dataset()
-(preds, preds_min, preds_max), Y = pipeline.train_and_eval_model(dataset, split='Train')
+pipeline = BaselinePipeline(event='ckd')
+orig_data, X, Y, tag = pipeline.get_dataset()
+preds, preds_min, preds_max = pipeline.train_and_eval_model(X, Y, tag, split='Train')
 
 
-# In[62]:
+# In[80]:
 
 
-df = pd.concat([preds, data.loc[preds.index, pipeline.base_col]], axis=1)
-df = df.sort_values('baseline_eGFR')
-df = df.round(3)
-df['baseline_eGFR'] = df['baseline_eGFR'].round(1)
-df = df.drop_duplicates('baseline_eGFR')
+base_col = pipeline.base_col
+base = orig_data.loc[preds.index, base_col]
+df = pd.concat([preds.round(3), base.round(1)], axis=1).sort_values(by=base_col)
+df = df.drop_duplicates(base_col)
 df.to_csv(f'{output_path}/SPLINE_model.csv', index=False)
 
 
 # ## Motwani Score Based Model
 
-# In[144]:
+# In[96]:
 
 
-df = prep.get_data()
+prep = PrepDataCAN(adverse_event='aki', target_keyword=target_keyword)
+df = prep.get_data(include_comorbidity=True)
+X, Y, tag = prep.split_and_transform_data(df, split_date=split_date, verbose=False, ohe_kwargs={'verbose': False})
 print(f'Size of data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
 df['cisplatin_dosage'] *= df['body_surface_area'] # convert from mg/m^2 to mg
-df = df.loc[Y_test.index]
+df = df.loc[tag['split']=='Test']
 print(f'Size of test data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
-df = df[df['baseline_albumin_count'].notnull()]
-print(f'Size of test data with albumin count = {len(df)}, Number of patients = {df["ikn"].nunique()}')
-df = df[df['days_since_starting_chemo'] == 0] # very first treatment
+df = df[df['baseline_albumin_value'].notnull()]
+print(f'Size of test data with albumin = {len(df)}, Number of patients = {df["ikn"].nunique()}')
+df = df.query('days_since_starting_chemo == 0') # very first treatment
 print(f'Size of test data with only first day chemos = {len(df)}, Number of patients = {df["ikn"].nunique()}')
 
 
-# In[145]:
+# In[97]:
 
 
 def compute_score(data):
-    data['score'] = 0
-    data.loc[data['age'].between(61, 70), 'score'] += 1.5
-    data.loc[data['age'] > 70, 'score'] += 2.5
-    data.loc[data['baseline_albumin_count'] < 35, 'score'] += 2.0
-    data.loc[data['cisplatin_dosage'].between(101, 150), 'score'] += 1.0
-    data.loc[data['cisplatin_dosage'] > 150, 'score'] += 3.0
-    data.loc[data['hypertension'], 'score'] += 2.0
-    data['score'] /= data['score'].max()
-    return data['score']
+    score = pd.Series(0, index=data.index)
+    score[data['age'].between(61, 70)] += 1.5
+    score[data['age'] > 70] += 2.5
+    score[data['baseline_albumin_value'] < 35] += 2.0
+    score[data['cisplatin_dosage'].between(101, 150)] += 1.0
+    score[data['cisplatin_dosage'] > 150] += 3.0
+    score[data['hypertension']] += 2.0
+    score /= score.max()
+    return score
 
 
-# In[151]:
+# In[113]:
 
 
-split = 'Test'
 score = compute_score(df)
-labels = {split: Y_test.loc[df.index]}
-preds = {split: {'ENS': train_ens.preds[split]['ENS'].loc[df.index],
-                 'MSB': pd.DataFrame({col: score for col in Y_test.columns})}}
+labels = {'Test': Y.loc[df.index]}
+preds = {'Test': {'ENS': train_ens.preds['Test']['ENS'].loc[df.index], 'MSB': pd.DataFrame({'AKI': score})}}
 eval_motwani_model = Evaluate(output_path='', preds=preds, labels=labels, orig_data=df)
 
 
-# In[152]:
+# In[115]:
 
 
 # label distribtuion
-labels[split].apply(pd.value_counts)
+labels['Test'].apply(pd.value_counts)
 
 
-# In[153]:
+# In[118]:
 
 
-kwargs = {'algorithms': ['ENS', 'MSB'], 'splits': ['Test'], 'display_ci': True, 'save_score': False}
+kwargs = {'algs': ['ENS', 'MSB'], 'splits': ['Test'], 'display_ci': True, 'save_score': False}
 result = eval_motwani_model.get_evaluation_scores(**kwargs)
 result
 
 
-# In[154]:
+# In[120]:
 
 
-eval_motwani_model.all_plots_for_single_target(algorithm='MSB', target_event='AKI', split='Test',
-                                               n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
+eval_motwani_model.all_plots_for_single_target(alg='MSB', target_event='AKI', n_bins=20, figsize=(12,16), save=False)
 
 
-# In[155]:
+# In[126]:
 
 
 points = np.arange(0, 8.6, 0.5)/8.5 # 8.5 is the highest score possible, 0 is lowest score possible
-eval_motwani_model.operating_points('MSB', points, metric='threshold', target_events=['AKI'], split='Test', save=False)
+eval_motwani_model.operating_points(
+    points, op_metric='threshold', alg='MSB', target_events=['AKI'], 
+    perf_metrics=['warning_rate', 'precision', 'recall', 'NPV', 'specificity'], save=False
+)
 
 
 # ### Compare with ENS
 
-# In[156]:
+# In[127]:
 
 
-eval_motwani_model.all_plots_for_single_target(algorithm='ENS', target_event='AKI', split='Test',
-                                               n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
+eval_motwani_model.all_plots_for_single_target(alg='ENS', target_event='AKI', n_bins=20,figsize=(12,16), save=False)
 
 
-# In[157]:
+# In[128]:
 
 
 points = np.arange(0, 8.6, 0.5)/8.5 # 8.5 is the highest score possible, 0 is lowest score possible
-eval_motwani_model.operating_points('ENS', points, metric='threshold', target_events=['AKI'], split='Test', save=False)
+eval_motwani_model.operating_points(
+    points, op_metric='threshold', alg='ENS', target_events=['AKI'], 
+    perf_metrics=['warning_rate', 'precision', 'recall', 'NPV', 'specificity'], save=False
+)
 
 
 # ## Missingness By Splits
 
-# In[158]:
+# In[135]:
 
 
 from src.utility import get_nmissing_by_splits
 
 
-# In[159]:
+# In[141]:
 
 
 # Acute Kidney Injury
 missing = get_nmissing_by_splits(model_data, train_ens.labels)
-missing.sort_values(by=(f'Test (N={len(Y_test)})', 'Missing (N)'), ascending=False)
+missing.sort_values(by=(f'Test (N={sum(test_mask)})', 'Missing (N)'), ascending=False)
 
 
-# In[167]:
+# In[151]:
 
 
 # Chronic Kidney Disease
 missing = get_nmissing_by_splits(model_data, train_ens.labels)
-missing.sort_values(by=(f'Test (N={len(Y_test)})', 'Missing (N)'), ascending=False)
-
-
-# In[ ]:
+missing.sort_values(by=(f'Test (N={sum(test_mask)})', 'Missing (N)'), ascending=False)

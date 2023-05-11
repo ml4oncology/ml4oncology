@@ -34,31 +34,45 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from src.config import (nn_solvers, nn_activations)
-from src.config import (calib_param, calib_param_logistic)
-from src.utility import (load_ml_model, bootstrap_sample)
+from src.conf_int import bootstrap_sample
+from src.config import (
+    nn_solvers, nn_activations,
+    calib_param, calib_param_logistic
+)
+from src.utility import load_ml_model
 
 class MLModels:
     """Machine Learning Models
     """
-    def __init__(self, n_jobs=16):
+    def __init__(self, n_jobs=16, random_state=42, tol=1e-3, custom_params=None):
         self.n_jobs = n_jobs
+        self.random_state = random_state
+        self.tol = tol
+        
         self.models = {
-            "LR": LogisticRegression, # L2 Regularized Logistic Regression
+            "LR": LogisticRegression, # Regularized Logistic Regression
             "XGB": XGBClassifier, # Extreme Gradient Boostring
             "RF": RandomForestClassifier,
             "NN": MLPClassifier  # Multilayer perceptron (aka neural network)
         }
+        
+        if custom_params is None: 
+            custom_params = {}
+        for model in self.models:
+            custom_params[model] = custom_params.get(model, {})
+        self.custom_params = custom_params
     
     def get_LR_model(self, C=1.0, max_iter=100):
         params = {
             'C': C, 
-            'class_weight': 'balanced',
             'max_iter': max_iter,
-            'solver': 'sag',
-            'tol': 1e-3,
-            'random_state': 42
+            'solver': 'saga',
+            'class_weight': 'balanced',
+            'penalty': 'l2',
+            'tol': self.tol,
+            'random_state': self.random_state,
         }
+        params.update(self.custom_params['LR'])
         model = MultiOutputClassifier(
             CalibratedClassifierCV(
                 self.models['LR'](**params), 
@@ -85,10 +99,10 @@ class MLModels:
             'reg_lambda': reg_lambda,
             'min_child_weight': 6,
             'verbosity': 0,
-            'use_label_encoder': False,
-            'random_state': 42,
+            'random_state': self.random_state,
             'n_jobs': self.n_jobs
         }
+        params.update(self.custom_params['XGB'])
         model = MultiOutputClassifier(
             CalibratedClassifierCV(
                 self.models['XGB'](**params), 
@@ -104,9 +118,10 @@ class MLModels:
             'max_features': max_features,
             'min_samples_leaf': 6, # can't allow leaf node to have less than 6 samples
             'class_weight': 'balanced_subsample',
-            'random_state': 42,
+            'random_state': self.random_state,
             'n_jobs': self.n_jobs
         }
+        params.update(self.custom_params['RF'])
         model = MultiOutputClassifier(
             CalibratedClassifierCV(
                 self.models['RF'](**params), 
@@ -138,9 +153,10 @@ class MLModels:
             'activation': nn_activations[int(np.floor(activation))],
             'max_iter': max_iter,
             'verbose': verbose,
-            'tol': 1e-3,
-            'random_state': 42
+            'tol': self.tol,
+            'random_state': self.random_state
         }
+        params.update(self.custom_params['NN'])
         model = self.models['NN'](**params)
         return model
     
@@ -202,13 +218,13 @@ class IsotonicCalibrator:
         self.regressor = {target_event: IsotonicRegression(out_of_bounds='clip')
                           for target_event in self.target_events}
     
-    def load_model(self, model_dir, algorithm):
-        self.regressor = load_ml_model(model_dir, algorithm, name='calibrator') 
+    def load_model(self, model_dir, alg):
+        self.regressor = load_ml_model(model_dir, alg, name='calibrator') 
         assert all(target_event in self.regressor 
                    for target_event in self.target_events)
         
-    def save_model(self, model_dir, algorithm):
-        model_filename = f'{model_dir}/{algorithm}_calibrator.pkl'
+    def save_model(self, model_dir, alg):
+        model_filename = f'{model_dir}/{alg}_calibrator.pkl'
         with open(model_filename, 'wb') as file:
             pickle.dump(self.regressor, file)
         
@@ -221,7 +237,7 @@ class IsotonicCalibrator:
         
     def predict(self, pred_prob):
         result = []
-        for target_event, predictions in pred_prob.iteritems():
+        for target_event, predictions in pred_prob.items():
             try:
                 result.append(self.regressor[target_event].predict(predictions))
             except AttributeError as e:
@@ -260,7 +276,7 @@ class BaselineModel:
         raise NotImplementedError
         
     def fit(self, x, Y):
-        for target_event, y in Y.iteritems():
+        for target_event, y in Y.items():
             self.models[target_event] = self._fit(x, y)
         self.target_events = Y.columns.tolist()
         
@@ -287,7 +303,7 @@ class LOESSModel(BaselineModel):
     def _predict(self, model, x):
         return model.predict(x).values
     
-    def _predict_with_confidence_interval(self, target_event, x):
+    def _predict_with_confidence_interval(self, target_event, x, **kwargs):
         model = self.models[target_event]
         pred = model.predict(x, stderror=True)
         ci = pred.confidence(0.05)
@@ -300,11 +316,11 @@ class PolynomialModel(BaselineModel):
     - SPLINE: B-spline basis functions (piecewise polynomials)
     - POLY: pure polynomials
     """
-    def __init__(self, algorithm, task_type, **params):
+    def __init__(self, alg, task_type, **params):
         super().__init__(**params)
         poly_models = {'SPLINE': SplineTransformer, 'POLY': PolynomialFeatures}
         reg_models = {'regression': Ridge, 'classification': LogisticRegression}
-        self.poly_model = poly_models[algorithm]
+        self.poly_model = poly_models[alg]
         self.reg_model = reg_models[task_type]
         self.task_type = task_type
         

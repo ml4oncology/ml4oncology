@@ -14,3 +14,10 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
+import logging
+
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s %(levelname)s:%(message)s', 
+    datefmt='%I:%M:%S'
+)

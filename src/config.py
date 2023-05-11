@@ -18,12 +18,11 @@ TERMS OF USE:
 root_path = 'XXXXX'
 share_path = 'XXXXX'
 sas_folder = 'XXXXX'
-sas_folder2 = 'XXXXXX'
-regiments_folder = 'XXXXX'
+sas_folder2 = 'XXXXX'
+regimens_folder = 'XXXXX'
 cyto_folder = 'CYTOPENIA' # Cytopenia folder = 'CYTOPENIA'
 acu_folder = 'PROACCT' # Acute care use folder = 'PROACCT' (PRediction of Acute Care use during Cancer Treatment)
 can_folder = 'CAN' # Cisplatin-associated nephrotoxicity folder = 'CAN'
-symp_folder = 'SYMPTOM' # Symptom Deteroriation folder = 'SYMPTOM'
 death_folder = 'DEATH' # Death folder = 'DEATH'
 reco_folder = 'TRREKO' # Recommender folder = 'TRREKO' (TReatment RECOmmender)
 
@@ -35,23 +34,19 @@ max_chemo_date = '2020-06-30' # final date of chemo cohort
 # Main Blood Types and Low Blood Count Thresholds
 blood_types = {
     'neutrophil': {
-        'cytopenia_threshold': 1.5,  # cytopenia = low blood count
         'cytopenia_name': 'Neutropenia',
         'unit': '10^9/L'
     },
     'hemoglobin': {
-        'cytopenia_threshold': 100,
         'cytopenia_name': 'Anemia',
         'unit': 'g/L'
     }, 
     'platelet': {
-        'cytopenia_threshold': 75,
         'cytopenia_name': 'Thrombocytopenia',
         'unit': '10^9/L'
     }
 }
-
-cytopenia_gradings = {
+cytopenia_grades = {
     'Grade 2': {
         'Neutropenia': 1.5, 
         'Anemia': 100, 
@@ -150,117 +145,167 @@ all_observations = {
     '14196-0': 'reticulocyte',
     '2951-2': 'sodium'
 }
-observation_cols = [f'baseline_{observation}_count' for observation in set(all_observations.values())]
-observation_change_cols = [col.replace('count', 'change') for col in observation_cols]
+observation_cols = [f'baseline_{observation}_value' for observation in set(all_observations.values())]
+observation_change_cols = [col.replace('value', 'change') for col in observation_cols]
 
 # Cancer Location/Cancer Type
-# legacy code
-cancer_code_specific_mapping = {
-    'C421': 'Bone Marrow',
-    'C209': 'Rectum',
-    'C341': 'Lung (Upper Lobe)',
-    'C779': 'Lymph Node',
-    'C569': 'Ovary',
-    'C187': 'Colon (Sigmoid)', # sigmoid colon: last section of the bowel - the part that attaches to the rectum
-    'C619': 'Prostate Gland',
-    'C502': 'Breast (Upper-inner Quadrant)',
-    'C504': 'Breast (Upper-outer Quadrant)',
-    'C508': 'Breast (Overlapping Lesion)', # lesion: an area of tissue that has been damaged through injury/disease
-    'C180': 'Colon (Cecum)', # cecum: pouch that forms the first part of the large intestine
-    'C541': 'Endometrium', # mucous membrane lining the uterus
-    'C250': 'Pancreas (Head)',
-    '81403': 'Adenocarcinoma', # originate in mucous glands inside of organs (e.g. lungs, colon, breasts)
-    '85003': 'Breast Cancer (IDC)', # IDC: Invasive Ductal Carcinoma
-                                   # originate in milk duct and invade breast tissue outside the duct
-    '96803': 'Malignant Lymphoma (DLBCL)', # DLBCL: Diffuse Large B-cell Lymphoma
-                                          # originate  in white blood cell called lymphocytes
-    '97323': 'Plasma Cell Cancer (MM)', # MM: Multiple Myeloma
-    '84413': 'Ovarian/Pancreatic Cancer (SC)', # SC: Serous Cystadenocarcinoma
-                                              # primarily in the ovary, rarely in the pancreas
-    '80413': 'Epithelial Cancer (Small Cell)', # primarily in the lung, sometimes in cervix, prostate, GI tract 
-    '84803': 'Colon Cancer (MA)', # MA: Mucinous Adenocarcinoma
-    '83803': 'Uterine Cancer (EA)', # EA: Endometrioid Adenocarcinoma
-    '80703': 'Skin Cancer (SCC)', # SCC: Squamous Cell Carcinoma
-    '80103': 'Epithelial Cancer (NOS)', # NOS: Not Otherwise Specified
-    '94403': 'Brain/Spinal Cancer (GBM)', # GBM: Glioblastoma
-    '81203': 'Tansitional Cell Cancer' # Can occur in kidney, bladder, ureter, urethra, urachus
-}
-
 cancer_code_mapping = {
     'C00': 'Lip',
-    'C01': 'Tongue - Base',
-    'C02': 'Tongue - Other',
+    'C01': 'Base of tongue',
+    'C02': 'Other and unspecified parts of tongue',
     'C03': 'Gum',
-    'C04': 'Mouth - Floor',
+    'C04': 'Floor of mouth',
     'C05': 'Palate',
-    'C06': 'Mouth - Other',
-    'C07': 'Parotid Gland',
-    'C08': 'Salivary Gland - Other',
+    'C06': 'Other and unspecified parts of mouth',
+    'C07': 'Parotid gland',
+    'C08': 'Other and unspecified major salivary glands',
     'C09': 'Tonsil',
     'C10': 'Oropharynx',
     'C11': 'Nasopharynx',
-    'C12': 'Pyriform Sinus',
+    'C12': 'Pyriform sinus',
     'C13': 'Hypopharynx',
-    'C14': 'Pharynx - Other', # and other lip, oral cavity sites
+    'C14': 'Other and ill-defined sites in lip, oral cavity, and pharynx',
     'C15': 'Esophagus',
     'C16': 'Stomach',
-    'C17': 'Small Intestine',
+    'C17': 'Small intestine',
     'C18': 'Colon',
-    'C19': 'Rectosigmoid Junction',
+    'C19': 'Rectosigmoid junction',
     'C20': 'Rectum',
-    'C21': 'Anus', # and anal canal
-    'C22': 'Liver', # and intrahepatic bile ducts
+    'C21': 'Anus and anal canal',
+    'C22': 'Liver and intrahepatic bile ducts',
     'C23': 'Gallbladder',
-    'C24': 'Biliary Tract - Other',
+    'C24': 'Other and unspecified parts of biliary tract',
     'C25': 'Pancreas',
-    'C26': 'Digestive Organs - Other',
-    'C30': 'Nasal Cavity', # and middle ear
-    'C31': 'Accessory Sinuses',
+    'C26': 'Other and ill-defined digestive organs',
+    'C30': 'Nasal cavity and middle ear',
+    'C31': 'Accessory sinuses',
     'C32': 'Larynx',
     'C33': 'Trachea',
-    'C34': 'Lung', # and bronchus
+    'C34': 'Bronchus and lung',
     'C37': 'Thymus',
-    'C38': 'Heart', # and mediastinum, pleura
-    'C40': 'Bones - Limbs', # and joints, articular cartilage of limbs
-    'C41': 'Bones - Other', # and other joints, articular cartilage sites
+    'C38': 'Heart, mediastinum, and pleura',
+    'C40': 'Bones, joints, and articular cartilage of limbs',
+    'C41': 'Bones, joints, and articular cartilage of other and unspecified sites',
     'C44': 'Skin',
-    'C47': 'Peripheral Nerves', # and autonomic nervous system
-    'C48': 'Peritoneum', # and retroperitoneum
-    'C49': 'Soft Tissue', # and connective, subcutaneous tissues
+    'C47': 'Peripheral nerves and autonomic nervous system',
+    'C48': 'Retroperitoneum and peritoneum',
+    'C49': 'Connective, subcataneous, and other soft tissues',
     'C50': 'Breast', 
     'C51': 'Vulva',
     'C52': 'Vagina',
-    'C53': 'Cervix Uteri',
-    'C54': 'Corpus Uteri', # body of uterus
-    'C55': 'Uterus',
+    'C53': 'Cervix uteri',
+    'C54': 'Corpus uteri',
+    'C55': 'Uterus, NOS',
     'C56': 'Ovary',
-    'C57': 'Female Genital Organ - Other',
+    'C57': 'Other and unspecified female genital organs',
     'C58': 'Placenta',
     'C60': 'Penis',
-    'C61': 'Prostate Gland',
+    'C61': 'Prostate gland',
     'C62': 'Testis',
-    'C63': 'Male Genital Organ - Other',
+    'C63': 'Other and unspecified male genital organs',
     'C64': 'Kidney',
-    'C65': 'Renal Pelvis',
+    'C65': 'Renal pelvis',
     'C66': 'Ureter',
     'C67': 'Bladder',
-    'C68': 'Urinary Organs - Other',
-    'C69': 'Eye', # and adnexa
+    'C68': 'Other and unspecified urinary organs',
+    'C69': 'Eye and adnexa',
     'C71': 'Brain',
-    'C72': 'Spinal Cord', # and cranial nerves, central nervous system
-    'C73': 'Thyroid Gland',
+    'C72': 'Spinal cord, cranial nerves, and other parts of central nervous system',
+    'C73': 'Thyroid and other endocrine glands',
     'C74': 'Adrenal Gland', 
-    'C75': 'Endocrine Gland - Other', 
-    'C76': 'Other Sites', # any other sites that were left out
-    'C80': 'Unknown Sites', # unknown primary sites
-    '804': 'Epithelial',
-    '807': 'Squamous Cell',
-    '814': 'Adenoma',
-    '844': 'Cystic',
-    '850': 'Ductal',
-    '852': 'Lobular'
+    'C75': 'Other endocrine glands and related structures', 
+    'C76': 'Other and ill-defined sites',
+    'C80': 'Unknown primary site',
+    '800': 'Neoplasms, NOS',
+    '801': 'Epithelial neoplasms, NOS',
+    '802': 'Epithelial neoplasms, NOS',
+    '803': 'Epithelial neoplasms, NOS',
+    '804': 'Epithelial neoplasms, NOS',
+    '805': 'Squamous cell neoplasms',
+    '807': 'Squamous cell neoplasms',
+    '808': 'Squamous cell neoplasms',
+    '809': 'Basal cell neoplasms',
+    '812': 'Transitional cell papillomas and carcinomas',
+    '813': 'Transitional cell papillomas and carcinomas',
+    '814': 'Adenomas and adenocarcinomas',
+    '816': 'Adenomas and adenocarcinomas',
+    '817': 'Adenomas and adenocarcinomas',
+    '818': 'Adenomas and adenocarcinomas',
+    '820': 'Adenomas and adenocarcinomas',
+    '821': 'Adenomas and adenocarcinomas',
+    '823': 'Adenomas and adenocarcinomas',
+    '824': 'Adenomas and adenocarcinomas',
+    '825': 'Adenomas and adenocarcinomas',
+    '826': 'Adenomas and adenocarcinomas',
+    '829': 'Adenomas and adenocarcinomas',
+    '831': 'Adenomas and adenocarcinomas',
+    '832': 'Adenomas and adenocarcinomas',
+    '833': 'Adenomas and adenocarcinomas',
+    '834': 'Adenomas and adenocarcinomas',
+    '837': 'Adenomas and adenocarcinomas',
+    '838': 'Adenomas and adenocarcinomas',
+    '840': 'Adnexal and skin appendage neoplasms',
+    '843': 'Mucoepidermoid neoplasms',
+    '844': 'Cystic, mucinous, and serous neoplasms',
+    '845': 'Cystic, mucinous, and serous neoplasms',
+    '846': 'Cystic, mucinous, and serous neoplasms',
+    '847': 'Cystic, mucinous, and serous neoplasms',
+    '848': 'Cystic, mucinous, and serous neoplasms',
+    '849': 'Cystic, mucinous, and serous neoplasms',
+    '850': 'Ductal and lobular neoplasms',
+    '851': 'Ductal and lobular neoplasms',
+    '852': 'Ductal and lobular neoplasms',
+    '853': 'Ductal and lobular neoplasms',
+    '854': 'Ductal and lobular neoplasms',
+    '855': 'Acinar cell neoplasms',
+    '856': 'Complex epithelial neoplasms',
+    '857': 'Complex epithelial neoplasms',
+    '858': 'Thymic epithelial neoplasms',
+    '862': 'Specialized gonadal neoplasms',
+    '872': 'Paragangliomas and glomus tumors',
+    '873': 'Nevi and melanomas',
+    '874': 'Nevi and melanomas',
+    '877': 'Nevi and melanomas',
+    '880': 'Soft tissue tumors and sarcomas, NOS',
+    '881': 'Fibromatous neoplasms',
+    '883': 'Fibromatous neoplasms',
+    '885': 'Lipomatous neoplasms',
+    '889': 'Myomatous neoplasms',
+    '890': 'Myomatous neoplasms',
+    '891': 'Myomatous neoplasms',
+    '892': 'Myomatous neoplasms',
+    '892': 'Myomatous neoplasms',
+    '893': 'Complex mixed and stromal neoplasms',
+    '894': 'Complex mixed and stromal neoplasms',
+    '895': 'Complex mixed and stromal neoplasms',
+    '898': 'Complex mixed and stromal neoplasms',
+    '902': 'Fibroepithelial neoplasms',
+    '904': 'Synovial-like neoplasms',
+    '905': 'Mesothelial neoplasms',
+    '906': 'Germ cell neoplasms',
+    '907': 'Germ cell neoplasms',
+    '908': 'Germ cell neoplasms',
+    '910': 'Trophoblastic neoplasms',
+    '911': 'Mesonephromas',
+    '912': 'Blood vessel tumors',
+    '914': 'Blood vessel tumors',
+    '915': 'Blood vessel tumors',
+    '918': 'Osseous and chondromatous neoplasms',
+    '922': 'Osseous and chondromatous neoplasms',
+    '924': 'Osseous and chondromatous neoplasms',
+    '926': 'Miscellaneous bone tumors',
+    '936': 'Miscellaneous tumors',
+    '938': 'Gliomas',
+    '940': 'Gliomas',
+    '942': 'Gliomas',
+    '944': 'Gliomas',
+    '945': 'Gliomas',
+    '947': 'Gliomas',
+    '954': 'Nerve sheath tumors',
+    '956': 'Nerve sheath tumors',
+    'other': 'Other'
 }
-cancer_location_exclude = ['C77', 'C42'] # exclude blood cancers
+blood_cancer_code = ['C77', 'C42']
 cancer_grouping = {
     'Head and Neck': ['C00', 'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C09', 'C10', 'C12', 'C13', 'C14', 'C32'],
     'Liver': ['C23', 'C24', 'C22'],
@@ -270,16 +315,16 @@ cancer_grouping = {
 palliative_cancer_grouping = {'Colorectal': ['C18', 'C19', 'C20']} # can group together only when intent is palliative
 
 # Drugs
-din_exclude = [
+neutrophil_dins = [
     '02441489', '02454548', '01968017', '02485575', '02485583', '02485656', '02485591',
-    '02484153', '02474565', '02249790', '02506238', '02497395' # drug exclusion for neutrophil
+    '02484153', '02474565', '02249790', '02506238', '02497395' # exclude these drugs for Neutropenia
 ]
 cisplatin_dins = ['02403188', '02355183', '02126613', '02366711'] # aka Platinol, CDDP
-cisplatin_cco_drug_code = ['003902']
+cisplatin_cco_drug_codes = ['003902']
 
 # Official Language Codes
 # NOTE: refer to datadictionary.ices.on.ca, Library: CIC, Member: CIC_IRCC
-english_lang_codes = ['1', '15220', '15222', '3']
+eng_lang_codes = ['1', '15220', '15222', '3']
 
 # World Regions
 # Reference: en.wikipedia.org/wiki/United_Nations_geoscheme
@@ -433,30 +478,34 @@ intent_mapping = {
 }
 
 # Columns
-INTENT = 'intent_of_systemic_treatment'
+DATE = 'visit_date'
 BSA = 'body_surface_area' # m^2
+INTENT = 'intent_of_systemic_treatment'
 systemic_cols = [
     'ikn', 
     'regimen', 
-    'visit_date', 
+    DATE, 
     BSA,
     INTENT,
+    'inpatient_flag'
 ]
 
 y3_cols = [
     'ikn', 
     'sex', 
-    'bdate',       
+    'dthdate', 
+    'bdate',
     'lhin_cd', # local health integration network
-    'curr_morph_cd', # cancer type
-    'curr_topog_cd', # cancer location
+    'curr_morph_cd', # cancer type (morphology)
+    'curr_topog_cd', # cancer location (topography)
     # 'pstlcode'
 ]
 
+DOSE = 'dose_administered'
 drug_cols = [
     'din', # DIN: Drug Identification Number
     'cco_drug_code', # CCO: Cancer Care Ontario
-    'dose_administered', 
+    DOSE, 
     'measurement_unit'
 ] 
 
@@ -477,22 +526,15 @@ olis_cols = [
 symptom_cols = [
     'ecog_grade', 
     'prfs_grade', 
-    'Wellbeing',
-    'Tiredness', 
-    'Pain', 
-    'Shortness of Breath', 
-    'Drowsiness', 
-    'Lack of Appetite', 
-    'Depression', 
-    'Anxiety', 
-    'Nausea'
-]
-
-immigration_cols = [
-    'ikn', 
-    'is_immigrant', 
-    'speaks_english',
-    'landing_date'
+    'wellbeing',
+    'tiredness', 
+    'pain', 
+    'shortness_of_breath', 
+    'drowsiness', 
+    'lack_of_appetite', 
+    'depression', 
+    'anxiety', 
+    'nausea'
 ]
 
 event_main_cols = [
@@ -607,52 +649,32 @@ diag_code_mapping['TR'] = \
 event_map = {
     'H': {
         'event_name': 'hospitalization',
-        'date_col_name': ('admdate', 'ddate'),
-        'database_name': 'dad',
+        'arrival_col': 'admdate',
+        'depart_col': 'ddate',
         'event_cause_cols': [f'{cause}_H' for cause in diag_code_mapping]
     },
     'ED': {
         'event_name': 'emergency department visit',
-        'date_col_name': ('regdate', 'regdate'),
-        'database_name': 'nacrs',
+        'arrival_col': 'regdate',
+        'depart_col': 'regdate',
         'event_cause_cols': [f'{cause}_ED' for cause in diag_code_mapping]
     }
 }
 
-# Subgroups
-# {group column name: {category: subgroup name associated with the category}
-subgroup_map = {
-    'is_immigrant': {False: 'Long-Term Resident', True: 'Recent Immigrant'},
-    'speaks_english': {False: 'Non-English Speaker', True: 'English Speaker'},
-    'sex': {'F': 'Female', 'M': 'Male'},
-    'world_region_of_birth': {'do_not_include': ['Unknown', 'Other']},
-    'neighborhood_income_quintile': {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4', 5: 'Q5',},
-    'rural': {False: 'Urban', True: 'Rural'},
-    'years_since_immigration': {False: 'Arrival >= 10 years', True: 'Arrival < 10 years'}
-}
-group_title_map = {
-    'is_immigrant': 'Immigration', 
-    'speaks_english': 'Language', 
-    'sex': 'Sex',
-    'world_region_of_birth': 'World Region of Birth', 
-    'neighborhood_income_quintile': 'Income',
-    'rural': 'Area of Residence',
-    'years_since_immigration': 'Immigration Arrival'
-}
-
-# Clean Variable Names (ORDER MATTERS!)
+# Clean Variable Names 
+# WARNING: ORDER MATTERS!
 clean_variable_mapping = {
     'baseline_': '', 
-    '_count': '',
+    '_value': '',
     'prev': 'previous', 
     'num': 'number_of', 
     'chemo': 'chemotherapy', 
     'lhin_cd': 'local health integration network', 
-    'curr_topog_cd': 'cancer_topography_ICD-0-3', 
-    'curr_morph_cd': 'cancer_morphology_ICD-0-3', 
+    'cancer_topog_cd': 'topography_ICD-0-3', 
+    'cancer_morph_cd': 'morphology_ICD-0-3', 
     'prfs': 'patient_reported_functional_status',
     'eGFR': 'estimated_glomerular_filtration_rate',
-    'ODBGF': 'growth_factor',
+    'GF': 'growth_factor',
     'MCV': 'mean_corpuscular_volume',
     'MCHC': 'mean_corpuscular_hemoglobin_concentration',
     'MCH': 'mean_corpuscular_hemoglobin',
@@ -666,13 +688,13 @@ clean_variable_mapping = {
 
 # Variable Groupings
 # {group: keywords} - Any variables whose name contains these keywords are assigned into that group
-# NOTE: ORDER MATTERS! cisplatin_dosage gets grouped with Demographic first (because of dosAGE), then Treatment
+# WARNING: ORDER MATTERS!
 variable_groupings_by_keyword = {
     'Acute care use': 'INFX|GI|TR|prev_H|prior_H|prev_ED|prior_ED',
-    'Cancer': 'curr_topog_cd|curr_morph_cd', 
-    'Demographic': 'age|body|income|immigrant|lhin|sex|english|diabetes|hypertension',
+    'Cancer': 'cancer', 
+    'Demographic': 'age|body|income|immigra|rural|lhin|sex|birth|english|diabetes|hypertension',
     'Laboratory': 'baseline',
-    'Treatment': 'visit_month|regimen|intent|chemo|therapy|cycle|cisplatin|given|transfusion',
+    'Treatment': 'visit_month|regimen|intent|chemo|therapy|cycle|dosage|given|transfusion',
     'Symptoms': '|'.join(symptom_cols)
 }
 
@@ -755,7 +777,7 @@ bayesopt_param = {
     'RF': {'init_points': 3, 'n_iter': 20}, 
     'NN': {'init_points': 5, 'n_iter': 50},
     'RNN': {'init_points': 3, 'n_iter': 50},
-    'ENS': {'init_points': 4, 'n_iter': 30},
+    'ENS': {'init_points': 4, 'n_iter': 40},
     # Baseline Models
     'LOESS': {'init_points': 3, 'n_iter': 10},
     'SPLINE': {'init_points': 3, 'n_iter': 20},

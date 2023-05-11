@@ -1,5 +1,5 @@
 # Create back up template
-DATE=2022-12-16
+DATE=2023-05-01
 mkdir backup/$DATE
 mkdir backup/$DATE/dev_notebooks backup/$DATE/PROACCT backup/$DATE/CYTOPENIA backup/$DATE/CAN backup/$DATE/DEATH backup/$DATE/TRREKO
 mkdir backup/$DATE/scripts backup/$DATE/src backup/$DATE/test
