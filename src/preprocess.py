@@ -124,7 +124,7 @@ def systemic_worker(partition, method='merge', min_interval=4):
         
         if method == 'one-per-week':
             # combine concurrent regimens by merging same day treatments
-            df = merge_intervals(df, min_interval=0)
+            df = merge_intervals(df, min_interval=1)
             # keep only the first treatment session of a given week
             keep_idxs = []
             previous_date = pd.Timestamp.min
@@ -400,7 +400,7 @@ def merge_intervals(df, min_interval=4, merge_cols=None):
     if merge_cols is None: merge_cols = []
     
     df = df.reset_index(drop=True)
-    df['interval'] = (df[f'next_{DATE}'] - df[DATE]).dt.days
+    df['interval'] = (df[DATE].shift(-1) - df[DATE]).dt.days
     merge_cols.append('interval')
     
     # WARNING: Assumes df only contains one drug type if merging dosages
