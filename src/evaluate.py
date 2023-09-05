@@ -14,7 +14,6 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
-from collections import defaultdict
 from functools import partial
 import itertools
 import math
@@ -28,28 +27,27 @@ from sklearn.metrics import (
     average_precision_score,
     classification_report, 
     confusion_matrix, 
+    mean_absolute_error,
+    mean_squared_error,
     precision_recall_curve, 
     precision_score, 
     recall_score, 
     roc_auc_score, 
     roc_curve, 
+    r2_score
 )
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from src import logging
+from src import logger
 from src.conf_int import (
-    AUCConfidenceInterval,
+    ScoreConfidenceInterval,
     get_confidence_interval,
     get_calibration_confidence_interval,
 )
-from src.config import (
-    blood_types, 
-    cancer_code_mapping,
-    clean_variable_mapping
-)
+from src.config import blood_types, cancer_code_mapping
 from src.summarize import SubgroupSummary
 from src.utility import (
     split_and_parallelize,
@@ -60,6 +58,17 @@ from src.utility import (
     twolevel
 )
 from src.visualize import get_bbox
+
+CLF_SCORE_FUNCS = {
+    'AUROC': roc_auc_score,
+    'AUPRC': average_precision_score
+}
+REG_SCORE_FUNCS = {
+    'MAE': mean_absolute_error, 
+    'MSE': mean_squared_error, 
+    'RMSE': partial(mean_squared_error, squared=False), 
+    'R2': r2_score
+}
 
 def get_perf_at_operating_point(
     point, 
@@ -259,31 +268,31 @@ class Evaluate:
     Attributes:
         splits (list): a sequence of data splits (str) to evaluate our models on
     """
-    def __init__(self, output_path, preds, labels, orig_data):
+    def __init__(self, output_path, preds, labels, score_funcs, splits=None):
         """
         Args:
-            orig_data (pd.DataFrame): the original dataset before one-hot 
-                encoding and splitting
             preds (dict): mapping of data splits (str) and their associated 
                 predictions by each algorithm (dict of str: pd.DataFrame)
             labels (dict): mapping of data splits (str) and their associated 
                 labels (pd.Series)
+            score_funcs (dict): mapping of score name (str) and their associated
+                score functions
         """
         self.output_path = output_path
         self.preds = preds
         self.labels = labels
-        self.splits = ['Valid', 'Test']
-        self.models = list(preds['Test'].keys())
+        self.score_funcs = score_funcs
+        if splits is None: splits = ['Valid', 'Test']
+        self.splits = splits
+        self.algs = list(preds['Test'].keys())
         self.target_events = list(labels['Test'].columns)
-        self.orig_data = orig_data
-        self.ci = AUCConfidenceInterval(output_path)
+        self.ci = ScoreConfidenceInterval(output_path, score_funcs)
 
     def get_evaluation_scores(
         self, 
         algs=None, 
         target_events=None, 
-        splits=None, 
-        baseline_cols=None, 
+        splits=None,  
         display_ci=False, 
         load_ci=False, 
         save_ci=False, 
@@ -292,136 +301,48 @@ class Evaluate:
         """Compute the AUROC and AUPRC for each given algorithm and data split
         
         Args:
-            baseline_cols (list): a sequence of variable names (str) to compute 
-                baseline scores (each variable is used as a single baseline 
-                model). If None, no baseline model scores will be measured
             display_ci (bool): display confidence interval for AUROC and AUPRC
             load_ci (bool): If True load saved bootstrapped AUROC and AUPRC 
                 scores for computing confidence interval
         """    
-        if algs is None: algs = self.models
+        if algs is None: algs = self.algs
         if target_events is None: target_events = self.target_events
         if splits is None: splits = self.splits
         if load_ci: self.ci.load_bootstrapped_scores()
             
-        score_df = pd.DataFrame(index=twolevel, columns=twolevel)
-        if baseline_cols is not None: 
-            score_df = self.get_baseline_scores(
-                score_df, baseline_cols, splits=splits, 
-                target_events=target_events, display_ci=display_ci
-            )
-        
+        score_df = pd.DataFrame(index=twolevel, columns=twolevel)        
         iterables = itertools.product(algs, splits, target_events)
         for alg, split, target_event in iterables:
             Y_true = self.labels[split][target_event]
-            Y_pred_prob = self.preds[split][alg][target_event]
-            auroc = roc_auc_score(Y_true, Y_pred_prob)
-            auprc = average_precision_score(Y_true, Y_pred_prob)
+            Y_pred = self.preds[split][alg][target_event]
+            metrics = {name: func(Y_true, Y_pred) 
+                       for name, func in self.score_funcs.items()}
             if display_ci: 
-                ci = self.ci.get_auc_confidence_interval(
-                    Y_true, Y_pred_prob, name=f'{alg}_{split}_{target_event}',
+                ci = self.ci.get_score_confidence_interval(
+                    Y_true, Y_pred, name=f'{alg}_{split}_{target_event}',
                     store=True, verbose=True
                 )
-                lower, upper = ci['AUROC']
-                auroc = f'{auroc:.3f} ({lower:.3f}-{upper:.3f})'
-                lower, upper = ci['AUPRC']
-                auprc = f'{auprc:.3f} ({lower:.3f}-{upper:.3f})'
-                
-            score_df.loc[(alg, 'AUROC Score'), (split, target_event)] = auroc
-            score_df.loc[(alg, 'AUPRC Score'), (split, target_event)] = auprc
+                for name, (lower, upper) in ci.items():
+                    score = f'{metrics[name]:.3f} ({lower:.3f}-{upper:.3f})'
+                    metrics[name] = score
+            
+            for name, score in metrics.items():
+                score_df.loc[(alg, name), (split, target_event)] = score
             
         if save_score: 
             score_df.to_csv(f'{self.output_path}/tables/evaluation_scores.csv')
         if save_ci: self.ci.save_bootstrapped_scores()
             
         return score_df
-    
-    def get_baseline_scores(
-        self, 
-        score_df, 
-        base_cols, 
-        splits=None, 
-        target_events=None, 
-        display_ci=True
-    ):
-        """This baseline model outputs the corresponding target rate of
-        1. each category of a categorical column
-        2. each bin of a numerical column
-        from the training set. 
+
+class EvaluateClf(Evaluate):
+    """Evaluate classifiers"""
+    def __init__(self, output_path, preds, labels, **kwargs):
+        super().__init__(output_path, preds, labels, CLF_SCORE_FUNCS, **kwargs)
         
-        E.g. if patient is taking regimen X, baseline model outputs target rate 
-             of regimen X in the training set
-        E.g. if patient's blood count measurement is X, baseline model outputs 
-             target rate of blood count bin in which X belongs to
-             
-        Each column in base_cols acts as a baseline model.
-        
-        Why not predict previously measured blood count directly? 
-        Because we need prediction probability to calculate AUROC.
-        Predicting if previous blood count is less than x threshold will output 
-        a 0 or 1, resulting in a single point on the ROC curve.
-        """
-        if target_events is None: target_events = self.target_events
-        if splits is None: splits = self.splits
-        var_mapping = {
-            'baseline_eGFR': 'Gloemrular Filteration Rate', 
-            **{f'baseline_{bt}_count': 'Blood Count' for bt in blood_types},
-            **clean_variable_mapping
-        }
-        
-        for base_col in base_cols:
-            mean_targets = defaultdict(dict)
-            Y = self.labels['Train']
-            X = self.orig_data.loc[Y.index, base_col]
-            numerical_col = X.dtype == float
-            if numerical_col: X, bins = pd.cut(X, bins=100, retbins=True)
-            # compute target rate of each category or numerical bin of the 
-            # column
-            for group_name, group in X.groupby(X):
-                means = Y.loc[group.index].mean()
-                for target_event, mean in means.items():
-                    mean_targets[target_event][group_name] = mean
-            
-            # get baseline algorithm name
-            name = var_mapping.get(base_col, base_col)
-            if numerical_col: name += ' Bin'
-            alg = f'Baseline - Event Rate Per {name}'.replace('_', ' ').title()
-            
-            # special case for blood count measurements 
-            # don't get baseline score for a different blood count target
-            bt = base_col.replace('baseline_', '').replace('_count', '')
-            if bt in blood_types:
-                target_names = [blood_types[bt]['cytopenia_name']] 
-            else:
-                target_names = target_events
-            
-            # compute baseline score
-            for split in splits:
-                Y = self.labels[split]
-                X = self.orig_data.loc[Y.index, base_col]
-                if numerical_col: X = pd.cut(X, bins=bins).astype(object)
-                for target_event in target_names:
-                    Y_true = Y[target_event]
-                    Y_pred_prob = X.map(mean_targets[target_event]).fillna(0)
-                    col = (split, target_event)
-                    auroc = roc_auc_score(Y_true, Y_pred_prob)
-                    auprc = average_precision_score(Y_true, Y_pred_prob)
-                    if display_ci: 
-                        ci = self.ci.get_auc_confidence_interval(
-                            Y_true, Y_pred_prob, 
-                            name=f'{alg}_{split}_{target_event}', store=True, 
-                            verbose=True
-                        )
-                        lower, upper = ci['AUROC']
-                        auroc = f'{auroc:.3f} ({lower:.3f}-{upper:.3f})'
-                        lower, upper = ci['AUPRC']
-                        auprc = f'{auprc:.3f} ({lower:.3f}-{upper:.3f})'
-                    score_df.loc[(alg, 'AUROC Score'), col] = auroc
-                    score_df.loc[(alg, 'AUPRC Score'), col] = auprc
-        return score_df
-    
     def get_perf_by_subgroup(
         self,
+        data,
         subgroups=None,  
         pred_thresh=0.2, 
         alg='ENS',
@@ -432,6 +353,8 @@ class Evaluate:
     ):
         """
         Args:
+            data (pd.DataFrame): the original dataset before one-hot encoding 
+                and splitting
             subgroups (list): a sequence of population subgroups (str) to 
                 evaluate system performance on. If None, will evaluate on 
                 select population subgroups
@@ -454,7 +377,7 @@ class Evaluate:
         
         thresh = pred_thresh
         Y, pred_prob = self.labels[split], self.preds[split][alg]
-        data = self.orig_data.loc[Y.index]
+        data = data.loc[Y.index]
         
         sp = SubgroupPerformance(
             data, self.output_path, cohort_name=split, subgroups=subgroups, **kwargs
@@ -610,7 +533,7 @@ class Evaluate:
         if curve_type == 'pr': x, y = y, x
         
         # get the score and 95% CI
-        ci = self.ci.get_auc_confidence_interval(
+        ci = self.ci.get_score_confidence_interval(
             Y_true, Y_pred_prob, name=ci_name
         )
         lower, upper = ci[label]
@@ -657,10 +580,10 @@ class Evaluate:
         show_perf_calib=True
     ):
         if calib_ci:
-            logging.warning('Displaying calibration confidence interval with '
-                            'more than one target will make the plot messy. Do '
-                            'not set calib_ci to True when there are multiple '
-                            'targets')
+            msg = ('Displaying calibration confidence interval with more than '
+                   'one target will make the plot messy. Do not set calib_ci '
+                   'to True when there are multiple targets')
+            logger.warning(msg)
             
         # bin predicted probability (e.g. 0.0-0.1, 0.1-0.2, etc) 
         # prob_true: fraction of positive class in each bin
@@ -766,18 +689,19 @@ class Evaluate:
         target_events=None, 
         split='Test',
         legend_loc='best', 
-        figsize=(12,18), 
+        figsize=None, 
         padding=None, 
         save=True
     ):
         if curve_type not in ['roc', 'pr', 'pred_cdf']: 
             raise ValueError("curve_type must be set to roc, pr, or pred_cdf")
-        if algs is None: algs = self.models
+        if algs is None: algs = self.algs
         if target_events is None: target_events = self.target_events
         if padding is None: padding = {'pad_y1': 0.3}
         if self.ci.bs_scores.empty: self.ci.load_bootstrapped_scores()
             
         nrows, ncols = math.ceil(len(algs)/2), 2
+        if figsize is None: figsize = (ncols*6, nrows*6)
         fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
         axes = axes.flatten()
         
@@ -818,15 +742,16 @@ class Evaluate:
         n_bins=10,        
         calib_strategy='quantile', 
         legend_loc='best', 
-        figsize=(12,18), 
+        figsize=None, 
         padding=None, 
         save=True
     ):
-        if algs is None: algs = self.models
+        if algs is None: algs = self.algs
         if target_events is None: target_events = self.target_events
         if padding is None: padding = {'pad_y1': 0.3}
         
         nrows, ncols = math.ceil(len(algs)/2), 2
+        if figsize is None: figsize = (ncols*6, nrows*6)
         fig = plt.figure(figsize=figsize)
         gs = GridSpec(3*nrows, ncols, hspace=0.5)
 
@@ -837,9 +762,11 @@ class Evaluate:
                 ax = fig.add_subplot(gs[row:row+2, col])
             else:
                 ax = fig.add_subplot(nrows, ncols, idx+1)
-                
-            for i, target_event in enumerate(target_events):
-                show_perf_calib = i == len(target_events) - 1 # at last one
+            
+            cur_max_prob, max_prob = 0, -1
+            for i, target_event in enumerate(target_events):                    
+                show_perf_calib = cur_max_prob > max_prob
+                max_prob = max(max_prob, cur_max_prob)
                 Y_true = self.labels[split][target_event]
                 Y_pred_prob = self.preds[split][alg][target_event]
                 prob_true, prob_pred = self.plot_calib(
@@ -848,6 +775,7 @@ class Evaluate:
                     label_prefix=f'{target_event}\n', 
                     show_perf_calib=show_perf_calib,
                 )
+                cur_max_prob = max(prob_true.max(), prob_pred.max())
                 
                 if save:
                     # save the calibration numbers
@@ -888,7 +816,7 @@ class Evaluate:
         split='Test', 
         xlim=None, 
         save=True, 
-        figsize=(), 
+        figsize=None, 
         padding=None
     ):
         """Plots net benefit vs threshold probability, with "intervention for 
@@ -915,7 +843,7 @@ class Evaluate:
         # setup 
         if target_events is None: target_events = self.target_events
         N = len(target_events)
-        if not figsize: figsize = (6, 6*N)
+        if figsize is None: figsize = (6, 6*N)
         if padding is None: padding = {}
         fig = plt.figure(figsize=figsize)
         plt.subplots_adjust(hspace=0.2, wspace=0.2)
@@ -946,32 +874,6 @@ class Evaluate:
         
         return result
     
-    def plot_rnn_training_curve(
-        self, 
-        train_losses, 
-        valid_losses, 
-        train_scores, 
-        valid_scores, 
-        figsize=(12,9), 
-        save=False, 
-        save_path=None
-    ):
-        fig = plt.figure(figsize=figsize)
-        data = {
-            'Training Loss': train_losses, 
-            'Validation Loss': valid_losses, 
-            'Training Accuracy': train_scores, 
-            'Validation Accuracy': valid_scores
-        }
-        plt.subplots_adjust(hspace=0.3)
-        for i, (title, value) in enumerate(data.items()):
-            ax = fig.add_subplot(2, 2, i+1)
-            plt.plot(range(len(value)), value)
-            plt.title(title)
-            plt.legend(self.target_events)
-        if save: plt.savefig(save_path)
-        plt.show()
-    
     def get_confusion_matrix(self, Y_true, Y_pred_bool):
         cm = confusion_matrix(Y_true, Y_pred_bool)
         cm = pd.DataFrame(
@@ -980,52 +882,117 @@ class Evaluate:
             index=['Actual False', 'Actual True']
         )
         return cm
+    
+class EvaluateReg(Evaluate):
+    """Evaluate regressors"""
+    def __init__(self, output_path, preds, labels, **kwargs):
+        super().__init__(output_path, preds, labels, REG_SCORE_FUNCS, **kwargs)
+        
+    def plot_err_dist(self, alg, target_event, split='Test'):
+        Y_pred = self.preds[split][alg][target_event]
+        Y_true = self.labels[split][target_event]
+        err = Y_true - Y_pred
+        
+        fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(18,6))
+        name = target_event.replace('_', ' ').title()
+        # histogram of error alues
+        err.hist(bins=100, ax=axes[0])
+        axes[0].set(
+            xlabel=f'{name} Error Values', 
+            ylabel='Number of Sessions'
+        )
+        
+        # histogram of absolute error values
+        err.abs().hist(bins=100, ax=axes[1])
+        axes[1].set(
+            xlabel=f'{name} Absolute Error Values', 
+            ylabel='Number of Sessions'
+        )
+        
+        # cumulative distribution function of absolute error values
+        N = len(Y_true)
+        y = np.arange(N) / float(N)
+        x = err.abs().sort_values()
+        axes[2].plot(x, y)
+        axes[2].grid()
+        axes[2].set_xticks(np.arange(0, int(x.max()+5), 5))
+        axes[2].set(
+            xlabel=f'{name} Absolute Error Values', 
+            ylabel='Cumulative Proportion of Error Values'
+        )
+        plt.show()
 
 ###############################################################################
 # Baseline Evaluation
 ###############################################################################
-class EvaluateBaselineModel(Evaluate):
-    def __init__(
-        self, 
-        base_col, 
-        preds_min, 
-        preds_max, 
-        preds, 
-        labels, 
-        orig_data, 
-        output_path
-    ):
-        super().__init__(output_path, preds, labels, orig_data)
-        self.col = base_col
-        self.preds_min = preds_min
-        self.preds_max = preds_max
-        
+class EvaluateBaselineModel(EvaluateClf):
+    def __init__(self,  X, preds,  labels,  output_path, pred_ci=None):
+        """
+        Args:
+            X (pd.Series): the original baseline predictor values
+            pred_ci (dict): mapping of data splits (str) and their associated 
+                upper and lower confidence interval predictions by each 
+                algorithm (dict of str: tuple(pd.DataFrame, pd.DataFrame))
+        """
+        super().__init__(output_path, preds, labels)
+        self.X = X
+        self.base_col = X.name
+        self.pred_ci = pred_ci
+
         save_path = f'{output_path}/figures/baseline'
         if not os.path.exists(save_path): os.makedirs(save_path)
         
         self.name_mapping = {
             'baseline_eGFR': 'Pre-Treatment eGFR', 
-            'next_eGFR': '9-month Post-Treatment eGFR'
+            'next_eGFR': '90-day Post-Treatment eGFR'
         }
         self.name_mapping.update(
-            {f'baseline_{bt}_count': f'Pre-Treatment {bt.title()} Count' 
+            {f'baseline_{bt}_value': f'Pre-Treatment {bt.title()} Value' 
              for bt in blood_types}
         )
         self.name_mapping.update(
-            {f'target_{bt}_count': f'Before Next Treatment {bt.title()} Count'
+            {f'target_{bt}_value': f'Before Next Treatment {bt.title()} Value'
              for bt in blood_types}
         )
         
-    def plot_loess(self, ax, alg, target_event, split):
-        x = self.orig_data[self.col].sort_values()
+    def plot_prediction(
+        self, 
+        ax, 
+        alg, 
+        target_event, 
+        split, 
+        show_diagonal=False, 
+        clip_flat_edges=True,
+    ):
+        """
+        Args:
+            clip_flat_edges (bool): If True, remove any flat sections at 
+                the beginning and end of the curve.
+        """
+        x = self.X.sort_values()
         pred = self.preds[split][alg].loc[x.index, target_event]
-        pred_min = self.preds_min.loc[x.index, target_event]
-        pred_max = self.preds_max.loc[x.index, target_event]
+        if clip_flat_edges:
+            initial_flat_mask = (pred == pred.iloc[0]).cumprod()
+            end_flat_mask = (pred == pred.iloc[-1])[::-1].cumprod()[::-1]
+            mask = (initial_flat_mask | end_flat_mask).astype(bool)
+            x, pred = x[~mask], pred[~mask]
         ax.plot(x, pred)
-        ax.fill_between(x, pred_min, pred_max, alpha=0.25)
-        xlabel = self.name_mapping.get(self.col, self.col)
+        
+        if self.pred_ci is not None:
+            pred_min, pred_max = self.pred_ci[split][alg]
+            pred_min = pred_min.loc[x.index, target_event]
+            pred_max = pred_max.loc[x.index, target_event]
+            ax.fill_between(x, pred_min, pred_max, alpha=0.25)
+        
+        if show_diagonal:
+            axis_max = max(x.max(), pred.max())
+            axis_min = min(x.min(), pred.min())
+            ax.plot([axis_min, axis_max], [axis_min, axis_max], 'k:')
+        
+        xlabel = self.name_mapping.get(self.base_col, self.base_col)
         ylabel = f'Prediction for {self.name_mapping.get(target_event, target_event)}'
         ax.set(xlabel=xlabel, ylabel=ylabel)
+        ax.grid()
             
     def all_plots_for_single_target(
         self, 
@@ -1046,7 +1013,7 @@ class EvaluateBaselineModel(Evaluate):
         Y_pred_prob = self.preds[split][alg][target_event]
 
         # plot
-        self.plot_loess(axes[0], alg, target_event, split=split)
+        self.plot_prediction(axes[0], alg, target_event, split=split)
         self.plot_auc_curve(
             axes[1], Y_true, Y_pred_prob, curve_type='pr', legend_loc='lower right',
             ci_name=f'{alg}_{split}_{target_event}'
@@ -1078,7 +1045,7 @@ class EvaluateBaselineModel(Evaluate):
                 # no pos examples, no point in plotting/evaluating
                 continue
             self.all_plots_for_single_target(target_event=target_event, **kwargs)
-            
+        
 ###############################################################################
 # Subgroup Evaluation
 ###############################################################################
@@ -1113,7 +1080,7 @@ class SubgroupPerformance(SubgroupSummary):
         self.subgroups = subgroups
         self.display_ci = display_ci
         if self.display_ci:
-            self.ci = AUCConfidenceInterval(output_path)
+            self.ci = ScoreConfidenceInterval(output_path, CLF_SCORE_FUNCS)
             if load_ci:
                 filename='bootstrapped_subgroup_scores'
                 self.ci.load_bootstrapped_scores(filename=filename)
@@ -1186,8 +1153,9 @@ class SubgroupPerformance(SubgroupSummary):
 
         Y_true, Y_pred_prob = Y_true[mask], Y_pred_prob[mask]
         if len(set(Y_true)) < 2:
-            logging.warning(f'No positive examples, skipping '
-                            f'{target_event} {subgroup} {category}')
+            msg = (f'No positive examples, skipping {target_event} '
+                   f'{subgroup} {category}')
+            logger.warning(msg)
             return
         
         if col is None:
@@ -1199,19 +1167,16 @@ class SubgroupPerformance(SubgroupSummary):
             pred_thresh, Y_true, Y_pred_prob, target_event=target_event, 
             include_ci=self.display_ci, **self.perf_kwargs
         )
-        auroc = np.round(roc_auc_score(Y_true, Y_pred_prob), 3)
-        auprc = np.round(average_precision_score(Y_true, Y_pred_prob), 3)
+        for name, func in CLF_SCORE_FUNCS.items():
+            perf[name] = func(Y_true, Y_pred_prob)
         if self.display_ci:
             name = f'{subgroup}_{category}_{target_event}'
-            ci = self.ci.get_auc_confidence_interval(
+            ci = self.ci.get_score_confidence_interval(
                 Y_true, Y_pred_prob, name=name.replace(' ', '').lower()
             )
-            lower, upper = ci['AUROC']
-            auroc = f'{auroc} ({lower:.3f}-{upper:.3f})'
-            lower, upper = ci['AUPRC']
-            auprc = f'{auprc} ({lower:.3f}-{upper:.3f})'
-        
+            for name, (lower, upper) in ci.items():
+                perf[name] = f'{perf[name]:.3f} ({lower:.3f}-{upper:.3f})'
+          
         # store the scores
-        perf = {k: round(v, 3) if isinstance(v, float) else v 
-                for k, v in perf.items()}
-        result[col] = {'AUROC': auroc, 'AUPRC': auprc, **perf}
+        result[col] = {k: round(v, 3) if isinstance(v, float) else v 
+                       for k, v in perf.items()}

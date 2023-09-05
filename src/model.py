@@ -14,21 +14,21 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
-import pickle
+from collections import defaultdict
 
 from bayes_opt import BayesianOptimization
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.multioutput import MultiOutputClassifier
-from sklearn.neural_network import MLPClassifier
+from sklearn.multioutput import MultiOutputClassifier, MultiOutputRegressor
+from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures, SplineTransformer
 from skmisc.loess import loess
 from torch.nn.utils.rnn import pad_packed_sequence
 from tqdm import tqdm
-from xgboost import XGBClassifier
+from xgboost import XGBClassifier, XGBRegressor
 import numpy as np
 import pandas as pd
 import torch
@@ -36,25 +36,50 @@ import torch.nn as nn
 
 from src.conf_int import bootstrap_sample
 from src.config import (
-    nn_solvers, nn_activations,
-    calib_param, calib_param_logistic
+    blood_types,
+    calib_param, calib_param_logistic,
+    clean_variable_mapping,
+    nn_activations, nn_solvers
 )
-from src.utility import load_ml_model
+from src.utility import load_pickle, save_pickle
 
 class MLModels:
     """Machine Learning Models
     """
-    def __init__(self, n_jobs=16, random_state=42, tol=1e-3, custom_params=None):
+    def __init__(
+        self, 
+        task_type='C', 
+        n_jobs=16, 
+        random_state=42, 
+        tol=1e-3, 
+        custom_params=None
+    ):
+        """
+        Args:
+            task_type (str): the type of machine learning task, either `C` for 
+                classifcation or `R` for regression
+        """
+        self.task_type = task_type
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.tol = tol
         
-        self.models = {
-            "LR": LogisticRegression, # Regularized Logistic Regression
-            "XGB": XGBClassifier, # Extreme Gradient Boostring
-            "RF": RandomForestClassifier,
-            "NN": MLPClassifier  # Multilayer perceptron (aka neural network)
-        }
+        if self.task_type == 'C':
+            self.models = {
+                "LR": LogisticRegression, # L2 Regularized Logistic Regression
+                "XGB": XGBClassifier, # Extreme Gradient Boosting
+                "RF": RandomForestClassifier,
+                "NN": MLPClassifier  # Multilayer perceptron (aka neural network)
+            }
+            self.MultiOutput = MultiOutputClassifier
+        elif self.task_type == 'R':
+            self.models = {
+                "LR": Ridge, # L2 Regularized Linear Regression 
+                "XGB": XGBRegressor,
+                "RF": RandomForestRegressor,
+                "NN": MLPRegressor
+            }
+            self.MultiOutput = MultiOutputRegressor
         
         if custom_params is None: 
             custom_params = {}
@@ -62,25 +87,27 @@ class MLModels:
             custom_params[model] = custom_params.get(model, {})
         self.custom_params = custom_params
     
-    def get_LR_model(self, C=1.0, max_iter=100):
-        params = {
-            'C': C, 
+    def get_LR_model(self, inv_reg_strength=1.0, max_iter=100, penalty='l2'):
+        if self.task_type == 'C':
+            params = {
+                'C': inv_reg_strength, 
+                'class_weight': 'balanced', 
+                'penalty': penalty
+            }
+        elif self.task_type == 'R':
+            params = {'alpha': inv_reg_strength/1}
+        params.update({
             'max_iter': max_iter,
             'solver': 'saga',
-            'class_weight': 'balanced',
-            'penalty': 'l2',
             'tol': self.tol,
             'random_state': self.random_state,
-        }
+        })
         params.update(self.custom_params['LR'])
-        model = MultiOutputClassifier(
-            CalibratedClassifierCV(
-                self.models['LR'](**params), 
-                n_jobs=9, 
-                **calib_param_logistic
-            ), 
-            n_jobs=9
-        )
+        
+        model = self.models['LR'](**params)
+        if self.task_type == 'C':
+            model = CalibratedClassifierCV(model, n_jobs=9, **calib_param_logistic)
+        model = self.MultiOutput(model, n_jobs=9)
         return model
     
     def get_XGB_model(
@@ -103,12 +130,11 @@ class MLModels:
             'n_jobs': self.n_jobs
         }
         params.update(self.custom_params['XGB'])
-        model = MultiOutputClassifier(
-            CalibratedClassifierCV(
-                self.models['XGB'](**params), 
-                **calib_param
-            )
-        )
+        
+        model = self.models['XGB'](**params)
+        if self.task_type == 'C':
+            model = CalibratedClassifierCV(model, **calib_param)
+        model = self.MultiOutput(model)
         return model
     
     def get_RF_model(self, n_estimators=100, max_depth=6, max_features=0.5):
@@ -117,17 +143,17 @@ class MLModels:
             'max_depth': max_depth,
             'max_features': max_features,
             'min_samples_leaf': 6, # can't allow leaf node to have less than 6 samples
-            'class_weight': 'balanced_subsample',
             'random_state': self.random_state,
             'n_jobs': self.n_jobs
         }
         params.update(self.custom_params['RF'])
-        model = MultiOutputClassifier(
-            CalibratedClassifierCV(
-                self.models['RF'](**params), 
-                **calib_param
-            )
-        )
+        if self.task_type == 'C':
+            params['class_weight'] = 'balanced_subsample'
+        
+        model = self.models['RF'](**params)
+        if self.task_type == 'C':
+            model = CalibratedClassifierCV(model, **calib_param)
+        model = self.MultiOutput(model)
         return model
     
     def get_NN_model(
@@ -219,14 +245,11 @@ class IsotonicCalibrator:
                           for target_event in self.target_events}
     
     def load_model(self, model_dir, alg):
-        self.regressor = load_ml_model(model_dir, alg, name='calibrator') 
-        assert all(target_event in self.regressor 
-                   for target_event in self.target_events)
+        self.regressor = load_pickle(model_dir, f'{alg}_calibrator')
+        assert all(target in self.regressor for target in self.target_events)
         
     def save_model(self, model_dir, alg):
-        model_filename = f'{model_dir}/{alg}_calibrator.pkl'
-        with open(model_filename, 'wb') as file:
-            pickle.dump(self.regressor, file)
+        save_pickle(self.regressor, model_dir, f'{alg}_calibrator')
         
     def calibrate(self, pred, label):
         # Reference: github.com/scikit-learn/scikit-learn/blob/main/sklearn/calibration.py
@@ -272,7 +295,7 @@ class BaselineModel:
     def _predict(self, model, x):
         raise NotImplementedError
         
-    def _predict_with_confidence_interval(self, model, x, **kwargs):
+    def _predict_with_confidence_interval(self, target_event, x, **kwargs):
         raise NotImplementedError
         
     def fit(self, x, Y):
@@ -287,9 +310,9 @@ class BaselineModel:
     
     def predict_with_confidence_interval(self, x, **kwargs):
         preds, ci_lower, ci_upper = {}, {}, {}
-        for tt in self.target_events:
-            output = self._predict_with_confidence_interval(tt, x, **kwargs)
-            preds[tt], ci_lower[tt], ci_upper[tt] = output
+        for te in self.target_events:
+            output = self._predict_with_confidence_interval(te, x, **kwargs)
+            preds[te], ci_lower[te], ci_upper[te] = output
         return preds, ci_lower, ci_upper
     
 class LOESSModel(BaselineModel):
@@ -317,9 +340,14 @@ class PolynomialModel(BaselineModel):
     - POLY: pure polynomials
     """
     def __init__(self, alg, task_type, **params):
+        """
+        Args:
+            task_type (str): the type of machine learning task, either `C` for 
+                classifcation or `R` for regression
+        """
         super().__init__(**params)
         poly_models = {'SPLINE': SplineTransformer, 'POLY': PolynomialFeatures}
-        reg_models = {'regression': Ridge, 'classification': LogisticRegression}
+        reg_models = {'R': Ridge, 'C': LogisticRegression}
         self.poly_model = poly_models[alg]
         self.reg_model = reg_models[task_type]
         self.task_type = task_type
@@ -337,10 +365,12 @@ class PolynomialModel(BaselineModel):
         return model
     
     def _predict(self, model, x):
-        if self.task_type == 'regression':
+        if self.task_type == 'R':
             return model.predict(self._format(x))
-        else:
+        elif self.task_type == 'C':
             return model.predict_proba(self._format(x))[:, 1]
+        else:
+            raise ValueError(f'Unknown task type: {self.task_type}')
     
     def _compute_confidence_interval(self, x, x_train, y_train, n_bootstraps=1000):
         ci_preds = []
@@ -371,3 +401,76 @@ class PolynomialModel(BaselineModel):
         )
         lower, upper = np.percentile(ci_preds, [2.5, 97.5], axis=0).round(3)
         return pred, lower, upper
+
+###############################################################################
+# Simple Baseline Models
+###############################################################################
+class SimpleBaselineModel:
+    """This baseline model outputs the corresponding 
+    target rate of
+    1. each category of a categorical column
+    2. each bin of a numerical column
+    from the training set. 
+
+    E.g. if patient is taking regimen X, baseline model outputs target rate 
+         of regimen X in the training set
+    E.g. if patient's blood count measurement is X, baseline model outputs 
+         target rate of blood count bin in which X belongs to
+
+    Each column acts as a baseline model.
+
+    NOTE: Why not predict previously measured blood count directly? 
+    Because we need prediction probability to calculate AUROC.
+    Predicting if previous blood count is less than x threshold will output 
+    a 0 or 1, resulting in a single point on the ROC curve.
+    """
+    def __init__(self, data, labels):
+        self.data = data
+        self.labels = labels
+        
+    def predict(self, target_events=None, splits=None):
+        if target_events is None: target_events = list(self.labels['Test'].columns)
+        if splits is None: splits = ['Valid', 'Test']
+        var_mapping = {
+            'baseline_eGFR': 'Gloemrular Filteration Rate', 
+            **{f'baseline_{bt}_count': 'Blood Count' for bt in blood_types},
+            **clean_variable_mapping
+        }
+        
+        preds = defaultdict(dict)
+        for base_col, base_vals in self.data.items():
+            mean_targets = defaultdict(dict)
+            Y = self.labels['Train']
+            X = base_vals[Y.index]
+            numerical_col = X.dtype == float
+            if numerical_col: X, bins = pd.cut(X, bins=100, retbins=True)
+            
+            # compute target rate of each category or numerical bin of the 
+            # column
+            for group_name, group in X.groupby(X):
+                means = Y.loc[group.index].mean()
+                for target_event, mean in means.items():
+                    mean_targets[target_event][group_name] = mean
+            
+            # get baseline algorithm name
+            name = var_mapping.get(base_col, base_col)
+            if numerical_col: name += ' Bin'
+            alg = f'Baseline - Event Rate Per {name}'.replace('_', ' ').title()
+            
+            # special case for blood count measurements 
+            # only use the blood type column matching the blood type target
+            bt = base_col.replace('baseline_', '').replace('_value', '')
+            if bt in blood_types:
+                target_names = [blood_types[bt]['cytopenia_name']] 
+            else:
+                target_names = target_events
+            
+            # get predictions for each split
+            for split in splits:
+                idxs = self.labels[split].index
+                X = base_vals[idxs]
+                if numerical_col: X = pd.cut(X, bins=bins).astype(object)
+                pred = {tn: X.map(mean_targets[tn]).fillna(0) for tn in target_names}
+                preds[split][alg] = pd.DataFrame(pred)
+        return preds
+        

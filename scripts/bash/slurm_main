@@ -1,16 +1,18 @@
 #!/bin/bash
 #SBATCH -p gpu_med
 #SBATCH -c 16
-#SBATCH -w dsh09gpu001
+#SBATCH -w dsh09gvu001
 #SBATCH --mem 128G
 module load apps/anaconda/3
 source activate kevenv
-# python scripts/train_pipeline.py --adverse-event CYTO --output-path CYTOPENIA/models --train-rnn --run-bayesopt
+python scripts/cross_validate_pipeline.py --adverse-event DEATH --train-rnn --train-ensemble --evaluate
+# python scripts/train_pipeline.py --adverse-event DEATH --output-path DEATH/models 
+# python scripts/train_pipeline.py --adverse-event DEATH --output-path DEATH/models --train-rnn
+# python scripts/train_pipeline.py --adverse-event DEATH --output-path DEATH/models --train-ensemble --evaluate
 # python scripts/train_pipeline.py --adverse-event CYTO --output-path CYTOPENIA/models --run-bayesopt
-# python scripts/train_pipeline.py --adverse-event CYTO --output-path CYTOPENIA/models --train-ensemble
-# python scripts/train_pipeline.py --adverse-event CYTO --output-path CYTOPENIA/models --evaluate
-python scripts/feat_imp.py --adverse-event CYTO --output-path CYTOPENIA/models
-python scripts/feat_imp.py --adverse-event CYTO --output-path CYTOPENIA/models --permute-group
+# python scripts/train_pipeline.py --adverse-event CYTO --output-path CYTOPENIA/models --train-rnn --run-bayesopt
+# python scripts/feat_imp.py --adverse-event DEATH --output-path DEATH/models
+# python scripts/feat_imp.py --adverse-event DEATH --output-path DEATH/models --permute-group
 
 # ##############################
 # Template1

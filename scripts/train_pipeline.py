@@ -25,11 +25,10 @@ import numpy as np
 import pandas as pd
 
 from src.config import split_date
-from src.evaluate import Evaluate
+from src.evaluate import EvaluateClf
 from src.prep_data import PrepDataEDHD, PrepDataCYTO
-from src.surv.survival import TrainSurv
 from src.train import TrainML, TrainRNN, TrainENS
-from src.utility import initialize_folders, load_predictions, save_predictions
+from src.utility import initialize_folders, load_pickle, save_pickle
 
 class Pipeline():
     def __init__(self, output_path, processes=32):
@@ -37,11 +36,10 @@ class Pipeline():
         self.processes = processes
         
     def run(self, evaluate=True, **kwargs):
-        X, Y, tag, model_data = self.get_data()
-        self.train(X, Y, tag, **kwargs)
+        self.train(*self.get_data(), **kwargs)
         if evaluate:
             train = self.train(X, Y, tag, ensemble=True)
-            score_df = self.evaluate(train.preds, train.labels, model_data)
+            score_df = self.evaluate(train.preds, train.labels)
             print(score_df)
         
     def train(self, X, Y, tag, run_bayesopt=False,  rnn=False, ensemble=True):
@@ -56,14 +54,14 @@ class Pipeline():
         train.tune_and_train(run_bayesopt=run_bayesopt, run_training=True, save_preds=True)
         return train
         
-    def evaluate(self, preds, labels, orig_data):
-        eval_models = Evaluate(self.output_path, preds, labels, orig_data)
+    def evaluate(self, preds, labels):
+        eval_models = EvaluateClf(self.output_path, preds, labels)
         score_df = eval_models.get_evaluation_scores(display_ci=True, save_ci=True, save_score=True)
         return score_df
         
     def load_predictions(self):
-        preds = load_predictions(save_dir=f'{self.output_path}/predictions')
-        preds_rnn = load_predictions(save_dir=f'{self.output_path}/predictions', filename='rnn_predictions')
+        preds = load_pickle(f'{self.output_path}/preds', 'ML_preds')
+        preds_rnn = load_pickle(f'{self.output_path}/preds', 'RNN_preds')
         for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
         return preds
     
@@ -83,7 +81,7 @@ class PROACCTPipeline(Pipeline):
         model_data = model_data.loc[tag.index]
         print(prep.get_label_distribution(Y, tag, with_respect_to='sessions'))
         Y.columns = Y.columns.str.replace(f' {self.target_keyword}', '')
-        return X, Y, tag, model_data
+        return X, Y, tag
         
 class DEATHPipeline(Pipeline):
     def __init__(self, *args,  **kwargs):
@@ -96,7 +94,7 @@ class DEATHPipeline(Pipeline):
         X, Y, tag = prep.split_and_transform_data(model_data, split_date=split_date, remove_immediate_events=True)
         model_data = model_data.loc[tag.index]
         print(prep.get_label_distribution(Y, tag, with_respect_to='sessions'))
-        return X, Y, tag, model_data
+        return X, Y, tag
 
 class CYTOPipeline(Pipeline):  
     def get_data(self):
@@ -107,7 +105,7 @@ class CYTOPipeline(Pipeline):
         )
         model_data = model_data.loc[tag.index]
         print(prep.get_label_distribution(Y, tag, with_respect_to='sessions'))
-        return X, Y, tag, model_data
+        return X, Y, tag
     
 class CANPipeline(Pipeline):  
     def get_data(self):

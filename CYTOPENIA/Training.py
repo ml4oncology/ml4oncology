@@ -36,13 +36,14 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from src.utility import initialize_folders, load_predictions, get_nunique_categories, get_nmissing
-from src.summarize import data_description_summary, feature_summary
-from src.visualize import importance_plot, subgroup_performance_plot
 from src.config import root_path, cyto_folder, split_date, blood_types
+from src.evaluate import EvaluateClf
+from src.model import SimpleBaselineModel
 from src.prep_data import PrepDataCYTO
 from src.train import TrainML, TrainRNN, TrainENS
-from src.evaluate import Evaluate
+from src.summarize import data_description_summary, feature_summary
+from src.utility import initialize_folders, load_pickle, get_nunique_categories, get_nmissing
+from src.visualize import importance_plot, subgroup_performance_plot
 
 
 # In[3]:
@@ -88,7 +89,7 @@ get_nunique_categories(model_data)
 get_nmissing(model_data, verbose=True)
 
 
-# In[9]:
+# In[4]:
 
 
 prep = PrepDataCYTO() # need to reset
@@ -110,7 +111,7 @@ prep.get_label_distribution(Y, tag, with_respect_to='sessions')
 prep.get_label_distribution(Y, tag, with_respect_to='patients')
 
 
-# In[12]:
+# In[5]:
 
 
 # Convenience variables
@@ -183,8 +184,8 @@ train_rnn.tune_and_train(run_bayesopt=False, run_training=True, run_calibration=
 
 
 # combine rnn and ml predictions
-preds = load_predictions(save_dir=f'{output_path}/predictions')
-preds_rnn = load_predictions(save_dir=f'{output_path}/predictions', filename='rnn_predictions')
+preds = load_pickle(f'{output_path}/preds', 'ML_preds')
+preds_rnn = load_pickle(f'{output_path}/preds', 'RNN_preds')
 for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
 del preds_rnn
 # Initialize Training Class
@@ -202,21 +203,19 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 # In[15]:
 
 
+# setup the final prediction and labels
 preds, labels = train_ens.preds, train_ens.labels
-
-
-# In[16]:
-
-
-eval_models = Evaluate(output_path=output_path, preds=preds, labels=labels, orig_data=model_data)
+base_cols = ['regimen'] + [f'baseline_{bt}_value' for bt in blood_types]
+base_model = SimpleBaselineModel(model_data[base_cols], labels)
+base_preds = base_model.predict()
+for split, pred in base_preds.items(): preds[split].update(pred)
 
 
 # In[17]:
 
 
-baseline_cols = ['regimen'] + [f'baseline_{bt}_value' for bt in blood_types]
-kwargs = {'baseline_cols': baseline_cols, 'display_ci': True, 'load_ci': True, 'save_ci': False}
-eval_models.get_evaluation_scores(**kwargs)
+eval_models = EvaluateClf(output_path, preds, labels)
+eval_models.get_evaluation_scores(display_ci=True, load_ci=True, save_ci=False)
 
 
 # In[28]:
@@ -262,6 +261,14 @@ importance_plot(
 )
 
 
+# In[19]:
+
+
+importance = pd.read_csv(f'{output_path}/perm_importance/ENS_feature_importance.csv').set_index('index')
+auroc_scores = eval_models.get_evaluation_scores(save_score=False).loc[('ENS', 'AUROC Score'), 'Test']
+pd.concat([importance.sum(), 1 - auroc_scores], axis=1, keys=['Cumulative Importance', '1 - AUROC'])
+
+
 # ## All the Plots
 
 # In[55]:
@@ -296,7 +303,7 @@ eval_models.operating_points(points=desired_precisions, op_metric='precision', p
 
 # ## Threshold Selection
 
-# In[18]:
+# In[22]:
 
 
 neutro_thresh = 0.25
@@ -307,7 +314,7 @@ pred_thresholds = [neutro_thresh, anemia_thresh, thromb_thresh]
 
 # ## Performance on Subgroups
 
-# In[160]:
+# In[20]:
 
 
 subgroups = [
@@ -316,18 +323,18 @@ subgroups = [
 ]
 
 
-# In[161]:
+# In[23]:
 
 
 perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate']}
 subgroup_performance = eval_models.get_perf_by_subgroup(
-    subgroups=subgroups, pred_thresh=pred_thresholds, alg='ENS', save=True, display_ci=True, load_ci=True, 
-    perf_kwargs=perf_kwargs
+    model_data, subgroups=subgroups, pred_thresh=pred_thresholds, alg='ENS', 
+    save=True, display_ci=True, load_ci=True, perf_kwargs=perf_kwargs
 )
 subgroup_performance
 
 
-# In[162]:
+# In[25]:
 
 
 subgroup_performance = pd.read_csv(f'{output_path}/tables/subgroup_performance.csv', index_col=[0,1], header=[0,1])
@@ -355,7 +362,7 @@ for name, grouping in subgroup_plot_groupings.items():
         print(f'Plotted {name} Subgroup Performance Plot for {target_event}')
         subgroup_performance_plot(
             subgroup_performance, target_event=target_event, subgroups=grouping, padding=subgroup_plot_padding,
-            figsize=(subgroup_plot_width[name],30), save_dir=f'{output_path}/figures/subgroup_performance/{name}'
+            figsize=(subgroup_plot_width[name],30), save_dir=f'{output_path}/figures/subgroup_perf/{name}'
         )
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
@@ -467,16 +474,10 @@ plot_patient_prediction(eval_models, pred_thresholds, alg='ENS', num_ikn=8, seed
 
 # ## XGB as txt file
 
-# In[56]:
-
-
-from src.utility import load_ml_model
-
-
 # In[57]:
 
 
-XGB_model = load_ml_model(output_path, 'XGB')
+XGB_model = load_pickle(output_path, 'XGB')
 for idx, blood_type in enumerate(blood_types):
     estimator = XGB_model.estimators_[0].calibrated_classifiers_[0].estimator
     estimator.get_booster().dump_model(f'{output_path}/interpret/XGB_{blood_type}.txt')
@@ -503,31 +504,32 @@ tree_plot(train_ml, target_event='Neutropenia', alg='RF')
 
 
 df = eval_models.get_perf_by_subgroup(
-    subgroups=['all', 'cycle_length'], pred_thresh=neutro_thresh, alg='ENS', display_ci=False, perf_kwargs=perf_kwargs
+    model_data, subgroups=['all', 'cycle_length'], pred_thresh=neutro_thresh, alg='ENS', display_ci=False, 
+    perf_kwargs=perf_kwargs
 )
 subgroup_performance_plot(df, target_event='Neutropenia', padding=subgroup_plot_padding, figsize=(4,20))
 
 
-# In[181]:
+# In[26]:
 
 
 # analyze regimen subgroups with the worst performance
 perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate', 'count']}
 df = eval_models.get_perf_by_subgroup(
-    subgroups=['regimen'], pred_thresh=neutro_thresh, alg='ENS', target_events=['Neutropenia'], display_ci=False, 
-    perf_kwargs=perf_kwargs, top=150
+    model_data, subgroups=['regimen'], pred_thresh=neutro_thresh, alg='ENS', target_events=['Neutropenia'], 
+    save=False, display_ci=False, perf_kwargs=perf_kwargs, top=150
 )
 df[('Neutropenia', 'N')] = df.pop(('Neutropenia', 'N')).astype(int)
 df.sort_values(by=('Neutropenia', 'AUROC'))
 
 
-# In[187]:
+# In[27]:
 
 
 # analyze cancer subgroups with the worst performance
 df = eval_models.get_perf_by_subgroup(
-    subgroups=['cancer_location'], pred_thresh=neutro_thresh, alg='ENS', target_events=['Neutropenia'], 
-    display_ci=False, perf_kwargs=perf_kwargs, top=100
+    model_data, subgroups=['cancer_location'], pred_thresh=neutro_thresh, alg='ENS', target_events=['Neutropenia'], 
+    save=False, display_ci=False, perf_kwargs=perf_kwargs, top=100
 )
 df[('Neutropenia', 'N')] = df.pop(('Neutropenia', 'N')).astype(int)
 df.sort_values(by=('Neutropenia', 'AUROC'))
@@ -573,83 +575,61 @@ missing.sort_values(by=(f'Test (N={len(Y_test)})', 'Missing (N)'), ascending=Fal
 
 # ## LOESS Baseline Model
 
-# In[24]:
+# In[6]:
 
 
 from sklearn.preprocessing import StandardScaler
-from tqdm import tqdm
-
 from src.train import TrainLOESSModel, TrainPolynomialModel
 from src.evaluate import EvaluateBaselineModel
 
 
-# In[25]:
+# In[7]:
 
 
-def train_loess_pipeline(
-    X, 
-    Y, 
-    tag, 
-    output_path, 
-    orig_data, 
-    bt='neutrophil', 
-    alg='LOESS', 
-    split='Test', 
-    task_type='regression'
-):
-    # Setup
+def run(X, Y, tag, base_vals, output_path, alg='LOESS', split='Test', task_type='C', scale_func=None):
     Trains = {'LOESS': TrainLOESSModel, 'SPLINE': TrainPolynomialModel, 'POLY': TrainPolynomialModel}
-    Train = Trains[alg]
-    base_col = f'baseline_{bt}_value'
-    reg_task = task_type == 'regression'
-    train_mask, valid_mask, test_mask = tag['split'] == 'Train', tag['split'] == 'Valid', tag['split'] == 'Test'
-    
-    if reg_task: 
-        name = f'Before Next Treatment {bt.title()} Count'
-        best_param_filename = f'{alg}_regressor_best_param'
-        Y = orig_data[[f'target_{bt}_value']].copy()
-        scaler = StandardScaler()
-        Y[train_mask] = scaler.fit_transform(Y[train_mask])
-        Y[valid_mask] = scaler.transform(Y[valid_mask])
-        Y[test_mask] = scaler.transform(Y[test_mask])
-    else:
-        name = blood_types[bt]['cytopenia_name']
-        best_param_filename = ''
-        Y = Y[[name]]
-        
-    print(f'Training {alg} for {name}')
-    train = Train(X, Y, tag, output_path, base_col=base_col, alg=alg, task_type=task_type)
-    best_param = train.bayesopt(filename=best_param_filename, verbose=0)
+    train = Trains[alg](X, Y, tag, output_path, base_vals.name, alg, task_type=task_type)
+    best_param = train.bayesopt(alg=alg, verbose=0, filename=f'{alg}_{task_type}_params')
     model = train.train_model(**best_param)
-
-    print(f'Evaluating {alg} for {name}')
-    preds, preds_min, preds_max = train.predict(model, split=split)
-    
-    if reg_task:
-        preds[:] = scaler.inverse_transform(preds)
-        preds_min[:] = scaler.inverse_transform(preds_min)
-        preds_max[:] = scaler.inverse_transform(preds_max)
+    Y_preds, Y_preds_min, Y_preds_max = train.predict(model, split=split)
+    if scale_func is not None:
+        f = scale_func
+        Y_preds[:], Y_preds_min[:], Y_preds_max[:] = f(Y_preds), f(Y_preds_min), f(Y_preds_max)
+    mask = tag['split'] == split
+    preds, pred_ci, labels = {split: {alg: Y_preds}}, {split: {alg: (Y_preds_min, Y_preds_max)}}, {split: Y[mask]}
+    eval_base = EvaluateBaselineModel(base_vals[mask], preds, labels, output_path, pred_ci=pred_ci)
+    if task_type == 'C': 
+        eval_base.all_plots(alg=alg)
+    elif task_type =='R':
         fig, ax = plt.subplots(figsize=(6,6))
+        target_event = Y.columns[0]
+        eval_base.plot_prediction(ax, alg, target_event=target_event, split=split)
+        filename = f'{output_path}/figures/baseline/{target_event}_{alg}.jpg'
+        plt.savefig(filename, bbox_inches='tight', dpi=300)
+    return Y_preds, Y_preds_min, Y_preds_max
 
-    predictions, labels = {split: {alg: preds}}, {split: Y.loc[preds.index]}
-    eval_loess = EvaluateBaselineModel(
-        base_col=train.col, preds_min=preds_min, preds_max=preds_max, output_path=output_path, preds=predictions, 
-        labels=labels, orig_data=orig_data.loc[preds.index]
+
+# In[21]:
+
+
+for bt in blood_types:
+    print(f'Training LOESS for {bt}')
+    y = Y[[blood_types[bt]['cytopenia_name']]]
+    preds, preds_min, preds_max = run(
+        X, y, tag, model_data[f'baseline_{bt}_value'], output_path, task_type='C'
     )
 
-    if reg_task:
-        col = Y.columns[0]
-        eval_loess.plot_loess(ax, alg, target_event=col, split=split)
-        filename = f'{output_path}/figures/baseline/{col}_{alg}.jpg'
-        plt.savefig(filename, bbox_inches='tight', dpi=300)
-        ax.set_title(name)
-    else:
-        eval_loess.all_plots(alg=alg)
+
+# In[ ]:
 
 
-# In[26]:
-
-
-for task_type in ['regression', 'classification']:
-    for blood_type in tqdm(blood_types):
-        train_loess_pipeline(X, Y, tag, output_path, prep.clip_outliers(model_data), bt=blood_type, task_type=task_type)
+for bt in blood_types:
+    print(f'Training LOESS for {bt}')
+    y = model_data[[f'target_{bt}_value']].copy()
+    scaler = StandardScaler()
+    y[train_mask] = scaler.fit_transform(y[train_mask])
+    y[valid_mask] = scaler.transform(y[valid_mask])
+    y[test_mask] = scaler.transform(y[test_mask])
+    preds, preds_min, preds_max = run(
+        X, y, tag, model_data[f'baseline_{bt}_value'], output_path, task_type='R', scale_func=scaler.inverse_transform
+    )

@@ -36,16 +36,18 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+
+from src.config import root_path, acu_folder
+from src.evaluate import EvaluateClf
+from src.model import SimpleBaselineModel
+from src.prep_data import PrepDataEDHD
+from src.summarize import data_description_summary, feature_summary
+from src.train import TrainLASSO, TrainML, TrainRNN, TrainENS
 from src.utility import (
-    initialize_folders, load_ml_model, load_predictions,
+    initialize_folders, load_pickle,
     get_nunique_categories, get_nmissing, get_clean_variable_names, get_units
 )
-from src.summarize import data_description_summary, feature_summary
 from src.visualize import importance_plot, subgroup_performance_plot
-from src.config import root_path, acu_folder
-from src.prep_data import PrepDataEDHD
-from src.train import TrainLASSO, TrainML, TrainRNN, TrainENS
-from src.evaluate import Evaluate
 
 
 # In[3]:
@@ -178,7 +180,7 @@ plt.savefig(f'{output_path}/figures/LASSO_score_vs_num_feat.jpg', dpi=300)
 # In[15]:
 
 
-model = load_ml_model(output_path, 'LASSO')
+model = load_pickle(output_path, 'LASSO')
 coef = train_lasso.get_coefficients(model, non_zero=False)
 
 # Clean the feature names
@@ -226,9 +228,9 @@ train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration
 
 
 # combine lasso, rnn, and ml predictions
-preds = load_predictions(save_dir=f'{output_path}/predictions')
-preds_lasso = load_predictions(save_dir=f'{output_path}/predictions', filename='LASSO_predictions')
-preds_rnn = load_predictions(save_dir=f'{output_path}/predictions', filename='rnn_predictions')
+preds = load_pickle(f'{output_path}/preds', 'ML_preds')
+preds_lasso = load_pickle(f'{output_path}/preds', 'LASSO_preds')
+preds_rnn = load_pickle(f'{output_path}/preds', filename='RNN_preds')
 for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
 for split, pred in preds_lasso.items(): preds[split]['LR'] = pred['LR']
 del preds_rnn, preds_lasso
@@ -243,29 +245,22 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # # Evaluate Models
 
-# In[17]:
+# In[ ]:
 
 
+# setup the final prediction and labels
 preds, labels = train_ens.preds.copy(), train_ens.labels.copy()
-
-
-# In[18]:
-
-
-eval_models = Evaluate(output_path=output_path, preds=preds, labels=labels, orig_data=model_data)
+base_model = SimpleBaselineModel(model_data[['regimen']], labels)
+base_preds = base_model.predict()
+for split, pred in base_preds.items(): preds[split].update(pred)
 
 
 # In[19]:
 
 
-kwargs = {
-    'target_events': ['ACU', 'ED', 'H', 'TR_ACU', 'TR_ED', 'TR_H', 'INFX_ED', 'INFX_H','GI_ED', 'GI_H'], 
-    'baseline_cols': ['regimen'], 
-    'display_ci': True, 
-    'load_ci': True, 
-    'save_ci': False
-}
-df = eval_models.get_evaluation_scores(**kwargs)
+target_order = ['ACU', 'ED', 'H', 'TR_ACU', 'TR_ED', 'TR_H', 'INFX_ED', 'INFX_H','GI_ED', 'GI_H']
+eval_models = EvaluateClf(output_path, preds, labels)
+df = eval_models.get_evaluation_scores(target_events=target_order, display_ci=True, load_ci=True, save_ci=False)
 df
 
 
@@ -350,7 +345,7 @@ perf_kwargs = {
     'perf_metrics': ['precision', 'recall', 'outcome_level_recall', 'event_rate']
 }
 subgroup_performance = eval_models.get_perf_by_subgroup(
-    subgroups=subgroups, pred_thresh=0.35, alg='ENS', 
+    model_data, subgroups=subgroups, pred_thresh=0.35, alg='ENS', 
     display_ci=False, load_ci=False, perf_kwargs=perf_kwargs
 )
 subgroup_performance
@@ -400,7 +395,7 @@ padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
 for name, subgroups in groupings.items():
     subgroup_performance_plot(
         subgroup_performance, target_event='ACU', subgroups=subgroups, padding=padding,
-        figsize=(12,30), save_dir=f'{output_path}/figures/subgroup_performance/{name}'
+        figsize=(12,30), save_dir=f'{output_path}/figures/subgroup_perf/{name}'
     )
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
@@ -413,7 +408,7 @@ for name, subgroups in groupings.items():
 subgroups = ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Regimen', 'Days Since Starting Regimen']
 subgroup_performance_plot(
     subgroup_performance, target_event='ACU', subgroups=subgroups, padding=padding,
-    figsize=(12,30), save_dir=f'{output_path}/figures/subgroup_performance'
+    figsize=(12,30), save_dir=f'{output_path}/figures/subgroup_perf'
 )
 
 
@@ -451,7 +446,7 @@ pred = predict(df)
 labels = {split: Y_test.loc[df.index]}
 preds = {split: {'ENS': train_ens.preds[split]['ENS'].loc[df.index],
                  'BRK': pd.DataFrame({col: pred for col in Y_test.columns})}}
-eval_brooks_model = Evaluate(output_path='', preds=preds, labels=labels, orig_data=df)
+eval_brooks_model = EvaluateClf(output_path='', preds=preds, labels=labels)
 
 
 # In[112]:

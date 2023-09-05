@@ -21,7 +21,7 @@ import shutil
 import pandas as pd
 import numpy as np
 
-from src import logging
+from src import logger
 from src.config import (
     root_path, min_chemo_date, max_chemo_date, all_observations, eng_lang_codes,
     cisplatin_dins, cisplatin_cco_drug_codes, blood_cancer_code,
@@ -35,6 +35,7 @@ from src.utility import (
     get_mapping_from_textfile,
     get_years_diff, 
     group_observations,
+    make_log_msg,
     numpy_ffill,  
     split_and_parallelize, 
 )
@@ -47,10 +48,18 @@ class Systemic:
     def load(self):
         return pd.read_parquet(f'{root_path}/data/systemic.parquet.gzip')
     
-    def run(self, regimens, drug=None, filter_kwargs=None, process_kwargs=None):
+    def run(
+        self, 
+        regimens, 
+        drug=None, 
+        filter_kwargs=None, 
+        process_kwargs=None, 
+        verbose=True
+    ):
         if filter_kwargs is None: filter_kwargs = {}
         if process_kwargs is None: process_kwargs = {}
-        df = self.load()        
+        df = self.load()
+        if verbose: _get_n_patients(df, 'treatment')
         df = filter_systemic_data(df, regimens, drug=drug, **filter_kwargs)
         df = process_systemic_data(df, drug=drug, **process_kwargs)
         return df
@@ -74,7 +83,7 @@ def filter_systemic_data(
     """
     cols = systemic_cols.copy()
     
-    df = clean_up_systemic(df)
+    df = clean_up_systemic(df, verbose=verbose)
     df = filter_regimens(df, regimens, verbose=verbose)
     df = filter_date(df, verbose=verbose)
     if drug is not None:
@@ -124,7 +133,7 @@ def systemic_worker(partition, method='merge', min_interval=4):
         
         if method == 'one-per-week':
             # combine concurrent regimens by merging same day treatments
-            df = merge_intervals(df, min_interval=0)
+            df = merge_intervals(df, min_interval=1)
             # keep only the first treatment session of a given week
             keep_idxs = []
             previous_date = pd.Timestamp.min
@@ -226,8 +235,10 @@ def process_systemic_data(
                 duplicate_mask = group['regimen'].duplicated(keep='first')
                 drop_indices += group[duplicate_mask].index.tolist()
             if verbose:
-                logging.info(f'Dropped {len(drop_indices)} where no {drug} was '
-                             'intended to be administered after the first session')
+                mask = ~df.index.isin(drop_indices)
+                context = (f' where no {drug} was intended to be administered '
+                           'after the first session')
+                logger.info(make_log_msg(df, mask, context=context))
             df = df.drop(index=drop_indices)
     
     return df
@@ -235,11 +246,13 @@ def process_systemic_data(
 ###############################################################################
 # Systemic Threapy Treatment Data - Helper Functions
 ###############################################################################
-def clean_up_systemic(df):
+def clean_up_systemic(df, verbose=True):
     df = df.rename(columns={'cco_regimen': 'regimen'})
     
     # filter out rows with no regimen data 
     mask = df['regimen'].notnull()
+    if verbose:
+        logger.info(make_log_msg(df, mask, context=f' with no regimen data.'))
     df = df[mask].copy()
     
     # clean regimen name
@@ -258,9 +271,11 @@ def clean_up_systemic(df):
     df = df.sort_values(by=DATE) # order the data dataframe by date
     return df
 
-def filter_regimens(df, regimens, verbose=False):
+def filter_regimens(df, regimens, verbose=True):
     # keep only selected reigmens
     mask = df['regimen'].isin(regimens['regimen'])
+    if verbose:
+        logger.info(make_log_msg(df, mask, context=f' not in selected reigmens.'))
     df = df[mask].copy()
     
     # change regimen name to the correct mapping
@@ -279,12 +294,13 @@ def filter_date(
     """Remove treatment sessions recieved before the new ALR system was set up
     """
     if verbose: 
-        logging.info(f"{len(df)} chemo treatments occured between "
-                     f"{df[DATE].min().date()} to {df[DATE].max().date()}")
+        msg = (f"{len(df)} treatments occured between "
+               f"{df[DATE].min().date()} to {df[DATE].max().date()}")
+        logger.info(msg)
     mask = df[DATE].between(min_date, max_date)
     if verbose: 
-        logging.info(f"Removing {sum(~mask)} chemo treatments that occured "
-                     f"before {min_date} and after {max_date}.")
+        context = (f' that occured before {min_date} and after {max_date}.')
+        logger.info(make_log_msg(df, mask, context=context))
     df = df[mask]
     return df
 
@@ -294,9 +310,8 @@ def filter_inpatients(df, verbose=False):
     inpatient_mask = df['inpatient_flag'] == 'Y'
     missing_mask = df['inpatient_flag'].isnull()
     if verbose:
-        logging.info(f"Removing {sum(inpatient_mask)} inpatient chemo "
-                     f"treatments and {sum(missing_mask)} unknown inpatient "
-                     "status chemo treatements")
+        context = f' as an inpatient or with unknown inpatient status.'
+        logger.info(make_log_msg(df, outpatient_mask, context=context))
     df = df[outpatient_mask]
     return df
 
@@ -310,21 +325,22 @@ def filter_drug(df, keep_drug='cisplatin', verbose=False):
     
     mask = df['din'].isin(keep_dins) | df['cco_drug_code'].isin(keep_ccos)
     if verbose: 
-        logging.info(f"Removing {sum(~mask)} sessions with no {keep_drug} "
-                     "administrated")
+        context = f' with no {keep_drug} administrated.'
+        logger.info(make_log_msg(df, mask, context=context))
     df = df[mask]
     
     # remove rows with measurement unit of g, unit, mL, nan
     mask = df['measurement_unit'].isin(['mg', 'MG'])
     if verbose: 
-        logging.info(f"Removing {sum(~mask)} sessions in which measurement "
-                     f"unit of {keep_drug} administered was not in mg")
+        context =  (f"in which measurement unit of {keep_drug} administered "
+                    "was not in mg")
+        logger.info(make_log_msg(df, mask, context=context))
     df = df[mask]
     
     # remove rows with missing dosage values
     mask = df[DOSE].isnull()
     if verbose:
-        logging.info(f"Removing {sum(mask)} sessions with missing dosages")
+        logger.info(make_log_msg(df, ~mask, context=" with missing dosages"))
     df = df[~mask].copy()
     
     df['drug'] = keep_drug
@@ -400,7 +416,7 @@ def merge_intervals(df, min_interval=4, merge_cols=None):
     if merge_cols is None: merge_cols = []
     
     df = df.reset_index(drop=True)
-    df['interval'] = (df[f'next_{DATE}'] - df[DATE]).dt.days
+    df['interval'] = (df[DATE].shift(-1) - df[DATE]).dt.days
     merge_cols.append('interval')
     
     # WARNING: Assumes df only contains one drug type if merging dosages
@@ -505,7 +521,7 @@ def filter_basic_demographic_data(df, exclude_blood_cancer=True, verbose=False):
         mask = df['cancer_topog_cd'].isin(blood_cancer_code)
         if verbose:
             N = df.loc[mask, 'ikn'].nunique()
-            logging.info(f"Removing {N} patients with blood cancer")
+            logger.info(f"Removing {N} patients with blood cancer")
         df = df[~mask]
         
     # remove morphology codes >= 959
@@ -513,7 +529,7 @@ def filter_basic_demographic_data(df, exclude_blood_cancer=True, verbose=False):
     if verbose:
         N = df.loc[mask, 'ikn'].nunique()
         removed_cancers = df.loc[mask, 'cancer_morph_cd'].unique()
-        logging.info(f"Removing {N} patients and cancer types {removed_cancers}")
+        logger.info(f"Removing {N} patients and cancer types {removed_cancers}")
     df = df[~mask]
     
     return df
@@ -566,7 +582,7 @@ def combine_demographic_data(systemic, demographic, verbose=True):
     mask = df['age'] < 18
     if verbose:
         N = df.loc[mask, 'ikn'].nunique()
-        logging.info(f"Removing {N} patients under 18")
+        logger.info(f"Removing {N} patients under 18")
     df = df[~mask]
     
     # get years since immigrating to Canada 
@@ -667,7 +683,7 @@ def closest_measurement_worker(partition, days_after=90):
     chemo_df, obs_df = partition
     obs_df = obs_df.sort_values(by=OBS_DATE) # might be redundant but just in case
     if obs_df[OBS_CODE].nunique() > 1:
-        msg = ('Multiple observation codes for closest_measurement_worker '
+        msg = ('Multiple observation codes for closest_measurement_worker not'
                'supported yet')
         raise NotImplementedError(msg)
     
@@ -809,7 +825,7 @@ class Symptoms:
         )
         cols = ['chemo_idx', 'symptom', 'severity', 'survey_date']
         symp = pd.DataFrame(result, columns=cols)
-        if verbose: logging.info(f"\n{symp['symptom'].value_counts()}")
+        if verbose: logger.info(f"\n{symp['symptom'].value_counts()}")
 
         return symp
 
@@ -901,7 +917,7 @@ class AcuteCareUse:
             
             if verbose:
                 cols = event_map[event]['event_cause_cols']
-                logging.info(f"\n{result[cols].apply(pd.value_counts)}")
+                logger.info(f"\n{result[cols].apply(pd.value_counts)}")
         
         # inpatients
         mask = df['ikn'].isin(event_df['ikn'])
@@ -910,8 +926,9 @@ class AcuteCareUse:
         )
         if verbose:
             N = df.loc[idxs, 'ikn'].nunique()
-            logging.info('Number of patients that received treatment while '
-                         f'hospitalized: {N}')
+            msg = (f"Number of patients that received treatment while "
+                   f"hospitalized: {N}")
+            logger.info(msg)
         np.save(f'{self.output_path}/inpatient_idxs.npy', idxs)
         
 def filter_event_data(df, chemo_ikns, event='H', remove_ED_causing_H=True):
@@ -1063,7 +1080,7 @@ class BloodTransfusion:
         
         if verbose:
             cols = ['feat_or_targ', 'event', 'type']
-            for col in cols: logging.info(result[col].value_counts().to_dict())
+            for col in cols: logger.info(result[col].value_counts().to_dict())
             
 def filter_blood_transfusion_data(df, chemo_ikns, event='H'):
     # filter patients not in chemo_df
@@ -1155,7 +1172,7 @@ def process_odb_data(df, verbose=True):
     odb = odb.sort_values(by='servdate')
     if verbose:
         _get_n_patients(odb, 'Ontario Drug Benefit')
-        logging.info(f"\n{odb['din'].value_counts()}")
+        logger.info(f"\n{odb['din'].value_counts()}")
     mask = df['ikn'].isin(odb['ikn'])
     idxs = split_and_parallelize((df[mask], odb), odb_worker)
     df['GF_given'] = False
@@ -1198,7 +1215,7 @@ def process_dialysis_data(df, verbose=True, **kwargs):
     df.loc[idxs, 'dialysis'] = True
     if verbose: 
         _get_n_patients(dialysis, 'Dialysis')
-        logging.info(f"\n{df['dialysis'].value_counts()}")
+        logger.info(f"\n{df['dialysis'].value_counts()}")
     return df
 
 ###############################################################################
@@ -1224,4 +1241,4 @@ def filter_ohip_data(ohip, billing_codes=None):
 ###############################################################################
 def _get_n_patients(df, name):
     N = df['ikn'].nunique()
-    logging.info(f"Number of patients in {name} data = {N}")
+    logger.info(f"Number of patients in {name} data = {N}")

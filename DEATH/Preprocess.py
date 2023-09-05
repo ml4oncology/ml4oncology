@@ -47,7 +47,7 @@ processes = 32
 
 # #### <b>Reuse the data from PROACCT so we don't perform repetetive preprocessing steps</b>
 
-# In[5]:
+# In[4]:
 
 
 get_ipython().system('cp $acu_folder/data/final_data.parquet.gzip $death_folder/data/final_data.parquet.gzip')
@@ -57,7 +57,7 @@ get_ipython().system('cp $acu_folder/data/H.parquet.gzip $death_folder/data/H.pa
 
 # # Create my dataset
 
-# In[4]:
+# In[5]:
 
 
 main_filepath = f'{output_path}/data/final_data.parquet.gzip'
@@ -76,7 +76,7 @@ chemo_df['last_seen_date'] = chemo_df['death_date'].fillna(max_chemo_date)
 # ### Include features from OHIP database
 # Get date of palliative care consultation services (PCCS) via physician billing codes (A945 and C945)
 
-# In[9]:
+# In[7]:
 
 
 # Extract and Preprocess the OHIP Data
@@ -88,7 +88,7 @@ initial_pccs_date = ohip.groupby('ikn')['servdate'].first()
 chemo_df['first_PCCS_date'] = chemo_df['ikn'].map(initial_pccs_date)
 
 
-# In[10]:
+# In[8]:
 
 
 n = chemo_df.loc[chemo_df['first_PCCS_date'].notnull(), 'ikn'].nunique()
@@ -96,7 +96,10 @@ N = chemo_df['ikn'].nunique()
 print(f"{n} patients out of {N} total patients have received at least one palliative care consultation services (PCCS)")
 
 
-# In[11]:
+# In[9]:
 
 
 chemo_df.to_parquet(main_filepath, compression='gzip', index=False)
+
+
+# In[ ]:

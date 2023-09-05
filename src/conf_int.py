@@ -18,16 +18,11 @@ TERMS OF USE:
 Module for computing confidence intervals
 """
 from functools import partial
-
-from sklearn.metrics import (
-    average_precision_score, 
-    roc_auc_score
-)
 from statsmodels.stats.proportion import proportion_confint
 import numpy as np
 import pandas as pd
 
-from src import logging
+from src import logger
 from src.utility import (
     twolevel,
     split_and_parallelize,
@@ -52,37 +47,37 @@ def get_confidence_interval(data, method='basic', alpha=0.05):
         )
     return lower_ci, upper_ci
 
-class AUCConfidenceInterval:
+class ScoreConfidenceInterval:
     """
     Attributes:
-        bs_scores (pd.DataFrame): table of bootstrapped AUROC and AUPRC scores
-            for computing AUC confidence intervals
+        bs_scores (pd.DataFrame): table of bootstrapped scores
+            for computing their confidence intervals
     """
-    def __init__(self, output_path):
+    def __init__(self, output_path, score_funcs):
+        """
+        Args:
+            score_funcs: A mapping of scoring names and their scoring functions
+        """
         self.output_path = output_path
         # memory table / cache to store the bootstrapped scores
         self.bs_scores = pd.DataFrame(index=twolevel)
+        self.score_funcs = score_funcs
             
-    def get_auc_confidence_interval(
+    def get_score_confidence_interval(
         self, 
         Y_true, 
-        Y_pred_prob, 
+        Y_pred, 
         **kwargs
     ):
-        auroc_scores, auprc_scores = self.get_bootstrapped_scores(
-            Y_true, Y_pred_prob, **kwargs,
-        )
-        
-        ci = {
-            'AUROC': get_confidence_interval(auroc_scores, method='basic'),
-            'AUPRC': get_confidence_interval(auprc_scores, method='basic')
-        }
+        scores = self.get_bootstrapped_scores(Y_true, Y_pred, **kwargs)
+        ci = {name: get_confidence_interval(scores[name], method='basic')
+              for name in self.score_funcs}
         return ci
     
     def get_bootstrapped_scores(
         self, 
         Y_true, 
-        Y_pred_prob, 
+        Y_pred, 
         store=True,
         name='Bootstraps',
         n_bootstraps=10000,
@@ -90,75 +85,76 @@ class AUCConfidenceInterval:
     ):
         # Check the cache
         if name not in self.bs_scores.index:
-            auc_scores = compute_bootstrap_auc_scores(
-                Y_true, Y_pred_prob, n_bootstraps=n_bootstraps
+            scores = compute_bootstrap_scores(
+                Y_true, Y_pred, self.score_funcs, n_bootstraps=n_bootstraps
             )
-            auroc_scores, auprc_scores = np.array(auc_scores).T
             if verbose: 
-                logging.info(f'Completed bootstrap computations for {name}')
+                logger.info(f'Completed bootstrap computations for {name}')
             if store:
                 cols = range(n_bootstraps)
-                self.bs_scores.loc[(name, 'AUROC'), cols] = auroc_scores
-                self.bs_scores.loc[(name, 'AUPRC'), cols] = auprc_scores
+                for score_name in self.score_funcs:
+                    result = scores[score_name].to_numpy()
+                    self.bs_scores.loc[(name, score_name), cols] = result
         else:
-            auroc_scores, auprc_scores = self.bs_scores.loc[name].to_numpy()
+            scores = self.bs_scores.loc[name].T
             
-        return auroc_scores, auprc_scores
+        return scores
     
     def load_bootstrapped_scores(self, filename='bootstrapped_scores'):
-        filepath = f'{self.output_path}/confidence_interval/{filename}.csv'
+        filepath = f'{self.output_path}/conf_interval/{filename}.csv'
         self.bs_scores = pd.read_csv(filepath, index_col=[0,1])
         self.bs_scores.columns = self.bs_scores.columns.astype(int)
         
     def save_bootstrapped_scores(self, filename='bootstrapped_scores'):
-        filepath = f'{self.output_path}/confidence_interval/{filename}.csv'
+        filepath = f'{self.output_path}/conf_interval/{filename}.csv'
         self.bs_scores.to_csv(filepath)
         
 ###############################################################################
 # Bootstrapping
 ###############################################################################
-def compute_bootstrap_auc_scores(
+def compute_bootstrap_scores(
     Y_true, 
-    Y_pred_prob, 
+    Y_pred, 
+    score_funcs,
     n_bootstraps=10000, 
-    processes=32
+    processes=32,
 ):
-    """Compute bootstrapped AUROC/AUPRC scores for computing their confidence 
-    intervals
+    """Compute bootstrapped scores for computing their confidence intervals
     """
-    worker = partial(auc_bootstrap_worker, Y_true=Y_true, Y_pred_prob=Y_pred_prob)
+    worker = partial(
+        bootstrap_worker, Y_true=Y_true, Y_pred=Y_pred, score_funcs=score_funcs
+    )
     scores = split_and_parallelize(
         range(n_bootstraps), worker, split_by_ikns=False, processes=processes
     )
     
     n_skipped = n_bootstraps - len(scores)
     if n_skipped > 0: 
-        logging.warning(f'{n_skipped} bootstraps with no pos examples were '
-                        'skipped, skipped bootstraps will be replaced with '
-                        'original score')
+        msg = (f'{n_skipped} bootstraps with no pos examples were skipped, '
+               'skipped bootstraps will be replaced with original score')
+        logger.warning(msg)
         # fill skipped boostraps with the original score
-        orig_score = [(
-            roc_auc_score(Y_true, Y_pred_prob), 
-            average_precision_score(Y_true, Y_pred_prob),
-        )]
+        orig_score = [
+            [func(Y_true, Y_pred) for name, func in score_funcs.items()]
+        ]
         scores += orig_score * n_skipped
-        
+    
+    scores = pd.DataFrame(scores, columns=score_funcs)
     return scores
     
-def auc_bootstrap_worker(bootstrap_partition, Y_true, Y_pred_prob):
+def bootstrap_worker(bootstrap_partition, Y_true, Y_pred, score_funcs):
     """Resample the labels and predictions with replacement and recompute the 
-    AUROC/AUPRC score
+    scores
     """
     scores = []
     for random_seed in bootstrap_partition:
         y_true = bootstrap_sample(Y_true, random_seed)
-        y_pred_prob = Y_pred_prob[y_true.index]
+        y_pred = Y_pred[y_true.index]
         if y_true.nunique() < 2:
             continue
-        scores.append((
-            roc_auc_score(y_true, y_pred_prob), 
-            average_precision_score(y_true, y_pred_prob)
-        ))
+        scores.append(
+            [func(y_true, y_pred) for name, func in score_funcs.items()]
+        )
     return scores
 
 def nadir_bootstrap_worker(bootstrap_partition, df, cycle_length, cyto_thresh):

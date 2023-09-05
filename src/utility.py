@@ -31,7 +31,7 @@ import multiprocessing as mp
 import numpy as np
 import pandas as pd
 
-from src import logging
+from src import logger
 from src.config import (
     root_path, regimens_folder, max_chemo_date,
     DATE,
@@ -51,40 +51,31 @@ def initialize_folders(output_path, extra_folders=None):
         os.makedirs(output_path)
         
     main_folders = [
-        'confidence_interval', 'perm_importance', 'best_params', 
-        'predictions', 'tables', 'figures'
+        'conf_interval', 'feat_importance', 'best_params', 
+        'preds', 'tables', 'figures'
     ]
     figure_folders = [
-        'curves', 'subgroup_performance', 'important_features', 
-        'important_groups', 'rnn_train_performance', 
+        'curves', 'subgroup_perf', 'important_features', 'important_groups',
+        'rnn_train_perf', 
     ]
     figure_folders = [f'figures/{folder}' for folder in figure_folders]
     for folder in main_folders + figure_folders + extra_folders:
         if not os.path.exists(f'{output_path}/{folder}'):
             os.makedirs(f'{output_path}/{folder}')
 
-def load_ml_model(model_dir, algorithm, name='classifier'):
-    filename = f'{model_dir}/{algorithm}_{name}.pkl'
-    with open(filename, 'rb') as file:
-        model = pickle.load(file)
-    return model
+def load_pickle(save_dir, filename, err_msg=None):
+    filepath = f'{save_dir}/{filename}.pkl'
+    if err_msg is None: err_msg = f'File not found: {filepath}'
+    if not os.path.exists(filepath): raise ValueError(err_msg)
+        
+    with open(filepath, 'rb') as file:
+        output = pickle.load(file)
+    return output
 
-def save_predictions(preds, save_dir, filename='predictions'):
-    filename = f'{save_dir}/{filename}.pkl'
-    with open(filename, 'wb') as file:    
-        pickle.dump(preds, file)
-
-def load_predictions(save_dir, filename='predictions'):
-    filename = f'{save_dir}/{filename}.pkl'
-    with open(filename, 'rb') as file:
-        preds = pickle.load(file)
-    return preds
-
-def load_ensemble_weights(save_dir):
-    filename = f'{save_dir}/ENS_best_param.pkl'
-    with open(filename, 'rb') as file:
-        ensemble_weights = pickle.load(file)
-    return ensemble_weights
+def save_pickle(result, save_dir, filename):
+    filepath = f'{save_dir}/{filename}.pkl'
+    with open(filepath, 'wb') as file:    
+        pickle.dump(result, file)
 
 def load_reviewed_regimens():
     """Get the annotated regimens with their cycle lengths, name relabelings, 
@@ -232,11 +223,12 @@ def replace_rare_categories(
         )
         replace_cats = counts.index[counts < n]
         if verbose:
-            logging.info(f'The following {col} categories have less than {n} '
-                         f'{with_respect_to} and will be replaced with "other"'
-                         f': {replace_cats.tolist()}')
+            msg = (f'The following {col} categories have less than {n} '
+                   f'{with_respect_to} and will be replaced with "Other"'
+                   f': {replace_cats.tolist()}')
+            logger.info(msg)
         mask = df[col].isin(replace_cats)
-        df.loc[mask, col] = 'other'
+        df.loc[mask, col] = 'Other'
     return df
 
 def get_counts_per_category(df, col, with_respect_to='patients'):
@@ -318,10 +310,11 @@ def get_first_alarms_or_last_treatment(df, pred_thresh, verbose=False):
     low_risk_ikns = set(df['ikn']).difference(first_alarm.index)
     last_session = df[df['ikn'].isin(low_risk_ikns)].groupby('ikn').last()
     if verbose:
-        logging.info('Number of patients with first alarm incidents '
-                     f'(risk > {pred_thresh:.2f}): {len(first_alarm)}. Number '
-                     'of patients with no alarm incidents (take the last '
-                     f'session): {len(last_session)}')
+        msg = (f'Number of patients with first alarm incidents (risk > '
+               f'{pred_thresh:.2f}): {len(first_alarm)}. Number of patients '
+               'with no alarm incidents (take the last session): '
+               f'{len(last_session)}')
+        logger.info(msg)
     df = pd.concat([first_alarm, last_session])
     return df
 
@@ -353,8 +346,9 @@ def get_nmissing(df, verbose=False):
         }
         for name, miss in mapping.items():
             miss_percentage = miss['Missing (%)']
-            logging.info(f'{miss_percentage.min()}%-{miss_percentage.max()}% of '
-                         f'{name} were missing before treatment sessions')
+            msg = (f'{miss_percentage.min()}%-{miss_percentage.max()}% of '
+                   f'{name} were missing before treatment sessions')
+            logger.info(msg)
         
     return missing.sort_values(by='Missing (N)')
 
@@ -496,6 +490,12 @@ def most_common_categories(
     most_common = most_common.to_dict()
     return most_common
 
+def make_log_msg(df, mask, context='.'):
+    """Report the number of patients and sessions that were excluded"""
+    N_sessions = sum(~mask)
+    N_patients = len(set(df['ikn']) - set(df.loc[mask, 'ikn']))
+    return f'Removing {N_patients} patients and {N_sessions} sessions{context}'
+
 ###############################################################################
 # Prediction & Thresholds
 ###############################################################################
@@ -611,9 +611,10 @@ def binary_search(
             low, high = less_than_desired_adjust(low, mid, high)
         elif cur_target > desired_target:
             low, high = more_than_desired_adjust(low, mid, high)
-            
-    logging.warning(f'Desired {metric} {desired_target:.2f} could not be '
-                    f'achieved. Closest {metric} achieved was {cur_target:.2f}')
+    
+    msg = (f'Desired {metric} {desired_target:.2f} could not be achieved. '
+           f'Closest {metric} achieved was {cur_target:.2f}')
+    logger.warning(msg)
     return mid
     
 ###############################################################################
@@ -661,9 +662,9 @@ def time_to_x_after_y(
         # remove patients who never had an alarm
         mask = df['predicted']
         if verbose:
-            logging.info('Removing patients who never had an alarm. '
-                         f'{sum(mask)} patients remain out of {len(mask)} '
-                         'total patients.')
+            msg = (f'Removing patients who never had an alarm. {sum(mask)} '
+                   f'patients remain out of {len(mask)} total patients.')
+            logger.info(msg)
         df = df[mask]
     
     if x == 'death' or y == 'death':
@@ -671,8 +672,9 @@ def time_to_x_after_y(
         # remove patients who never died
         mask = df[col].notnull()
         if verbose:
-            logging.info(f'Removing patients who never died. {sum(mask)} '
-                         f'patients remain out of {len(mask)} total patients.')
+            msg = (f'Removing patients who never died. {sum(mask)} patients '
+                   f'remain out of {len(mask)} total patients.')
+            logger.info(msg)
         df = df[mask]
         
     if x == 'first_pccs' or y == 'first_pccs':
@@ -696,9 +698,10 @@ def time_to_x_after_y(
         mask1 = df[col].isnull()
         mask2 = df[col] > max_chemo_date
         if verbose:
-            logging.info(f'Removing {sum(mask1)} patients that never received PCCS.')
-            logging.info(f'Removing {sum(mask2)} patients who received PCCS '
-                         f'after the cohort end date of {max_chemo_date}.\n')
+            msg = (f'Removing {sum(mask1)} patients that never received PCCS. '
+                   f'Removing {sum(mask2)} patients who received PCCS after '
+                   f'the cohort end date of {max_chemo_date}.\n')
+            logger.info(msg)
         df = df[~mask1 & ~mask2]
         
     time = month_diff(df[cols[x]], df[cols[y]])
@@ -744,27 +747,28 @@ def get_eGFR(df, col='value', prefix=''):
 ###############################################################################
 # Hyperparameters
 ###############################################################################
-def get_hyperparameters(output_path, days=None, algorithms=None):
-    if algorithms is None: 
-        algorithms = ['LR', 'RF', 'XGB', 'NN', 'ENS', 'RNN']
+def get_hyperparameters(
+    output_path, 
+    days=None, 
+    algs=None
+):
+    if algs is None: algs = ['LR', 'RF', 'XGB', 'NN', 'ENS', 'RNN']
         
-    hyperparams = pd.DataFrame(index=twolevel, columns=['Hyperparameter Value'])
-    for algorithm in algorithms:
-        filepath = f'{output_path}/best_params/{algorithm}_best_param.pkl'
-        with open(filepath, 'rb') as file:
-            best_param = pickle.load(file)
-        for param, value in best_param.items():
+    df = pd.DataFrame(index=twolevel, columns=['Hyperparameter Value'])
+    for alg in algs:
+        params = load_pickle(f'{output_path}/best_params', f'{alg}_params')
+        for param, value in params.items():
             if param == 'solver': value = nn_solvers[int(value)].upper()
             if param == 'activation': value = nn_activations[int(value)].upper()
             param = param.replace('_', ' ').title()
-            if algorithm == 'ENS': param = f'{param.upper()} Weight'
-            hyperparams.loc[(algorithm, param), 'Hyperparameter Value'] = value
+            if alg == 'ENS': param = f'{param.upper()} Weight'
+            df.loc[(alg, param), 'Hyperparameter Value'] = value
     
     # write the results
     filepath = f'{output_path}/tables/hyperparameters.csv'
-    hyperparams.to_csv(filepath, index_label='index')
+    df.to_csv(filepath, index_label='index')
     
-    return hyperparams
+    return df
 
 ###############################################################################
 # Pearson Correlation

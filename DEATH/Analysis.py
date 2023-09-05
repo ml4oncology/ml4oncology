@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[13]:
+# In[2]:
 
 
 from collections import defaultdict
@@ -45,7 +45,7 @@ from src.prep_data import PrepDataEDHD
 
 # # Days Survived Since Visit
 
-# In[11]:
+# In[3]:
 
 
 prep = PrepDataEDHD(adverse_event='death')
@@ -61,3 +61,6 @@ df = df[df['days_survived'].notnull()]
 fig, ax = plt.subplots(figsize=(15, 4))
 sns.histplot(df, x='days_survived', hue='sex', bins=100, ax=ax, alpha=0.5)
 plt.show()
+
+
+# In[ ]:

@@ -198,6 +198,10 @@ class CharacteristicsSummary(SubgroupSummary):
         }
         self.display = lambda x, total: f"{x} ({x/total*100:.1f})"
         
+        if self.total[p] == self.total[s]:
+            # number of patients and sessions are same, only keep patients
+            del self.total[s], self.col[s]
+        
     def get_summary(self):
         df = pd.DataFrame(index=twolevel)
         
@@ -284,7 +288,7 @@ def data_description_summary(
     X, 
     Y,
     tag,
-    save_dir, 
+    save_dir=None, 
     partition_method='split', 
     target_event=None,
     **kwargs
@@ -329,7 +333,8 @@ def data_description_summary(
         result[partition] = cs.get_summary()
         
     summary = pd.concat({k: df.T for k, df in result.items()}).T
-    summary.to_csv(f'{save_dir}/data_characteristic_summary.csv')
+    if save_dir is not None: 
+        summary.to_csv(f'{save_dir}/data_characteristic_summary.csv')
     return summary
 
 def top_cancer_regimen_summary(data, top=10):
@@ -380,6 +385,8 @@ def feature_summary(
     summary = summary.loc[['count', 'mean', 'std']].T
     summary = summary.round(6)
     summary['count'] = N - summary['count']
+    # mask small cells less than 6
+    summary['count'] = summary['count'].replace({i:6 for i in range(1,6)})
     
     if deny_old_survey:
         if event_dates is None:

@@ -544,6 +544,9 @@ event_main_cols = [
 ]
 diag_cols = [f'dx10code{i}' for i in range(1, 11)]
 
+next_scr_cols = ['next_SCr_value', 'next_SCr_obs_date'] # Scr = serum creatinine
+next_scr_cols += [f'next_{col}' for col in next_scr_cols]
+
 # Diagnostic Codes
 # fever and infection (INFX)
 fever_codes = ['R508', 'R509']
@@ -723,7 +726,7 @@ calib_param_logistic = {'method': 'sigmoid', 'cv': 3}
 # model tuning params
 model_tuning_param = {
     'LR': {
-        'C': (0.0001, 1)
+        'inv_reg_strength': (0.0001, 1)
     },
     'XGB': {
         'learning_rate': (0.001, 0.1),
@@ -740,8 +743,8 @@ model_tuning_param = {
     'NN': {
         'learning_rate_init': (0.0001, 0.1),
         'batch_size': (64, 512),
-        'momentum': (0,1),
-        'alpha': (0,1),
+        'momentum': (0, 0.9),
+        'alpha': (0.0001, 1),
         'first_layer_size': (16, 256),
         'second_layer_size': (16, 256),
         'solver': (0, len(nn_solvers)-0.0001),
@@ -761,13 +764,13 @@ model_tuning_param = {
         'span': (0.01, 1)
     },
     'SPLINE': {
-        'n_knots': (2,10), 
-        'degree': (2,6),
-        'C': (0.0001, 1)
+        'n_knots': (2,9), 
+        'degree': (2,5),
+        'inv_reg_strength': (0.0001, 1)
     },
     'POLY': {
-        'degree': (2,6),
-        'C': (0.0001, 1)
+        'degree': (2,5),
+        'inv_reg_strength': (0.0001, 1)
     }
 }
                                  

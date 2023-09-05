@@ -3,12 +3,12 @@ mkdir output
 mkdir output/code
 
 # Copy results
-############### PROACCT RESULTS ###############
-mkdir output/PROACCT_results
-cp -r PROACCT/models/within_30_days/figures output/PROACCT_results/
-cp -r PROACCT/models/within_30_days/tables output/PROACCT_results/
-cp PROACCT/models/within_14_days/tables/evaluation_scores.csv output/PROACCT_results/tables/14day_evaluation_scores.csv
-cp PROACCT/models/within_180_days/tables/evaluation_scores.csv output/PROACCT_results/tables/180day_evaluation_scores.csv
+############### PROACCT RESULTS (PUBLISHED) ###############
+# mkdir output/PROACCT_results
+# cp -r PROACCT/models/within_30_days/figures output/PROACCT_results/
+# cp -r PROACCT/models/within_30_days/tables output/PROACCT_results/
+# cp PROACCT/models/within_14_days/tables/evaluation_scores.csv output/PROACCT_results/tables/14day_evaluation_scores.csv
+# cp PROACCT/models/within_180_days/tables/evaluation_scores.csv output/PROACCT_results/tables/180day_evaluation_scores.csv
 ############### CYTOPENIA RESULTS ###############
 mkdir output/CYTO_results
 cp -r CYTOPENIA/models/figures output/CYTO_results/
@@ -24,9 +24,9 @@ mkdir output/CKD_results
 cp -r CAN/models/CKD/figures output/CKD_results/
 cp -r CAN/models/CKD/tables output/CKD_results/
 cp CAN/models/CKD/SPLINE_model.csv output/CKD_results/
-############### AKI + CKD RESULTS ###############
-mkdir output/AKI+CKD_results
-cp CAN/models/*.csv output/AKI+CKD_results/
+############### eGFR RESULTS ###############
+mkdir output/eGFR_results
+cp -r CAN/models/eGFR/figures/baseline output/eGFR_results/
 ############### DEATH RESULTS ###############
 mkdir output/DEATH_results
 cp -r DEATH/models/figures output/DEATH_results
@@ -60,7 +60,7 @@ cp env.yaml output/code/
 shopt -s globstar
 rm -r output/**/.ipynb_checkpoints
 rm -r output/**/__pycache__
-rm -r output/*_results/figures/rnn_train_performance
+rm -r output/*_results/figures/rnn_train_perf
 rm output/*_results/figures/curves/*.npy
 
 # Add Terms of Use

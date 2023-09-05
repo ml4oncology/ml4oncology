@@ -17,7 +17,7 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[2]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[2]:
+# In[3]:
 
 
 import pandas as pd
@@ -34,17 +34,14 @@ import numpy as np
 from functools import partial
 
 from src.config import root_path, acu_folder, event_map
-from src.utility import (
-    load_chemo_df, load_included_regimens,
-    split_and_parallelize
-)
 from src.preprocess import (
     Systemic, Demographic, Laboratory, Symptoms, AcuteCareUse,
     combine_demographic_data, combine_lab_data, combine_symptom_data,
 )
+from src.utility import load_included_regimens, split_and_parallelize
 
 
-# In[3]:
+# In[4]:
 
 
 # config
@@ -55,7 +52,7 @@ processes = 32
 
 # # Selected Regimens
 
-# In[4]:
+# In[5]:
 
 
 regimens = load_included_regimens()
@@ -66,7 +63,7 @@ regimens_renamed
 
 # # Create my dataset
 
-# In[5]:
+# In[6]:
 
 
 def quick_summary(df):
@@ -79,13 +76,13 @@ def quick_summary(df):
 # ### Include features from systemic therapy treatment data
 # NOTE: ikn is the encoded ontario health insurance plan (OHIP) number of a patient
 
-# In[6]:
+# In[13]:
 
 
 get_ipython().run_cell_magic('time', '', "syst = Systemic()\ndf = syst.run(regimens, filter_kwargs={'verbose': True}, process_kwargs={'method': 'one-per-week'})\ndf.to_parquet(f'{output_path}/data/systemic.parquet.gzip', compression='gzip', index=False)")
 
 
-# In[38]:
+# In[8]:
 
 
 df = pd.read_parquet(f'{output_path}/data/systemic.parquet.gzip')

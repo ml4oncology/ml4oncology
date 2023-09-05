@@ -29,16 +29,15 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from src import logging
+from src import logger
 from src.config import root_path, cyto_folder, cytopenia_grades, blood_types
 from src.utility import (
     twolevel, 
-    load_ml_model, 
+    load_pickle, 
     get_clean_variable_names, 
     pred_thresh_binary_search,
     time_to_x_after_y,
 )
-
 ###############################################################################
 # Feature Importance
 ###############################################################################
@@ -50,10 +49,16 @@ def importance_plot(
     top=20,              
     importance_by='feature', 
     padding=None, 
-    colors=None
+    colors=None,
+    smaller_is_better=False,
 ):
-    # NOTE: run `python scripts/perm_importance.py` in the command line before 
-    # running this function
+    """
+    Args:
+        smaller_is_better (bool): If True, smaller value means higher 
+            importance
+    """
+    # NOTE: run `python scripts/feat_imp.py` in the command line before running
+    # this function
     if importance_by not in ['feature', 'group']: 
         raise ValueError('importance_by must be either "feature" or "group"')
     if padding is None: padding = {}
@@ -64,9 +69,10 @@ def importance_plot(
     if colors is None: colors = [None,]*N
     
     filename = f'{alg}_{importance_by}_importance'
-    df = pd.read_csv(f'{save_dir}/perm_importance/{filename}.csv')
+    df = pd.read_csv(f'{save_dir}/feat_importance/{filename}.csv')
     df = df.set_index('index')
     df.index = get_clean_variable_names(df.index)
+    if smaller_is_better: df = -1 * df
     
     summary = pd.DataFrame()
     for idx, target_event in tqdm(enumerate(target_events)):
@@ -459,8 +465,9 @@ def post_pccs_survival_plot(
     
     for care_name in care_names:
         if verbose:
-            logging.info('Analyzing Time to Death After Initial PCCS for '
-                         f'{care_name}...')
+            msg = ('Analyzing time to death after initial PCCS for '
+                   f'{care_name}...')
+            logger.info(msg)
         
         time_to_death = time_to_x_after_y(
             df.copy(), x='last_obs', y='first_pccs', care_name=care_name, 
@@ -498,7 +505,7 @@ def post_pccs_survival_plot(
     
     # Show p-value
     p_value = logrank_test(*times, *statuses).p_value
-    logging.info(f'P-value = {p_value}')
+    logger.info(f'P-value = {p_value}')
     
     prob['Difference'] = prob['System-Guided Care'] - prob['Usual Care']
     return prob
@@ -830,7 +837,7 @@ def tree_plot(train, target_event='Neutropenia', alg='RF'):
     
     # the model is a multioutput calibrated classifier (made up of multiple 
     # classifiers )
-    model = load_ml_model(train.output_path, alg)
+    model = load_pickle(train.output_path, alg)
     
     # get a single example classifier
     idx = train.target_events.index(target_event)
