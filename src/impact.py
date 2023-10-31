@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -22,7 +22,7 @@ from functools import partial
 import pandas as pd
 from statsmodels.stats.proportion import proportion_confint
 
-from src import logging
+from src import logger
 from src.config import cancer_code_mapping
 from src.summarize import SubgroupSummary
 from src.utility import (
@@ -43,11 +43,14 @@ def get_intervention_analysis_data(
     We want to analyze the first alarm incidents.
     """
     # Get prediction (risk) of target event
-    pred_prob = eval_models.preds[split][alg][target_event]
+    pred_prob = eval_models.preds[alg][split][target_event]
     pred_prob = pred_prob.rename('predicted_prob').to_frame()
     
     # Get patient death date, first PCCS date, and treatment date
     df = pred_prob.join(event_dates)
+
+    # Get patient's last seen date
+    df['last_seen_date'] = df['death_date'].fillna(df['death_date'].max())
     
     # Get patient id, immigrant status, sex, income quintile, etc
     cols = [
@@ -86,7 +89,7 @@ def get_pccs_analysis_data(
             PCCS receival is still acceptable
     """
     if verbose:
-        logging.info('Arranging PCCS Analysis Data...')
+        logger.info('Arranging PCCS Analysis Data...')
     
     df = get_intervention_analysis_data(
         eval_models, event_dates, verbose=verbose, **kwargs
@@ -220,7 +223,7 @@ def get_eol_treatment_analysis_data(
     **kwargs
 ):
     if verbose:
-        logging.info('Arranging Treatment at End-of-Life Analysis Data...')
+        logger.info('Arranging Treatment at End-of-Life Analysis Data...')
     
     df = get_intervention_analysis_data(
         eval_models, event_dates, verbose=verbose, target_event=target_event, 
@@ -230,8 +233,9 @@ def get_eol_treatment_analysis_data(
     # Only keep patients that died
     mask = df['death_date'].isnull()
     if verbose:
-        logging.info(f"Removing {sum(mask)} patients that did not die out of "
-                     f"{len(mask)} total patients")
+        msg = (f"Removing {sum(mask)} patients that did not die out of "
+               f"{len(mask)} total patients")
+        logger.info(msg)
     df = df[~mask]
     
     # Determine if patient received chemo near end of life

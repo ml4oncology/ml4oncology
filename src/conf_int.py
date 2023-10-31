@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -18,6 +18,8 @@ TERMS OF USE:
 Module for computing confidence intervals
 """
 from functools import partial
+import os
+
 from statsmodels.stats.proportion import proportion_confint
 import numpy as np
 import pandas as pd
@@ -102,6 +104,10 @@ class ScoreConfidenceInterval:
     
     def load_bootstrapped_scores(self, filename='bootstrapped_scores'):
         filepath = f'{self.output_path}/conf_interval/{filename}.csv'
+        if not os.path.exists(filepath):
+            logger.warning(f'Could not load bootstrapped scores, {filepath} '
+                           'does not exist')
+            return
         self.bs_scores = pd.read_csv(filepath, index_col=[0,1])
         self.bs_scores.columns = self.bs_scores.columns.astype(int)
         

@@ -60,11 +60,9 @@ cp env.yaml output/code/
 shopt -s globstar
 rm -r output/**/.ipynb_checkpoints
 rm -r output/**/__pycache__
-rm -r output/*_results/figures/rnn_train_perf
-rm output/*_results/figures/curves/*.npy
 
 # Add Terms of Use
 TOU=`cat TermsOfUse_ForICESCode.txt`
-for filename in output/code/*/*.py; do
+for filename in output/code/**/*.py; do
     echo "$(printf "\"\"\"\n$TOU\n\"\"\"\n"| cat - "$filename")" > $filename
 done

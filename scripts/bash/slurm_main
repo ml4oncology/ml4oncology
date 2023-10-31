@@ -1,29 +1,51 @@
 #!/bin/bash
-#SBATCH -p gpu_med
-#SBATCH -c 16
-#SBATCH -w dsh09gvu001
+#SBATCH --partition gpu_med
+#SBATCH --cpus-per-task 16
 #SBATCH --mem 128G
+#SBATCH --nodelist dsh09gvu001
+
 module load apps/anaconda/3
 source activate kevenv
-python scripts/cross_validate_pipeline.py --adverse-event DEATH --train-rnn --train-ensemble --evaluate
-# python scripts/train_pipeline.py --adverse-event DEATH --output-path DEATH/models 
-# python scripts/train_pipeline.py --adverse-event DEATH --output-path DEATH/models --train-rnn
-# python scripts/train_pipeline.py --adverse-event DEATH --output-path DEATH/models --train-ensemble --evaluate
-# python scripts/train_pipeline.py --adverse-event CYTO --output-path CYTOPENIA/models --run-bayesopt
-# python scripts/train_pipeline.py --adverse-event CYTO --output-path CYTOPENIA/models --train-rnn --run-bayesopt
-# python scripts/feat_imp.py --adverse-event DEATH --output-path DEATH/models
-# python scripts/feat_imp.py --adverse-event DEATH --output-path DEATH/models --permute-group
+
+OUTPUT_PATH=DEATH/models
+# ALGS=( LR RF XGB NN RNN )
+# ALG=${ALGS[$SLURM_ARRAY_TASK_ID]}
+# echo "Running pipeline for" $ALG
+# python scripts/cross_validate_pipeline.py --adverse-event DEATH --algorithm $ALG --output-path $OUTPUT_PATH --bayesopt
+# python scripts/cross_validate_pipeline.py --adverse-event DEATH --algorithm ENS --output-path $OUTPUT_PATH --evaluate
+
+# python scripts/train_pipeline.py --adverse-event DEATH --algorithm RNN --output-path $OUTPUT_PATH 
+# python scripts/train_pipeline.py --adverse-event DEATH --algorithm ENS --output-path $OUTPUT_PATH --evaluate
+
+# python scripts/feat_imp.py --adverse-event DEATH --output-path $OUTPUT_PATH 
+# python scripts/feat_imp.py --adverse-event DEATH --output-path $OUTPUT_PATH --permute-group
+
+python scripts/shap_value.py --adverse-event DEATH --output-path $OUTPUT_PATH 
 
 # ##############################
 # Template1
-# SBATCH -p med
-# SBATCH -c 64
-# SBATCH -w dsh09ana003
+# SBATCH --partition med
+# SBATCH --cpus-per-task 64
+# SBATCH --nodelist dsh09ana003
 # SBATCH --mem 512G
 # ##############################
 # Template2
-# SBATCH -p gpu_med
-# SBATCH -c 16
-# SBATCH -w dsh09gvu001
+# SBATCH --partition gpu_med
+# SBATCH --cpus-per-task 16
+# SBATCH --nodelist dsh09gvu001
 # SBATCH --mem 128G
+# ##############################
+# Template3
+# SBATCH --partition med
+# SBATCH --ntasks 1
+# SBATCH --cpus-per-task 32
+# SBATCH --mem 32G
+# SBATCH --array 0-2
+# ##############################
+# Template3
+# SBATCH --partition gpu_med
+# SBATCH --ntasks 1
+# SBATCH --cpus-per-task 4
+# SBATCH --mem 32G
+# SBATCH --array 3-4
 # ##############################

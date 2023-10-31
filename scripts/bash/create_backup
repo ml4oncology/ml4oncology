@@ -3,14 +3,17 @@ DATE=2023-08-28
 mkdir backup/$DATE
 mkdir backup/$DATE/dev_notebooks backup/$DATE/PROACCT backup/$DATE/CYTOPENIA backup/$DATE/CAN backup/$DATE/DEATH backup/$DATE/TRREKO
 mkdir backup/$DATE/scripts backup/$DATE/src backup/$DATE/test
-cp scripts/*.py backup/$DATE/scripts
-cp -r scripts/bash backup/$DATE/scripts
-cp src/*.py backup/$DATE/src
-cp -r src/surv backup/$DATE/src
-cp test/*.py backup/$DATE/test
+cp -r scripts backup/$DATE
+cp -r src backup/$DATE
+cp -r test backup/$DATE
 cp dev_notebooks/*.ipynb backup/$DATE/dev_notebooks
 cp PROACCT/*.ipynb backup/$DATE/PROACCT
 cp CYTOPENIA/*.ipynb backup/$DATE/CYTOPENIA
 cp CAN/*.ipynb backup/$DATE/CAN
 cp DEATH/*.ipynb backup/$DATE/DEATH
 cp TRREKO/*.ipynb backup/$DATE/TRREKO
+
+# Remove unnecessary files
+shopt -s globstar
+rm -r backup/$DATE/**/.ipynb_checkpoints
+rm -r backup/$DATE/**/__pycache__

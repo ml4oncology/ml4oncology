@@ -70,6 +70,13 @@ sc
 sc.getConf().getAll()
 
 
+# In[8]:
+
+
+# workers
+[executor.host() for executor in sc._jsc.sc().statusTracker().getExecutorInfos()]
+
+
 # # OLIS Dataset
 
 # In[6]:

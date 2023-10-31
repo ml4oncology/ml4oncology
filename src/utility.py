@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -37,7 +37,7 @@ from src.config import (
     DATE,
     symptom_cols, 
     all_observations, cancer_code_mapping, intent_mapping, clean_variable_mapping,
-    eGFR_params, nn_solvers, nn_activations,
+    eGFR_params, 
 )
 
 twolevel = pd.MultiIndex.from_product([[], []])
@@ -52,11 +52,10 @@ def initialize_folders(output_path, extra_folders=None):
         
     main_folders = [
         'conf_interval', 'feat_importance', 'best_params', 
-        'preds', 'tables', 'figures'
+        'preds', 'tables', 'figures', 'train_perf', 'logs'
     ]
     figure_folders = [
         'curves', 'subgroup_perf', 'important_features', 'important_groups',
-        'rnn_train_perf', 
     ]
     figure_folders = [f'figures/{folder}' for folder in figure_folders]
     for folder in main_folders + figure_folders + extra_folders:
@@ -233,10 +232,8 @@ def replace_rare_categories(
 
 def get_counts_per_category(df, col, with_respect_to='patients'):
     if with_respect_to == 'patients':
-        # replace unique categories with less than n patients to 'Other'
         return df.groupby(col)['ikn'].nunique()
     elif with_respect_to == 'sessions':
-        # replace unique categories with less than n sessions to 'Other'
         return df[col].value_counts()
     else:
         err_msg = f'Count with respect to {with_respect_to} not supported'
@@ -380,7 +377,7 @@ def get_clean_variable_name(name):
     
     # rename variables
     rename_variable_mapping = {
-        'is_immigrant': 'immigrated_to_canada',
+        'recent_immigrant': 'immigrated_to_canada',
         'speaks_english': 'immigrated,_speaks_english',
         'sex': 'female_sex',
         'immediate': 'first_dose_of'
@@ -536,7 +533,7 @@ def equal_rate_pred_thresh(
     """
     # Extract relevant data
     df = pd.DataFrame()
-    df['predicted_prob'] = eval_models.preds[split][alg][target_event]
+    df['predicted_prob'] = eval_models.preds[alg][split][target_event]
     df['ikn'] = eval_models.orig_data.loc[df.index, 'ikn']
     df = df.join(event_dates)
     
@@ -695,12 +692,13 @@ def time_to_x_after_y(
             
         # remove patients who never received PCCS or 
         # received PCCS after cohort end date
+        last_obs_date = df['last_seen_date'].max()
         mask1 = df[col].isnull()
-        mask2 = df[col] > max_chemo_date
+        mask2 = df[col] > last_obs_date
         if verbose:
             msg = (f'Removing {sum(mask1)} patients that never received PCCS. '
                    f'Removing {sum(mask2)} patients who received PCCS after '
-                   f'the cohort end date of {max_chemo_date}.\n')
+                   f'the last observation date of {last_obs_date}.\n')
             logger.info(msg)
         df = df[~mask1 & ~mask2]
         

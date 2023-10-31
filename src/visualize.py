@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -404,6 +404,7 @@ def epc_subgroup_plot(
     subgroup_performance_plot(
         df, target_event=target_event, ylim=ylim, **kwargs
     )
+    return df
     
 def _epc_subgroup_helper(summary, care_name, col, df):
     get_total = lambda m: m.loc[['Got PCCS', 'Not Got PCCS']].sum().sum()
@@ -435,7 +436,8 @@ def epc_impact_plot(impact, N, epc=True):
     
     df = pd.concat([rate, upper_ci, lower_ci], axis=1).T
     df.index = [f'Died {receival_status} EPC Rate', 'Upper CI', 'Lower CI']
-    df['Difference'] = df['System-Guided Care'] - df['Usual Care']
+    diff = df['System-Guided Care'] - df['Usual Care'].to_numpy()[[0, 2, 1]]
+    df['Difference'] = diff
     return df
         
 def post_pccs_survival_plot(
@@ -507,7 +509,8 @@ def post_pccs_survival_plot(
     p_value = logrank_test(*times, *statuses).p_value
     logger.info(f'P-value = {p_value}')
     
-    prob['Difference'] = prob['System-Guided Care'] - prob['Usual Care']
+    diff = prob['System-Guided Care'] - prob['Usual Care'].to_numpy()[[0, 2, 1]]
+    prob['Difference'] = diff
     return prob
 
 def pccs_graph_plot(df):
@@ -599,7 +602,7 @@ def epc_bias_mitigation_plot(
         padding = {}
         
     Y_true = eval_models.labels[split][target_event]
-    Y_pred_prob = eval_models.preds[split][alg][target_event]
+    Y_pred_prob = eval_models.preds[alg][split][target_event]
 
     N = len(subgroup_masks)
     fig, axes = plt.subplots(nrows=N, ncols=5, figsize=(30,6*N))
@@ -611,6 +614,7 @@ def epc_bias_mitigation_plot(
         lower_ci, upper_ci = proportion_confint(int(total * rate), total)
         return [rate, lower_ci, upper_ci]
 
+    results = {}
     for i, (catname, masks) in enumerate(subgroup_masks.items()):
         masks = {'Overall': Y_true.notnull(), **masks}
         data = []
@@ -677,6 +681,8 @@ def epc_bias_mitigation_plot(
                     f'{save_path}/{catname}_bias{idx}.jpg', 
                     bbox_inches=get_bbox(ax, fig, **padding), dpi=300
                 )
+        results[catname] = df     
+    return results
         
 ###############################################################################
 # Misc Cytopenia Plots

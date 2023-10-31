@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -14,6 +14,9 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
+"""
+Script to compute permutation feature importance
+"""
 from functools import partial
 import argparse
 import os
@@ -26,13 +29,11 @@ from sklearn.preprocessing import StandardScaler
 import numpy as np
 import pandas as pd
 
+from src import logger
 from src.utility import load_pickle
 from src.config import split_date, variable_groupings_by_keyword
 from src.prep_data import PrepDataCYTO, PrepDataEDHD, PrepDataCAN
-from src.train import TrainML, TrainRNN
-
-import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s', datefmt='%I:%M:%S')
+from src.train import Trainer
 
 class FeatImportance:    
     def __init__(self, output_path, task_type='C'):
@@ -46,8 +47,7 @@ class FeatImportance:
         self.orig_columns = data.columns.drop('ikn') # original columns
         self.orig_columns = sorted(self.orig_columns, key=lambda col: len(col)) # sort by length of column name
         
-        self.train_rnn = TrainRNN(X, Y, tag, output_path, task_type=task_type)
-        self.train_ml = TrainML(X, Y, tag, output_path, task_type=task_type)
+        self.trainer = Trainer(X, Y, tag, output_path, task_type=task_type)
         score_funcs = {
             'C': partial(roc_auc_score, average=None),
             'R': partial(mean_squared_error, squared=False)
@@ -57,15 +57,9 @@ class FeatImportance:
         self.params =  {'n_repeats': 5, 'random_state': 42}
         
         # load pretrained models 
-        self.models = {}
         self.ensemble_weights = load_pickle(f'{self.output_path}/best_params', 'ENS_params')
-        for alg in self.ensemble_weights:
-            if alg == 'RNN':
-                rnn_param = load_pickle(f'{self.output_path}/best_params', 'RNN_params')
-                del rnn_param['learning_rate']
-                self.models[alg] = self.train_rnn.get_model(load_saved_weights=True, **rnn_param)
-            else:
-                self.models[alg] = load_pickle(self.output_path, alg)
+        self.models = {alg: load_pickle(self.output_path, alg) for alg in self.ensemble_weights}
+        self.models['RNN'].model.rnn.flatten_parameters()
     
     def get_feature_importance(self, alg):
         """Run permutation feature importance across each column/feature"""
@@ -91,9 +85,9 @@ class FeatImportance:
                 new_scores = self._get_new_scores(permute_cols, alg, model, self.params['random_state'] + i)
                 importances.append(orig_scores - new_scores)
                 
-            result.loc[col, self.train_ml.target_events] = np.mean(importances, axis=0)
-            logging.info(f'Successfully computed permutation feature importance scores for {col} (size of '
-                         f'permute_cols: {len(permute_cols)})')
+            result.loc[col, self.trainer.target_events] = np.mean(importances, axis=0)
+            logger.info(f'Successfully computed permutation feature importance scores for {col} (size of '
+                        f'permute_cols: {len(permute_cols)})')
         
         # save results
         filepath = f'{self.output_path}/feat_importance/{alg}_feature_importance.csv'
@@ -117,9 +111,9 @@ class FeatImportance:
                 new_scores = self._get_new_scores(permute_cols, alg, model, self.params['random_state'] + i)
                 importances.append(orig_scores - new_scores)
                 
-            result.loc[group, self.train_ml.target_events] = np.mean(importances, axis=0)
-            logging.info(f'Successfully computed permutation group importance scores for {group} (size of '
-                         f'permute_cols: {len(permute_cols)})')
+            result.loc[group, self.trainer.target_events] = np.mean(importances, axis=0)
+            logger.info(f'Successfully computed permutation group importance scores for {group} (size of '
+                        f'permute_cols: {len(permute_cols)})')
             
         # save results
         filepath = f'{self.output_path}/feat_importance/{alg}_group_importance.csv'
@@ -139,17 +133,10 @@ class FeatImportance:
             for alg, weight in self.ensemble_weights.items():
                 pred.append(self.predict(alg, self.models[alg], X))
                 ensemble_weights.append(weight)
-            pred = np.average(pred, axis=0, weights=ensemble_weights)
-            
-        elif alg == 'RNN':
-            self.train_rnn.tensor_datasets['Test'] = self.train_rnn.transform_to_tensor_dataset(X, self.Y_test)
-            pred, index_arr = self.train_rnn._get_model_predictions(self.models[alg], 'Test')
-            assert all(self.Y_test.index == index_arr) # double check
-            
+            pred = np.average(pred, axis=0, weights=ensemble_weights)            
         else:
-            self.train_ml.preds['Test'][alg] = None # claer cache
-            self.train_ml.datasets['Test'] = X # set the new input
-            pred = self.train_ml.predict(model, 'Test', alg)
+            self.trainer.datasets['Test'] = X # set the new input
+            pred = self.trainer.predict(model, 'Test', alg, calibrated=True)
             pred = pred.to_numpy()
         return pred
     
@@ -208,6 +195,7 @@ class CANFeatImportance(FeatImportance):
     def __init__(self, output_path, adverse_event, task_type='C'):
         self.prep = PrepDataCAN(adverse_event=adverse_event, target_keyword='SCr|dialysis|next')
         self.get_data_kwargs = {'missing_thresh': 80, 'include_comorbidity': True}
+        if adverse_event == 'ckd': self.get_data_kwargs['first_course_treatment'] = True
         self.split_data_kwargs = {'split_date': split_date}
         self.task_type = task_type
         super().__init__(output_path, task_type=task_type)

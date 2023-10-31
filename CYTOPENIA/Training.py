@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -40,7 +40,7 @@ from src.config import root_path, cyto_folder, split_date, blood_types
 from src.evaluate import EvaluateClf
 from src.model import SimpleBaselineModel
 from src.prep_data import PrepDataCYTO
-from src.train import TrainML, TrainRNN, TrainENS
+from src.train import Trainer, Ensembler
 from src.summarize import data_description_summary, feature_summary
 from src.utility import initialize_folders, load_pickle, get_nunique_categories, get_nmissing
 from src.visualize import importance_plot, subgroup_performance_plot
@@ -148,16 +148,7 @@ feature_summary(
 
 # # Train Models
 
-# ## Main ML Models
-
-# In[14]:
-
-
-train_ml = TrainML(X, Y, tag, output_path, n_jobs=processes)
-train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True)
-
-
-# ## RNN Model
+# ## Main Models
 
 # In[171]:
 
@@ -170,32 +161,22 @@ ax.grid(zorder=0)
 sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
 
 
-# In[37]:
+# In[ ]:
 
 
-train_rnn = TrainRNN(X, Y, tag, output_path)
-train_rnn.tune_and_train(run_bayesopt=False, run_training=True, run_calibration=True, save_preds=True)
+trainer = Trainer(X, Y, tag, output_path)
+trainer.run(bayesopt=False, train=False, save_preds=False)
 
 
 # ## ENS Model 
 # Find Optimal Ensemble Weights
 
-# In[13]:
+# In[15]:
 
 
-# combine rnn and ml predictions
-preds = load_pickle(f'{output_path}/preds', 'ML_preds')
-preds_rnn = load_pickle(f'{output_path}/preds', 'RNN_preds')
-for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
-del preds_rnn
-# Initialize Training Class
-train_ens = TrainENS(X, Y, tag, output_path, preds)
-
-
-# In[14]:
-
-
-train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
+preds = load_pickle(f'{output_path}/preds', filename='all_preds')
+ensembler = Ensembler(X, Y, tag, output_path, preds)
+ensembler.run(bayesopt=False, calibrate=False, random_state=0)
 
 
 # # Evaluate Models
@@ -204,28 +185,26 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 
 # setup the final prediction and labels
-preds, labels = train_ens.preds, train_ens.labels
+preds, labels = ensembler.preds, ensembler.labels
 base_cols = ['regimen'] + [f'baseline_{bt}_value' for bt in blood_types]
-base_model = SimpleBaselineModel(model_data[base_cols], labels)
-base_preds = base_model.predict()
-for split, pred in base_preds.items(): preds[split].update(pred)
+preds.update(SimpleBaselineModel(model_data[['regimen']], labels).predict())
 
 
 # In[17]:
 
 
-eval_models = EvaluateClf(output_path, preds, labels)
-eval_models.get_evaluation_scores(display_ci=True, load_ci=True, save_ci=False)
+evaluator = EvaluateClf(output_path, preds, labels)
+evaluator.get_evaluation_scores(display_ci=True, load_ci=True, save_ci=False)
 
 
 # In[28]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_loc='lower left', figsize=(12,18))
-eval_models.plot_curves(curve_type='roc', legend_loc='lower right', figsize=(12,18))
-eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,18)) # cumulative distribution function of model prediction
-eval_models.plot_calibs(legend_loc='upper left', figsize=(12,18)) 
-# eval_models.plot_calibs(
+evaluator.plot_curves(curve_type='pr', legend_loc='lower left', figsize=(12,18))
+evaluator.plot_curves(curve_type='roc', legend_loc='lower right', figsize=(12,18))
+evaluator.plot_curves(curve_type='pred_cdf', figsize=(12,18)) # cumulative distribution function of model prediction
+evaluator.plot_calibs(legend_loc='upper left', figsize=(12,18)) 
+# evaluator.plot_calibs(
 #     include_pred_hist=True, legend_loc='upper left', figsize=(12,28),
 #     padding={'pad_y1': 0.3, 'pad_y0': 3.0}, save=False, 
 # )
@@ -246,7 +225,7 @@ get_ipython().system('python scripts/feat_imp.py --adverse-event CYTO --output-p
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
 importance_plot(
-    'ENS', eval_models.target_events, output_path, figsize=(6,15), top=10, importance_by='feature', 
+    'ENS', evaluator.target_events, output_path, figsize=(6,15), top=10, importance_by='feature', 
     padding={'pad_x0': 2.6}, colors=['#1f77b4', '#ff7f0e', '#2ca02c']
 )
 
@@ -256,7 +235,7 @@ importance_plot(
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
 importance_plot(
-    'ENS', eval_models.target_events, output_path, figsize=(6,15), top=10, importance_by='group', 
+    'ENS', evaluator.target_events, output_path, figsize=(6,15), top=10, importance_by='group', 
     padding={'pad_x0': 2.6}, colors=['#1f77b4', '#ff7f0e', '#2ca02c']
 )
 
@@ -265,7 +244,7 @@ importance_plot(
 
 
 importance = pd.read_csv(f'{output_path}/perm_importance/ENS_feature_importance.csv').set_index('index')
-auroc_scores = eval_models.get_evaluation_scores(save_score=False).loc[('ENS', 'AUROC Score'), 'Test']
+auroc_scores = evaluator.get_evaluation_scores(save_score=False).loc[('ENS', 'AUROC Score'), 'Test']
 pd.concat([importance.sum(), 1 - auroc_scores], axis=1, keys=['Cumulative Importance', '1 - AUROC'])
 
 
@@ -277,7 +256,7 @@ pd.concat([importance.sum(), 1 - auroc_scores], axis=1, keys=['Cumulative Import
 for blood_type, blood_info in blood_types.items():
     target_event = blood_info['cytopenia_name']
     print(f'Displaying all the plots for {target_event}')
-    eval_models.all_plots_for_single_target(alg='ENS', target_event=target_event, calib_strategy='uniform', save=False)
+    evaluator.all_plots_for_single_target(alg='ENS', target_event=target_event, calib_strategy='uniform', save=False)
 
 
 # ## Threshold Operating Points
@@ -287,7 +266,7 @@ for blood_type, blood_info in blood_types.items():
 
 pred_thresholds = np.arange(0.05, 1.01, 0.05)
 perf_metrics = ['warning_rate', 'precision', 'recall', 'NPV', 'specificity']
-thresh_df = eval_models.operating_points(points=pred_thresholds, op_metric='threshold', perf_metrics=perf_metrics)
+thresh_df = evaluator.operating_points(points=pred_thresholds, op_metric='threshold', perf_metrics=perf_metrics)
 thresh_df
 
 
@@ -298,7 +277,7 @@ thresh_df
 
 desired_precisions = [0.2, 0.25, 0.33, 0.4, 0.5, 0.6, 0.75]
 perf_metrics = ['warning_rate', 'threshold', 'recall', 'NPV', 'specificity']
-eval_models.operating_points(points=desired_precisions, op_metric='precision', perf_metrics=perf_metrics)
+evaluator.operating_points(points=desired_precisions, op_metric='precision', perf_metrics=perf_metrics)
 
 
 # ## Threshold Selection
@@ -327,7 +306,7 @@ subgroups = [
 
 
 perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate']}
-subgroup_performance = eval_models.get_perf_by_subgroup(
+subgroup_performance = evaluator.get_perf_by_subgroup(
     model_data, subgroups=subgroups, pred_thresh=pred_thresholds, alg='ENS', 
     save=True, display_ci=True, load_ci=True, perf_kwargs=perf_kwargs
 )
@@ -374,7 +353,7 @@ for name, grouping in subgroup_plot_groupings.items():
 # In[121]:
 
 
-result = eval_models.plot_decision_curves('ENS', xlim=(-0.05, 1.05))
+result = evaluator.plot_decision_curves('ENS', xlim=(-0.05, 1.05))
 result['Neutropenia'].tail(n=100)
 
 
@@ -411,16 +390,16 @@ def line_plot(x, y, ax, thresh, colors=None):
     ax.axhline(y=thresh, color='b', alpha=0.5)
     ax.grid(axis='x')
 
-def plot_patient_prediction(eval_models, pred_thresholds, split='Test', alg='XGB', num_ikn=3, seed=0, save=False):
+def plot_patient_prediction(evaluator, pred_thresholds, split='Test', alg='XGB', num_ikn=3, seed=0, save=False):
     """
     Args:
         num_ikn (int): the number of random patients to analyze
     """
     np.random.seed(seed)
     
-    pred_prob = eval_models.preds[split][alg]
-    orig_data = eval_models.orig_data.loc[pred_prob.index]
-    label = eval_models.labels[split]
+    pred_prob = evaluator.preds[split][alg]
+    orig_data = evaluator.orig_data.loc[pred_prob.index]
+    label = evaluator.labels[split]
 
     # only consider patients who had more than 3 chemo cycles AND had at least one cytopenia event
     ikn_count = orig_data.loc[label.any(axis=1), 'ikn'].value_counts()
@@ -467,7 +446,7 @@ def plot_patient_prediction(eval_models, pred_thresholds, split='Test', alg='XGB
 # In[46]:
 
 
-plot_patient_prediction(eval_models, pred_thresholds, alg='ENS', num_ikn=8, seed=1, save=False)
+plot_patient_prediction(evaluator, pred_thresholds, alg='ENS', num_ikn=8, seed=1, save=False)
 
 
 # # SCRATCH NOTES
@@ -503,7 +482,7 @@ tree_plot(train_ml, target_event='Neutropenia', alg='RF')
 # In[159]:
 
 
-df = eval_models.get_perf_by_subgroup(
+df = evaluator.get_perf_by_subgroup(
     model_data, subgroups=['all', 'cycle_length'], pred_thresh=neutro_thresh, alg='ENS', display_ci=False, 
     perf_kwargs=perf_kwargs
 )
@@ -515,7 +494,7 @@ subgroup_performance_plot(df, target_event='Neutropenia', padding=subgroup_plot_
 
 # analyze regimen subgroups with the worst performance
 perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate', 'count']}
-df = eval_models.get_perf_by_subgroup(
+df = evaluator.get_perf_by_subgroup(
     model_data, subgroups=['regimen'], pred_thresh=neutro_thresh, alg='ENS', target_events=['Neutropenia'], 
     save=False, display_ci=False, perf_kwargs=perf_kwargs, top=150
 )
@@ -527,7 +506,7 @@ df.sort_values(by=('Neutropenia', 'AUROC'))
 
 
 # analyze cancer subgroups with the worst performance
-df = eval_models.get_perf_by_subgroup(
+df = evaluator.get_perf_by_subgroup(
     model_data, subgroups=['cancer_location'], pred_thresh=neutro_thresh, alg='ENS', target_events=['Neutropenia'], 
     save=False, display_ci=False, perf_kwargs=perf_kwargs, top=100
 )
@@ -569,7 +548,7 @@ summary_df
 
 
 from src.utility import get_nmissing_by_splits
-missing = get_nmissing_by_splits(model_data, eval_models.labels)
+missing = get_nmissing_by_splits(model_data, evaluator.labels)
 missing.sort_values(by=(f'Test (N={len(Y_test)})', 'Missing (N)'), ascending=False)
 
 

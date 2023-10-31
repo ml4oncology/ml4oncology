@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -26,7 +26,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[18]:
+# In[2]:
 
 
 import pandas as pd
@@ -46,7 +46,7 @@ from src.impact import (
 from src.model import SimpleBaselineModel
 from src.prep_data import PrepDataEDHD
 from src.summarize import data_description_summary, feature_summary
-from src.train import TrainLASSO, TrainML, TrainRNN, TrainENS
+from src.train import Ensembler, LASSOTrainer, Trainer
 from src.utility import (
     initialize_folders, load_pickle,
     get_nunique_categories, get_nmissing, get_clean_variable_names, get_units,
@@ -68,7 +68,7 @@ processes = 64
 target_keyword = 'Mortality'
 main_dir = f'{root_path}/{death_folder}'
 output_path = f'{main_dir}/models'
-initialize_folders(output_path)
+initialize_folders(output_path, extra_folders=['figures/time_to_event', 'figures/model_impact', 'figures/output'])
 
 
 # # Prepare Data for Model Training
@@ -132,7 +132,7 @@ Y_train, Y_valid, Y_test = Y[train_mask], Y[valid_mask], Y[test_mask]
 
 # ## Study Characteristics
 
-# In[12]:
+# In[13]:
 
 
 subgroups = [
@@ -140,17 +140,18 @@ subgroups = [
     'regimen', 'cancer_type', 'cancer_location', 'target'
 ]
 data_description_summary(
-    model_data, Y, tag, save_dir=f'{output_path}/tables', partition_method='cohort', target_event='30d Mortality', subgroups=subgroups
+    model_data, Y, tag, save_dir=f'{output_path}/tables', partition_method='cohort', 
+    target_event='30d Mortality', subgroups=subgroups
 )
 
 
 # ## Feature Characteristics
 
-# In[13]:
+# In[14]:
 
 
 df = prep.ohe.encode(model_data.copy(), verbose=False) # get original (non-normalized, non-imputed) data one-hot encoded
-df = df[train_mask].drop(columns=['ikn'])
+df = df[train_mask].drop(columns=['ikn'] + Y.columns.tolist())
 feature_summary(
     df, save_dir=f'{output_path}/tables', deny_old_survey=True, event_dates=prep.event_dates[train_mask]
 ).head(60)
@@ -161,63 +162,65 @@ feature_summary(
 # In[ ]:
 
 
-get_ipython().system('python scripts/cross_validate_pipeline.py --adverse-event DEATH --run-bayesopt --train-ml --train-rnn --train-ensemble')
+get_ipython().system('python scripts/cross_validate_pipeline.py --adverse-event DEATH --algorithm NN --output-path {output_path} --bayesopt')
 
 
 # ## LASSO Model
 
-# In[48]:
+# In[32]:
 
 
-train_lasso = TrainLASSO(X, Y, tag, output_path=output_path, target_event='365d Mortality')
+lasso_trainer = LASSOTrainer(X, Y, tag, output_path, target_event='365d Mortality')
 
 
-# In[55]:
+# In[23]:
 
 
-# train_lasso.tune_and_train(run_grid_search=True, run_training=True, save=True, C_search_space=np.geomspace(0.00004, 1, 100))
-C_search_space = [0.000040, 0.000050, 0.000054, 0.000055, 0.000056, 0.000094]
-train_lasso.tune_and_train(run_grid_search=True, run_training=False, save=False, C_search_space=C_search_space)
+lasso_trainer.run(grid_search=True, train=True, save=True, C_search_space=np.geomspace(3.9e-5, 1, 100))
 
 
-# In[56]:
+# In[35]:
+
+
+C_search_space = [3.9e-5, 4.3e-5, 4.52e-5, 4.8e-5, 5.9e-5, 8.4e-5]
+lasso_trainer.run(grid_search=True, train=False, save=False, C_search_space=C_search_space)
+
+
+# In[25]:
 
 
 gs_results = pd.read_csv(f'{output_path}/tables/grid_search.csv')
 gs_results = gs_results.sort_values(by='n_feats')
-train_lasso.select_param(gs_results) # model with least complexity while AUROC upper CI >= max AUROC
+params = lasso_trainer.select_param(gs_results) # model with least complexity while AUROC upper CI >= max AUROC
 ax = gs_results.plot(x='n_feats', y='AUROC', marker='o', markersize=4, legend=False, figsize=(6,6))
 ax.set(xlabel='Number of Features', ylabel='AUROC')
 plt.savefig(f'{output_path}/figures/LASSO_score_vs_num_feat.jpg', dpi=300)
 
 
-# In[57]:
+# In[27]:
 
 
 model = load_pickle(output_path, 'LASSO')
-coef = train_lasso.get_coefficients(model, non_zero=False)
+idx = list(Y.columns).index(lasso_trainer.target_event)
+coef = lasso_trainer.get_coefficients(model, estimator_idx=idx)
+assert len(coef) == params['n_feats']
+intercept = lasso_trainer.get_intercept(model, estimator_idx=idx)
 
 # Clean the feature names
 rename_map = {name: f'{name} ({unit})' for name, unit in get_units().items()}
 coef = coef.rename(index=rename_map)
 coef.index = get_clean_variable_names(coef.index)
 
+# Include the intercept
+coef['Intercept'] = intercept
+
 coef.to_csv(f'{output_path}/tables/LASSO_coefficients.csv')
 coef.head(n=100)
 
 
-# ## Main ML Models
+# ## Main Models
 
-# In[62]:
-
-
-train_ml = TrainML(X, Y, tag, output_path, n_jobs=processes)
-# train_ml.tune_and_train(run_bayesopt=False, run_training=False, save_preds=False)
-
-
-# ## RNN Model
-
-# In[12]:
+# In[37]:
 
 
 # Distrubution of the sequence lengths in the training set
@@ -228,74 +231,70 @@ ax.grid(zorder=0)
 sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
 
 
-# In[64]:
+# In[ ]:
 
 
-train_rnn = TrainRNN(X, Y, tag, output_path)
-# train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration=False, save_preds=False)
+trainer = Trainer(X, Y, tag, output_path)
+trainer.run(bayesopt=False, train=False, save_preds=False)
 
 
 # ## ENS Model 
 # Find Optimal Ensemble Weights
 
-# In[14]:
+# In[35]:
 
 
-# combine rnn and ml predictions
-preds = load_pickle(f'{output_path}/preds', 'ML_preds')
-preds_rnn = load_pickle(f'{output_path}/preds', 'RNN_preds')
-for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
-del preds_rnn
+# combine predictions
+preds = {} # load_pickle(f'{output_path}/preds', 'all_pred')
+for alg in ['LR', 'XGB', 'RF', 'NN', 'RNN']:
+    preds.update(load_pickle(f'{output_path}/preds', f'{alg}_preds'))
 
 
-# In[15]:
+# In[36]:
 
 
-train_ens = TrainENS(X, Y, tag, output_path, preds)
-train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
+ensembler = Ensembler(X, Y, tag, output_path, preds)
+ensembler.run(bayesopt=False, calibrate=False)
 
 
 # # Evaluate Models
 
-# In[16]:
+# In[37]:
 
 
 # setup the final prediction and labels
-preds, labels = train_ens.preds.copy(), train_ens.labels.copy()
-base_model = SimpleBaselineModel(model_data[['regimen']], labels)
-base_preds = base_model.predict()
-for split, pred in base_preds.items(): preds[split].update(pred)
-preds_lasso = load_pickle(f'{output_path}/preds', filename='LASSO_preds')
-for split, pred in preds_lasso.items(): preds[split]['LASSO'] = pred['LR']
+preds, labels = ensembler.preds.copy(), ensembler.labels.copy()
+preds.update(SimpleBaselineModel(model_data[['regimen']], labels).predict())
+preds.update(load_pickle(f'{output_path}/preds', filename='LASSO_preds'))
 
 
-# In[20]:
+# In[40]:
 
 
-eval_models = EvaluateClf(output_path, preds, labels)
-eval_models.get_evaluation_scores(display_ci=True, load_ci=True, save_ci=True)
+evaluator = EvaluateClf(output_path, preds, labels)
+evaluator.get_evaluation_scores(display_ci=True, load_ci=True, save_ci=True)
 
 
-# In[21]:
+# In[39]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_loc='upper right', figsize=(12,24), save=False)
-eval_models.plot_curves(curve_type='roc', legend_loc='lower right', figsize=(12,24), save=False)
-eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,24), save=False) # cumulative distribution function of model prediction
-eval_models.plot_calibs(legend_loc='upper left', figsize=(12,24), save=False) 
-# eval_models.plot_calibs(
+evaluator.plot_curves(curve_type='pr', legend_loc='upper right', figsize=(12,24), save=False)
+evaluator.plot_curves(curve_type='roc', legend_loc='lower right', figsize=(12,24), save=False)
+evaluator.plot_curves(curve_type='pred_cdf', figsize=(12,24), save=False) # cumulative distribution function of model prediction
+evaluator.plot_calibs(legend_loc='upper left', figsize=(12,24), save=False) 
+# evaluator.plot_calibs(
 #     include_pred_hist=True, legend_loc='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0}, save=False
 # )
 
 
 # # Post-Training Analysis
 
-# In[22]:
+# In[16]:
 
 
 cols = ['visit_date', 'death_date', 'first_PCCS_date', 'first_visit_date', 'last_seen_date']
 event_dates = prep.event_dates[cols].copy()
-eval_models.orig_data = model_data
+evaluator.orig_data = model_data
 
 
 # ## Most Important Features/Feature Groups
@@ -310,35 +309,44 @@ get_ipython().system('python scripts/feat_imp.py --adverse-event DEATH --output-
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,30), top=10, importance_by='feature', padding={'pad_x0': 4.0})
+importance_plot('ENS', evaluator.target_events, output_path, figsize=(6,30), top=10, importance_by='feature', padding={'pad_x0': 4.0})
 
 
 # In[22]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,30), top=10, importance_by='group', padding={'pad_x0': 1.2})
+importance_plot('ENS', evaluator.target_events, output_path, figsize=(6,30), top=10, importance_by='group', padding={'pad_x0': 1.2})
 
 
 # In[33]:
 
 
 importance = pd.read_csv(f'{output_path}/perm_importance/ENS_feature_importance.csv').set_index('index')
-auroc_scores = eval_models.get_evaluation_scores(save_score=False).loc[('ENS', 'AUROC Score'), 'Test']
+auroc_scores = evaluator.get_evaluation_scores(save_score=False).loc[('ENS', 'AUROC Score'), 'Test']
 pd.concat([importance.sum(), 1 - auroc_scores], axis=1, keys=['Cumulative Importance', '1 - AUROC'])
 
 
 # ## All the Plots
 
-# In[23]:
+# In[145]:
 
 
-eval_models.all_plots_for_single_target(alg='ENS', target_event='365d Mortality')
+evaluator.all_plots_for_single_target(alg='ENS', target_event='365d Mortality')
+
+
+# ## Decision Curves
+
+# In[146]:
+
+
+output = evaluator.plot_decision_curves(alg='ENS', save=False)
+output['365d Mortality'].query('0.5 < Threshold < 0.7')
 
 
 # ## Threshold Operating Points
 
-# In[24]:
+# In[17]:
 
 
 pred_thresholds = np.arange(0.05, 1.01, 0.05)
@@ -346,7 +354,7 @@ perf_metrics = [
     'warning_rate', 'precision', 'recall', 'NPV', 'specificity', 
     'outcome_level_recall', 'first_warning_rate', 'first_warning_precision'
 ]
-thresh_df = eval_models.operating_points(
+thresh_df = evaluator.operating_points(
     pred_thresholds, op_metric='threshold', perf_metrics=perf_metrics, event_df=event_dates.join(tag)
 )
 thresh_df
@@ -354,28 +362,35 @@ thresh_df
 
 # ## Threshold Selection
 
-# In[25]:
+# In[18]:
 
 
 # Select prediction threshold at which alarm rate and usual intervention rate is equal 
 # (resource utility is constant for both usual care and system-guided care)
-year_mortality_thresh = equal_rate_pred_thresh(eval_models, event_dates, split='Test', alg='ENS', target_event='365d Mortality')
+year_mortality_thresh = equal_rate_pred_thresh(evaluator, event_dates, split='Test', alg='ENS', target_event='365d Mortality')
 # year_mortality_thresh += 0.001 # manual adjustment
 month_mortality_thresh = 0.2
 
 
-# In[26]:
+# In[19]:
 
 
 perf_metrics = ['precision', 'outcome_level_recall', 'first_warning_rate', 'first_warning_precision']
-eval_models.operating_points(
+evaluator.operating_points(
     [year_mortality_thresh], op_metric='threshold', perf_metrics=perf_metrics, event_df=event_dates.join(tag), save=False
 )
 
 
+# In[20]:
+
+
+# above is same as threshold 0.6
+year_mortality_thresh = 0.6
+
+
 # ## Performance on Subgroups
 
-# In[27]:
+# In[21]:
 
 
 subgroups = [
@@ -384,21 +399,27 @@ subgroups = [
 ]
 
 
-# In[28]:
+# In[22]:
 
 
 perf_kwargs = {
     'event_df': event_dates.join(tag), 
     'perf_metrics': ['precision', 'recall', 'outcome_level_recall', 'event_rate']
 }
-subgroup_performance = eval_models.get_perf_by_subgroup(
+subgroup_performance = evaluator.get_perf_by_subgroup(
     model_data, subgroups=subgroups, pred_thresh=[0.15, month_mortality_thresh, 0.3, 0.5, year_mortality_thresh], 
     alg='ENS', save=True, display_ci=True, load_ci=True, perf_kwargs=perf_kwargs
 )
 subgroup_performance
 
 
-# In[29]:
+# In[40]:
+
+
+subgroup_performance['365d Mortality']
+
+
+# In[23]:
 
 
 subgroup_performance = pd.read_csv(f'{output_path}/tables/subgroup_performance.csv', index_col=[0,1], header=[0,1])
@@ -419,7 +440,7 @@ subgroup_plot_width = {'Demographic': 18, 'Treatment': 12}
 
 # ### Subgroup Performance Plot
 
-# In[30]:
+# In[24]:
 
 
 for name, grouping in subgroup_plot_groupings.items():
@@ -434,11 +455,11 @@ for name, grouping in subgroup_plot_groupings.items():
 
 # ### Time to Death After First Alarm
 
-# In[31]:
+# In[25]:
 
 
 analysis_df = get_intervention_analysis_data(
-    eval_models, event_dates, pred_thresh=month_mortality_thresh, target_event='30d Mortality'
+    evaluator, event_dates, pred_thresh=month_mortality_thresh, target_event='30d Mortality'
 )
 time_to_death = time_to_x_after_y(analysis_df, x='death', y='first_alarm')
 
@@ -452,7 +473,7 @@ plt.savefig(f'{output_path}/figures/time_to_event/30d_Mortality.jpg', bbox_inche
 
 # ### Subgroup Performance Plot
 
-# In[32]:
+# In[26]:
 
 
 for name, grouping in subgroup_plot_groupings.items():
@@ -464,10 +485,10 @@ for name, grouping in subgroup_plot_groupings.items():
 
 # ### Time to Death After First Alarm
 
-# In[33]:
+# In[27]:
 
 
-analysis_df = get_intervention_analysis_data(eval_models, event_dates, pred_thresh=year_mortality_thresh, target_event='365d Mortality')
+analysis_df = get_intervention_analysis_data(evaluator, event_dates, pred_thresh=year_mortality_thresh, target_event='365d Mortality')
 time_to_death = time_to_x_after_y(analysis_df, x='death', y='first_alarm')
 
 fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10,4))
@@ -479,7 +500,7 @@ plt.savefig(f'{output_path}/figures/time_to_event/365d_Mortality.jpg', bbox_inch
 
 # # Palliative Care Consultation Service (PCCS) Analysis
 
-# In[34]:
+# In[28]:
 
 
 def get_num_consults(df):
@@ -491,18 +512,18 @@ def get_num_consults(df):
     print(f'System-Guided Care (No Alarm = Usual Care): {system_care_no_alarm_usual_care} consultations')
 
 
-# In[35]:
+# In[29]:
 
 
 pccs_df = get_pccs_analysis_data(
-    eval_models, event_dates, 
-    days_before_death=180, pred_thresh=year_mortality_thresh, 
+    evaluator, event_dates, 
+    days_before_death=180, pred_thresh=year_mortality_thresh,
     alg='ENS', split='Test', target_event='365d Mortality'
 )
 get_num_consults(pccs_df)
 
 
-# In[36]:
+# In[30]:
 
 
 mask = pccs_df['first_PCCS_date'] < pccs_df['first_visit_date']
@@ -518,7 +539,7 @@ print(f'Received early consultation before first treatment = {sum(early_pccs_mas
 
 # ### All Patients
 
-# In[37]:
+# In[31]:
 
 
 impact = get_pccs_impact(pccs_df, no_alarm_strategy='no_pccs')
@@ -531,7 +552,7 @@ impact.astype(str) + ' (' + (impact / len(pccs_df) * 100).round(2).astype(str) +
 
 # ### Viable Patients
 
-# In[38]:
+# In[32]:
 
 
 def remove_unviable_patients(df):
@@ -549,7 +570,7 @@ def remove_unviable_patients(df):
     return df[~mask]
 
 
-# In[39]:
+# In[33]:
 
 
 viable_pccs_df = remove_unviable_patients(pccs_df)
@@ -563,7 +584,7 @@ impact.astype(str) + ' (' + (impact / len(viable_pccs_df) * 100).round(2).astype
 
 # ### Impact by Subgroup
 
-# In[40]:
+# In[34]:
 
 
 pccs_result = {}
@@ -575,20 +596,28 @@ for care_name in pccs_result:
         print(result.round(1).to_string(), end='\n\n')
 
 
-# In[41]:
+# In[35]:
 
 
 padding = {'pad_x0': 0.8, 'pad_y0': 1.2, 'pad_x1': 2.8, 'pad_y1': 0.3}
 for name, grouping in subgroup_plot_groupings.items():
-    epc_subgroup_plot(
+    output = epc_subgroup_plot(
         pccs_result, target_event='365d Mortality', subgroups=grouping, padding=padding,
         figsize=(subgroup_plot_width[name], 10), save_dir=f'{output_path}/figures/model_impact/{name}'
     )
 
 
+# In[36]:
+
+
+diff = output.iloc[:, 1].str[:5].astype(float) - output.iloc[:, 0].str[:5].astype(float)
+output[('365d Mortality', 'Difference')] = diff
+output
+
+
 # ### Bias Mitigation Plot
 
-# In[42]:
+# In[38]:
 
 
 rural_mask = model_data.loc[test_mask, 'rural']
@@ -598,23 +627,29 @@ subgroup_masks = {
     'Immigration': {'Recent Immigrant': immigrant_mask, 'Long-Term Resident': ~immigrant_mask}
 }
 # hmmmm if only one row, aspect ratio goes wacky
-epc_bias_mitigation_plot(
-    eval_models, pccs_result, subgroup_masks, save_path=f'{output_path}/figures/output', 
+results = epc_bias_mitigation_plot(
+    evaluator, pccs_result, subgroup_masks, save_path=f'{output_path}/figures/output', 
     padding={'pad_x0': 0.8, 'pad_x1': 0.05, 'pad_y0': 0.7}
 )
 
 
+# In[39]:
+
+
+pd.concat(results.values()).drop_duplicates()
+
+
 # # Chemo at End-of-Life Analysis
 
-# In[43]:
+# In[40]:
 
 
-eol_treatment_df = get_eol_treatment_analysis_data(eval_models, event_dates, pred_thresh=month_mortality_thresh)
+eol_treatment_df = get_eol_treatment_analysis_data(evaluator, event_dates, pred_thresh=month_mortality_thresh)
 eol_treatment_result = get_eol_treatment_receival_by_subgroup(eol_treatment_df, subgroups=subgroups)
 eol_treatment_result
 
 
-# In[44]:
+# In[41]:
 
 
 result = eol_treatment_result.copy()
@@ -632,17 +667,17 @@ for name, grouping in subgroup_plot_groupings.items():
 
 # ## 50% Threshold
 
-# In[45]:
+# In[42]:
 
 
 year_mortality_thresh = 0.5
 
 
-# In[46]:
+# In[43]:
 
 
 pccs_df = get_pccs_analysis_data(
-    eval_models, event_dates, 
+    evaluator, event_dates, 
     days_before_death=180, pred_thresh=year_mortality_thresh, 
     alg='ENS', split='Test', target_event='365d Mortality'
 )
@@ -651,7 +686,7 @@ get_num_consults(pccs_df)
 
 # ### All Patients
 
-# In[47]:
+# In[44]:
 
 
 impact = get_pccs_impact(pccs_df, no_alarm_strategy='no_pccs')
@@ -664,7 +699,7 @@ impact.astype(str) + ' (' + (impact / len(pccs_df) * 100).round(2).astype(str) +
 
 # ### Viable Patients
 
-# In[48]:
+# In[45]:
 
 
 viable_pccs_df = remove_unviable_patients(pccs_df)
@@ -678,7 +713,7 @@ impact.astype(str) + ' (' + (impact / len(viable_pccs_df) * 100).round(2).astype
 
 # ### PCCS Graph Plot
 
-# In[49]:
+# In[46]:
 
 
 from src.visualize import pccs_graph_plot
@@ -689,7 +724,7 @@ d
 
 # ## All Billing Codes Equal Resource Utility Thresh
 
-# In[50]:
+# In[47]:
 
 
 from src.preprocess import filter_ohip_data
@@ -702,7 +737,7 @@ pd.DataFrame(
 ).T
 
 
-# In[51]:
+# In[48]:
 
 
 initial_pccs_date = ohip.groupby('ikn')['servdate'].first()
@@ -710,20 +745,20 @@ initial_pccs_date.index = initial_pccs_date.index.astype(int)
 event_dates['first_PCCS_date'] = tag['ikn'].map(initial_pccs_date)
 
 
-# In[62]:
+# In[49]:
 
 
 # Select prediction threshold at which alarm rate and usual intervention rate is equal 
 # (resource utility is constant for both usual care and system-guided care)
-year_mortality_thresh = equal_rate_pred_thresh(eval_models, event_dates, split='Test', alg='ENS', target_event='365d Mortality')
-# year_mortality_thresh = year_mortality_thresh + 0.02 # manual adjustment
+year_mortality_thresh = equal_rate_pred_thresh(evaluator, event_dates, split='Test', alg='ENS', target_event='365d Mortality')
+year_mortality_thresh = year_mortality_thresh + 0.02 # manual adjustment
 
 
-# In[63]:
+# In[50]:
 
 
 pccs_df = get_pccs_analysis_data(
-    eval_models, event_dates, 
+    evaluator, event_dates, 
     days_before_death=180, pred_thresh=year_mortality_thresh, 
     alg='ENS', split='Test', target_event='365d Mortality'
 )
@@ -732,7 +767,7 @@ get_num_consults(pccs_df)
 
 # ### All Patients
 
-# In[64]:
+# In[51]:
 
 
 impact = get_pccs_impact(pccs_df, no_alarm_strategy='no_pccs')
@@ -745,7 +780,7 @@ impact.astype(str) + ' (' + (impact / len(pccs_df) * 100).round(2).astype(str) +
 
 # ### Viable Patients
 
-# In[65]:
+# In[52]:
 
 
 viable_pccs_df = remove_unviable_patients(pccs_df)
@@ -759,7 +794,7 @@ impact.astype(str) + ' (' + (impact / len(viable_pccs_df) * 100).round(2).astype
 
 # ## Changes in Treatment Between Developement and Test Cohort
 
-# In[56]:
+# In[53]:
 
 
 test_treatment_count = model_data.loc[test_mask, 'regimen'].value_counts()
@@ -774,10 +809,10 @@ plt.show()
 
 # ## Time to First Alarm After First PCCS
 
-# In[57]:
+# In[54]:
 
 
-analysis_df = get_intervention_analysis_data(eval_models, event_dates, pred_thresh=0.5, target_event='365d Mortality')
+analysis_df = get_intervention_analysis_data(evaluator, event_dates, pred_thresh=0.5, target_event='365d Mortality')
 time_to_alarm = time_to_x_after_y(analysis_df, x='first_alarm', y='first_pccs', clip=True, care_name='Usual Care')
 
 fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(18, 6))
@@ -788,10 +823,10 @@ time_to_event_plot(time_to_alarm, ax=axes[1], plot_type='cdf', xticks=xticks, xl
 
 # ## Time to Death After First PCCS
 
-# In[58]:
+# In[55]:
 
 
-analysis_df = get_intervention_analysis_data(eval_models, event_dates, pred_thresh=0.5, target_event='365d Mortality')
+analysis_df = get_intervention_analysis_data(evaluator, event_dates, pred_thresh=0.5, target_event='365d Mortality')
 time_to_death = time_to_x_after_y(analysis_df, x='death', y='first_pccs', clip=True, care_name='Usual Care')
 
 fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6))
@@ -802,10 +837,10 @@ time_to_event_plot(time_to_death, ax=axes[1], plot_type='cdf', xticks=xticks, xl
 
 # ## Regimen performance
 
-# In[59]:
+# In[56]:
 
 
-regimen_performance = eval_models.get_perf_by_subgroup(
+regimen_performance = evaluator.get_perf_by_subgroup(
     model_data,
     subgroups=['regimen'], 
     pred_thresh=year_mortality_thresh, 
@@ -815,7 +850,7 @@ regimen_performance = eval_models.get_perf_by_subgroup(
     save=False, 
     display_ci=False, 
     load_ci=False,
-    top=eval_models.orig_data['regimen'].nunique(),
+    top=evaluator.orig_data['regimen'].nunique(),
     perf_kwargs={'perf_metrics': ['precision', 'recall','event_rate', 'count']}
 )['365d Mortality']
 mask = regimen_performance['N'] > 100
@@ -824,11 +859,8 @@ regimen_performance[mask].sort_values(by='AUROC')
 
 # ## Hyperparameters
 
-# In[60]:
+# In[57]:
 
 
 from src.utility import get_hyperparameters
 get_hyperparameters(output_path)
-
-
-# In[ ]:

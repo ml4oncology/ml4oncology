@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -684,7 +684,6 @@ clean_variable_mapping = {
     'INFX': 'due_to_fever_and_infection', 
     'TR': 'due_to_treatment_related', 
     'GI': 'due_to_gastrointestinal_toxicity',
-    'OTH': 'other',
     'H': 'hospitalization', 
     'ED': 'ED_visit'
 }
@@ -715,48 +714,45 @@ eGFR_params = {
 }
 
 # Model Training
-# model param options
-nn_solvers = ['adam', 'sgd']
-nn_activations = ['tanh', 'relu', 'logistic']
-
-# calibration params
-calib_param = {'method': 'isotonic', 'cv': 3}
-calib_param_logistic = {'method': 'sigmoid', 'cv': 3}
-
 # model tuning params
 model_tuning_param = {
     'LR': {
         'inv_reg_strength': (0.0001, 1)
     },
-    'XGB': {
-        'learning_rate': (0.001, 0.1),
-        'n_estimators': (50, 200),
-        'max_depth': (3, 7),
-        'gamma': (0, 1),
-        'reg_lambda': (0, 1)
-    },
     'RF': {
         'n_estimators': (50, 200),
         'max_depth': (3, 7),
-        'max_features': (0.01, 1)
+        'max_features': (0.01, 1),
+        'min_samples_leaf': (0.001, 0.1),
+        'min_impurity_decrease': (0, 0.1),
+    },
+    'XGB': {
+        'n_estimators': (50, 200),
+        'max_depth': (3, 7),
+        'learning_rate': (0.01, 0.3),
+        'min_split_loss': (0, 0.5),
+        'min_child_weight': (6, 100),
+        'reg_lambda': (0, 1),
+        'reg_alpha': (0, 1000)
     },
     'NN': {
-        'learning_rate_init': (0.0001, 0.1),
-        'batch_size': (64, 512),
+        'batch_size': (64, 4096),
+        'hidden_size1': (16, 256),
+        'hidden_size2': (16, 256),
+        'dropout': (0, 0.5),
+        'optimizer': (0, 1),
+        'learning_rate': (0.0001, 0.1),
+        'weight_decay': (0.0001, 1),
         'momentum': (0, 0.9),
-        'alpha': (0.0001, 1),
-        'first_layer_size': (16, 256),
-        'second_layer_size': (16, 256),
-        'solver': (0, len(nn_solvers)-0.0001),
-        'activation': (0, len(nn_activations)-0.0001)
     },
     'RNN': {
-        'batch_size': (8, 512),
-        'learning_rate': (0.0001, 0.01),
-        'hidden_size': (10, 200),
+        'batch_size': (16, 1024),
+        'hidden_size': (16, 256),
         'hidden_layers': (1, 5),
         'dropout': (0.0, 0.9),
-        'model': (0.0, 1.0)
+        'learning_rate': (0.0001, 0.01),
+        'weight_decay': (0.0001, 1),
+        'model': (0, 1)
     },
     'ENS': {alg: (0, 1) for alg in ['LR', 'XGB', 'RF', 'NN', 'RNN']},
     # Baseline Models
@@ -775,11 +771,11 @@ model_tuning_param = {
 }
                                  
 bayesopt_param = {
-    'LR': {'init_points': 3, 'n_iter': 10}, 
-    'XGB': {'init_points': 5, 'n_iter': 25},
-    'RF': {'init_points': 3, 'n_iter': 20}, 
-    'NN': {'init_points': 5, 'n_iter': 50},
-    'RNN': {'init_points': 3, 'n_iter': 50},
+    'LR': {'init_points': 2, 'n_iter': 10}, 
+    'RF': {'init_points': 10, 'n_iter': 50}, 
+    'XGB': {'init_points': 14, 'n_iter': 70},
+    'NN': {'init_points': 16, 'n_iter': 80},
+    'RNN': {'init_points': 14, 'n_iter': 70},
     'ENS': {'init_points': 4, 'n_iter': 40},
     # Baseline Models
     'LOESS': {'init_points': 3, 'n_iter': 10},

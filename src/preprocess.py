@@ -70,6 +70,8 @@ def filter_systemic_data(
     drug=None,
     remove_inpatients=True,
     exclude_dins=None,
+    min_date=None,
+    max_date=None,
     verbose=False
 ):
     """
@@ -85,7 +87,7 @@ def filter_systemic_data(
     
     df = clean_up_systemic(df, verbose=verbose)
     df = filter_regimens(df, regimens, verbose=verbose)
-    df = filter_date(df, verbose=verbose)
+    df = filter_date(df, min_date=min_date, max_date=max_date, verbose=verbose)
     if drug is not None:
         df = filter_drug(df, keep_drug=drug, verbose=verbose)
         cols += drug_cols
@@ -287,12 +289,14 @@ def filter_regimens(df, regimens, verbose=True):
 
 def filter_date(
     df, 
-    min_date=min_chemo_date, 
-    max_date=max_chemo_date, 
+    min_date=None, 
+    max_date=None, 
     verbose=False
 ):
     """Remove treatment sessions recieved before the new ALR system was set up
     """
+    if min_date is None: min_date = min_chemo_date
+    if max_date is None: max_date = max_chemo_date
     if verbose: 
         msg = (f"{len(df)} treatments occured between "
                f"{df[DATE].min().date()} to {df[DATE].max().date()}")

@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -271,8 +271,8 @@ class Evaluate:
     def __init__(self, output_path, preds, labels, score_funcs, splits=None):
         """
         Args:
-            preds (dict): mapping of data splits (str) and their associated 
-                predictions by each algorithm (dict of str: pd.DataFrame)
+            preds (dict): mapping of algorithms (str) and their predictions for 
+                each partition (dict of str: pd.DataFrame)
             labels (dict): mapping of data splits (str) and their associated 
                 labels (pd.Series)
             score_funcs (dict): mapping of score name (str) and their associated
@@ -284,7 +284,7 @@ class Evaluate:
         self.score_funcs = score_funcs
         if splits is None: splits = ['Valid', 'Test']
         self.splits = splits
-        self.algs = list(preds['Test'].keys())
+        self.algs = list(preds.keys())
         self.target_events = list(labels['Test'].columns)
         self.ci = ScoreConfidenceInterval(output_path, score_funcs)
 
@@ -314,7 +314,7 @@ class Evaluate:
         iterables = itertools.product(algs, splits, target_events)
         for alg, split, target_event in iterables:
             Y_true = self.labels[split][target_event]
-            Y_pred = self.preds[split][alg][target_event]
+            Y_pred = self.preds[alg][split][target_event]
             metrics = {name: func(Y_true, Y_pred) 
                        for name, func in self.score_funcs.items()}
             if display_ci: 
@@ -376,7 +376,7 @@ class EvaluateClf(Evaluate):
             assert(len(pred_thresh) == len(target_events))
         
         thresh = pred_thresh
-        Y, pred_prob = self.labels[split], self.preds[split][alg]
+        Y, pred_prob = self.labels[split], self.preds[alg][split]
         data = data.loc[Y.index]
         
         sp = SubgroupPerformance(
@@ -425,7 +425,7 @@ class EvaluateClf(Evaluate):
         """
         if target_events is None: target_events = self.target_events
             
-        Y, pred_prob = self.labels[split], self.preds[split][alg]
+        Y, pred_prob = self.labels[split], self.preds[alg][split]
         if mask is not None: Y, pred_prob = Y[mask], pred_prob[mask]
         
         result = {}
@@ -467,7 +467,7 @@ class EvaluateClf(Evaluate):
         axes = axes.flatten()
         plt.subplots_adjust(hspace=0.2, wspace=0.2)
         Y_true = self.labels[split][target_event]
-        Y_pred_prob = self.preds[split][alg][target_event]
+        Y_pred_prob = self.preds[alg][split][target_event]
         
         # plot
         self.plot_auc_curve(
@@ -708,7 +708,7 @@ class EvaluateClf(Evaluate):
         for i, alg in enumerate(algs):
             for target_event in target_events:
                 Y_true = self.labels[split][target_event]
-                Y_pred_prob = self.preds[split][alg][target_event]
+                Y_pred_prob = self.preds[alg][split][target_event]
                 if curve_type in ['roc', 'pr']:
                     self.plot_auc_curve(
                         axes[i], Y_true, Y_pred_prob, curve_type=curve_type, 
@@ -768,7 +768,7 @@ class EvaluateClf(Evaluate):
                 show_perf_calib = cur_max_prob > max_prob
                 max_prob = max(max_prob, cur_max_prob)
                 Y_true = self.labels[split][target_event]
-                Y_pred_prob = self.preds[split][alg][target_event]
+                Y_pred_prob = self.preds[alg][split][target_event]
                 prob_true, prob_pred = self.plot_calib(
                     ax, Y_true, Y_pred_prob, title=alg, n_bins=n_bins, 
                     calib_strategy=calib_strategy, legend_loc=legend_loc,
@@ -788,7 +788,7 @@ class EvaluateClf(Evaluate):
                 axis_max_limit = max(ax.axis())
                 ax_hist = fig.add_subplot(gs[row+2, col], sharex=ax)
                 for target_event in target_events:
-                    Y_pred_prob = self.preds[split][alg][target_event]
+                    Y_pred_prob = self.preds[alg][split][target_event]
                     ax_hist.hist(
                         Y_pred_prob, range=(0,axis_max_limit), bins=n_bins,
                         label=target_event, histtype='step'
@@ -851,7 +851,7 @@ class EvaluateClf(Evaluate):
         
         for idx, target_event in enumerate(target_events):
             Y_true = self.labels[split][target_event]
-            Y_pred_prob = self.preds[split][alg][target_event]
+            Y_pred_prob = self.preds[alg][split][target_event]
             label = self.labels[split][target_event]
             ax = fig.add_subplot(N,1,idx+1)
             result[target_event] = self.plot_decision_curve(
@@ -889,7 +889,7 @@ class EvaluateReg(Evaluate):
         super().__init__(output_path, preds, labels, REG_SCORE_FUNCS, **kwargs)
         
     def plot_err_dist(self, alg, target_event, split='Test'):
-        Y_pred = self.preds[split][alg][target_event]
+        Y_pred = self.preds[alg][split][target_event]
         Y_true = self.labels[split][target_event]
         err = Y_true - Y_pred
         
@@ -970,7 +970,7 @@ class EvaluateBaselineModel(EvaluateClf):
                 the beginning and end of the curve.
         """
         x = self.X.sort_values()
-        pred = self.preds[split][alg].loc[x.index, target_event]
+        pred = self.preds[alg][split].loc[x.index, target_event]
         if clip_flat_edges:
             initial_flat_mask = (pred == pred.iloc[0]).cumprod()
             end_flat_mask = (pred == pred.iloc[-1])[::-1].cumprod()[::-1]
@@ -979,7 +979,7 @@ class EvaluateBaselineModel(EvaluateClf):
         ax.plot(x, pred)
         
         if self.pred_ci is not None:
-            pred_min, pred_max = self.pred_ci[split][alg]
+            pred_min, pred_max = self.pred_ci[alg][split]
             pred_min = pred_min.loc[x.index, target_event]
             pred_max = pred_max.loc[x.index, target_event]
             ax.fill_between(x, pred_min, pred_max, alpha=0.25)
@@ -1010,7 +1010,7 @@ class EvaluateBaselineModel(EvaluateClf):
         axes = axes.flatten()
         plt.subplots_adjust(hspace=0.2, wspace=0.2)
         Y_true = self.labels[split][target_event]
-        Y_pred_prob = self.preds[split][alg][target_event]
+        Y_pred_prob = self.preds[alg][split][target_event]
 
         # plot
         self.plot_prediction(axes[0], alg, target_event, split=split)

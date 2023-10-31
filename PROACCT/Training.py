@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -42,7 +42,7 @@ from src.evaluate import EvaluateClf
 from src.model import SimpleBaselineModel
 from src.prep_data import PrepDataEDHD
 from src.summarize import data_description_summary, feature_summary
-from src.train import TrainLASSO, TrainML, TrainRNN, TrainENS
+from src.train import Trainer, Ensembler, LASSOTrainer
 from src.utility import (
     initialize_folders, load_pickle,
     get_nunique_categories, get_nmissing, get_clean_variable_names, get_units
@@ -155,15 +155,15 @@ feature_summary(
 # In[12]:
 
 
-train_lasso = TrainLASSO(X, Y, tag, output_path=output_path, target_event='ACU')
+lasso_trainer = LASSOTrainer(X, Y, tag, output_path=output_path, target_event='ACU')
 
 
 # In[41]:
 
 
-# train_lasso.tune_and_train(run_grid_search=True, run_training=True, save=True, C_search_space=np.geomspace(0.000025, 1, 100))
+# lasso_trainer.run(grid_search=True, train=True, save=True, C_search_space=np.geomspace(0.000025, 1, 100))
 C_search_space = [0.000025, 0.000028, 0.000030, 0.000034, 0.000038, 0.0000408, 0.000042, 0.000043, 0.000044, 0.000048]
-train_lasso.tune_and_train(run_grid_search=True, run_training=False, save=False, C_search_space=C_search_space)
+lasso_trainer.run(grid_search=True, train=False, save=False, C_search_space=C_search_space)
 
 
 # In[14]:
@@ -171,7 +171,7 @@ train_lasso.tune_and_train(run_grid_search=True, run_training=False, save=False,
 
 gs_results = pd.read_csv(f'{output_path}/tables/grid_search.csv')
 gs_results = gs_results.sort_values(by='n_feats')
-train_lasso.select_param(gs_results) # model with least complexity while AUROC upper CI >= max AUROC
+lasso_trainer.select_param(gs_results) # model with least complexity while AUROC upper CI >= max AUROC
 ax = gs_results.plot(x='n_feats', y='AUROC', marker='o', markersize=4, legend=False, figsize=(6,6))
 ax.set(xlabel='Number of Features', ylabel='AUROC')
 plt.savefig(f'{output_path}/figures/LASSO_score_vs_num_feat.jpg', dpi=300)
@@ -181,7 +181,7 @@ plt.savefig(f'{output_path}/figures/LASSO_score_vs_num_feat.jpg', dpi=300)
 
 
 model = load_pickle(output_path, 'LASSO')
-coef = train_lasso.get_coefficients(model, non_zero=False)
+coef = lasso_trainer.get_coefficients(model)
 
 # Clean the feature names
 rename_map = {name: f'{name} ({unit})' for name, unit in get_units().items()}
@@ -192,16 +192,7 @@ coef.to_csv(f'{output_path}/tables/LASSO_coefficients.csv')
 coef.head(n=100)
 
 
-# ## Main ML Models
-
-# In[14]:
-
-
-train_ml = TrainML(X, Y, tag, output_path, n_jobs=processes)
-train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True)
-
-
-# ## RNN Model
+# ## Main Models
 
 # In[27]:
 
@@ -214,11 +205,11 @@ ax.grid(zorder=0)
 sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
 
 
-# In[17]:
+# In[ ]:
 
 
-train_rnn = TrainRNN(X, Y, tag, output_path)
-train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration=True, save_preds=True)
+trainer = Trainer(X, Y, tag, output_path, n_jobs=processes)
+trainer.run(bayesopt=False, train=True, save_preds=True)
 
 
 # ## ENS Model 
@@ -227,20 +218,16 @@ train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration
 # In[15]:
 
 
-# combine lasso, rnn, and ml predictions
-preds = load_pickle(f'{output_path}/preds', 'ML_preds')
-preds_lasso = load_pickle(f'{output_path}/preds', 'LASSO_preds')
-preds_rnn = load_pickle(f'{output_path}/preds', filename='RNN_preds')
-for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
-for split, pred in preds_lasso.items(): preds[split]['LR'] = pred['LR']
-del preds_rnn, preds_lasso
+# combine predictions
+preds = load_pickle(f'{output_path}/preds', filename='all_preds')
+preds.update(load_pickle(f'{output_path}/preds', filename='LASSO_preds'))
 
 
 # In[16]:
 
 
-train_ens = TrainENS(X, Y, tag, output_path, preds)
-train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True, random_state=0)
+ensembler = Ensembler(X, Y, tag, output_path, preds)
+ensembler.run(bayesopt=False, calibrate=False, random_state=0)
 
 
 # # Evaluate Models
@@ -249,18 +236,16 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 
 # setup the final prediction and labels
-preds, labels = train_ens.preds.copy(), train_ens.labels.copy()
-base_model = SimpleBaselineModel(model_data[['regimen']], labels)
-base_preds = base_model.predict()
-for split, pred in base_preds.items(): preds[split].update(pred)
+preds, labels = ensembler.preds.copy(), ensembler.labels.copy()
+preds.update(SimpleBaselineModel(model_data[['regimen']], labels).predict())
 
 
 # In[19]:
 
 
 target_order = ['ACU', 'ED', 'H', 'TR_ACU', 'TR_ED', 'TR_H', 'INFX_ED', 'INFX_H','GI_ED', 'GI_H']
-eval_models = EvaluateClf(output_path, preds, labels)
-df = eval_models.get_evaluation_scores(target_events=target_order, display_ci=True, load_ci=True, save_ci=False)
+evaluator = EvaluateClf(output_path, preds, labels)
+df = evaluator.get_evaluation_scores(target_events=target_order, display_ci=True, load_ci=True, save_ci=False)
 df
 
 
@@ -273,11 +258,11 @@ df.loc[(slice(None), slice('AUROC Score')), df.columns].T.loc['Test']
 # In[36]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_loc='upper right', figsize=(12,18), save=False)
-eval_models.plot_curves(curve_type='roc', legend_loc='lower right', figsize=(12,18), save=False)
-eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,18), save=False) # cumulative distribution function of model prediction
-eval_models.plot_calibs(legend_loc='upper left', figsize=(12,18), save=False) 
-# eval_models.plot_calibs(include_pred_hist=True, legend_loc='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
+evaluator.plot_curves(curve_type='pr', legend_loc='upper right', figsize=(12,18), save=False)
+evaluator.plot_curves(curve_type='roc', legend_loc='lower right', figsize=(12,18), save=False)
+evaluator.plot_curves(curve_type='pred_cdf', figsize=(12,18), save=False) # cumulative distribution function of model prediction
+evaluator.plot_calibs(legend_loc='upper left', figsize=(12,18), save=False) 
+# evaluator.plot_calibs(include_pred_hist=True, legend_loc='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
 
 
 # # Post-Training Analysis
@@ -297,7 +282,7 @@ pred_thresholds = np.arange(0.05, 0.51, 0.05)
 perf_metrics = [
     'warning_rate', 'precision', 'recall', 'NPV', 'specificity', 'outcome_level_recall',
 ]
-thresh_df = eval_models.operating_points(
+thresh_df = evaluator.operating_points(
     pred_thresholds, op_metric='threshold', perf_metrics=perf_metrics, event_df=event_dates.join(tag)
 )
 thresh_df
@@ -321,14 +306,14 @@ get_ipython().system('python scripts/feat_imp.py --adverse-event ACU --output-pa
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,50), top=10, importance_by='feature', padding={'pad_x0': 4.0})
+importance_plot('ENS', evaluator.target_events, output_path, figsize=(6,50), top=10, importance_by='feature', padding={'pad_x0': 4.0})
 
 
 # In[20]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,50), top=10, importance_by='group', padding={'pad_x0': 1.2})
+importance_plot('ENS', evaluator.target_events, output_path, figsize=(6,50), top=10, importance_by='group', padding={'pad_x0': 1.2})
 
 
 # ## Performance on Subgroups
@@ -344,7 +329,7 @@ perf_kwargs = {
     'event_df': event_dates.join(tag), 
     'perf_metrics': ['precision', 'recall', 'outcome_level_recall', 'event_rate']
 }
-subgroup_performance = eval_models.get_perf_by_subgroup(
+subgroup_performance = evaluator.get_perf_by_subgroup(
     model_data, subgroups=subgroups, pred_thresh=0.35, alg='ENS', 
     display_ci=False, load_ci=False, perf_kwargs=perf_kwargs
 )
@@ -356,7 +341,7 @@ subgroup_performance
 # In[37]:
 
 
-result = eval_models.plot_decision_curves('ENS', padding={'pad_x0': 1.0}, save=False)
+result = evaluator.plot_decision_curves('ENS', padding={'pad_x0': 1.0}, save=False)
 
 
 # In[38]:
@@ -378,7 +363,7 @@ pd.DataFrame(thresh_range, index=['Threshold Min', 'Threshold Max']).T
 # In[42]:
 
 
-eval_models.all_plots_for_single_target(alg='ENS', target_event='ACU')
+evaluator.all_plots_for_single_target(alg='ENS', target_event='ACU')
 
 
 # ### Subgroup Performance Plot

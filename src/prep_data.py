@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -289,7 +289,7 @@ class PrepData:
         # final dataset instead of a patient's actual first visit date (before 
         # any filtering)
         first_visit_date = df.groupby('ikn')[DATE].min()
-        self.event_dates['first_visit_date'] = df['ikn'].map(first_visit_date)
+        self.event_dates[f'first_{DATE}'] = df['ikn'].map(first_visit_date)
         
         # save the date columns before dropping them
         date_cols = df.columns[df.columns.str.endswith('_date')].tolist()
@@ -488,8 +488,13 @@ class PrepData:
         """Create the development and testing cohort 
         by partitioning on split_date
         """
-        mask = self.event_dates['first_visit_date'] <= split_date
+        mask = self.event_dates[f'first_{DATE}'] <= split_date
         dev_cohort, test_cohort = df[mask].copy(), df[~mask].copy()
+        mask = self.event_dates.loc[dev_cohort.index, DATE] <= split_date
+        if verbose:
+            context = f' that occured after {split_date} in the development set'
+            logger.info(make_log_msg(dev_cohort, mask, context=context))
+        dev_cohort = dev_cohort[mask]
         if verbose:
             disp = lambda x: f"NSessions={len(x)}. NPatients={x.ikn.nunique()}"
             msg = (f"Development Cohort: {disp(dev_cohort)}. Contains all "
@@ -1153,7 +1158,7 @@ class PrepDataCAN(PrepData):
             logger.info(make_log_msg(df, mask, context=context))
         df = df.loc[result.index]
         df[next_scr_cols] = result[next_scr_cols]
-        df = df.sort_values(by=['ikn', 'visit_date'])
+        df = df.sort_values(by=['ikn', DATE])
         return df
     
     def convert_labels(self, target):
