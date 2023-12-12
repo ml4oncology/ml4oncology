@@ -14,6 +14,9 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
+"""
+Script to compute shap values
+"""
 import argparse
 import os
 import sys
@@ -25,10 +28,86 @@ np.random.seed(42)
 import shap
 
 from src import logger
-from src.config import split_date
+from src.config import min_chemo_date, split_date
 from src.prep_data import PrepDataEDHD
-from src.train import TrainRNN
+from src.train import Trainer
 from src.utility import load_pickle, save_pickle
+
+class SHAPModel:
+    def __init__(self, data, trainer, target_event='365d Mortality', drop_cols=None):
+        self.data = data
+        self.trainer = trainer
+        self.target_idx = trainer.target_events.index(target_event)
+        if drop_cols is None: drop_cols = ['ikn', 'visit_date']
+        self.drop_cols = drop_cols
+        
+        # load models
+        output_path = trainer.output_path
+        self.lr_model = load_pickle(output_path, 'LR')
+        self.rf_model = load_pickle(output_path, 'RF')
+        self.xgb_model = load_pickle(output_path, 'XGB')
+        self.nn_model = load_pickle(output_path, 'NN')
+        self.rnn_model = load_pickle(output_path, 'RNN')
+        self.rnn_model.model.rnn.flatten_parameters()
+        self.ensemble_weights = load_pickle(f'{output_path}/best_params', 'ENS_params')
+        self.ensemble_weights = {alg: w for alg, w in self.ensemble_weights.items() if w > 0}
+        
+    def predict(self, X):
+        weights, preds = [], []
+        for alg, weight in self.ensemble_weights.items():
+            weights.append(weight)
+            preds.append(self._predict(alg, X))
+        pred = np.average(preds, axis=0, weights=weights)
+        return pred
+    
+    def _predict(self, alg, X):
+        if alg == 'RNN':
+            return self._rnn_predict(X)
+
+        X = X.drop(columns=self.drop_cols)
+        if alg == 'LR':
+            return self.lr_model.model.estimators_[self.target_idx].predict_proba(X)[:, 1]
+        elif alg == 'XGB':
+            return self.xgb_model.model.estimators_[self.target_idx].predict_proba(X)[:, 1]
+        elif alg == 'RF':
+            return self.rf_model.model.estimators_[self.target_idx].predict_proba(X)[:, 1]
+        elif alg == 'NN':
+            return self.nn_model.predict(X)[:, self.target_idx].cpu().detach().numpy()
+        else:
+            raise ValueError(f'{alg} not supported')
+        
+    def _rnn_predict(self, X):
+        # Reformat to sequential data
+        X = X.copy()
+        N = len(X)
+        # get the ikn and visit date for this sample row
+        res = {}
+        for col in ['ikn', 'visit_date']:
+            mask = X[col] != -1
+            val = X.loc[mask, col].unique()
+            assert len(val) == 1
+            res[col] = val[0]
+        # get patient's historical data
+        # NOTE: historical data is NOT permuted
+        hist = self.data.query(f'ikn == {res["ikn"]} & visit_date < {res["visit_date"]}').copy()
+        n = len(hist)
+        hist = pd.concat([hist] * N) # repeat patient historical data for each sample row
+        # set up new ikn for each sample row
+        ikns = np.arange(0, N, 1) + res['ikn']
+        hist['ikn'] = np.repeat(ikns, n)
+        X['ikn'] = ikns
+        # combine historical data and sample rows togethers
+        X['visit_date'] = res['visit_date']
+        X = pd.concat([X, hist]).sort_values(by=['ikn', 'visit_date'], ignore_index=True)
+
+        # Get the RNN predictions
+        self.trainer.ikns = X['ikn']
+        self.trainer.labels['Test'] = pd.DataFrame(True, columns=self.trainer.target_events, index=X.index) # dummy variable
+        X = X.drop(columns=self.drop_cols)
+        self.trainer.datasets['Test'] = X # set the new input
+        pred = self.trainer.predict(self.rnn_model, 'Test', 'RNN', calibrated=True)
+        pred = pred.to_numpy()[n::n+1, self.target_idx] # only take the predictions for sample rows
+        return pred
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -56,63 +135,29 @@ def main():
         model_data, split_date=split_date, remove_immediate_events=True, ohe_kwargs={'verbose': False}
     )
     model_data = model_data.loc[tag.index] # remove sessions in model_data that were excluded during split_and_transform
+    trainer = Trainer(X, Y, tag, output_path)
     
-    test_mask = tag['split'] == 'Test'
-    x = pd.concat([
+    visit_date = prep.event_dates['visit_date']
+    test_mask = tag['split'] == 'Test'    
+    data = pd.concat([
         X[test_mask].astype(float), 
-        Y[test_mask].astype(float), 
+        (visit_date[test_mask] - pd.Timestamp(min_chemo_date)).dt.days.astype(int), 
         tag.loc[test_mask, 'ikn']
     ], axis=1)
-    sampled_ikns = np.random.choice(x['ikn'].unique(), size=1000)
-    mask = x['ikn'].isin(sampled_ikns)
-    x, bg_dist = x[mask], x[~mask]
     
-    # load models
-    lr_model = load_pickle(output_path, 'LR')
-    rf_model = load_pickle(output_path, 'RF')
-    xgb_model = load_pickle(output_path, 'XGB')
-    nn_model = load_pickle(output_path, 'NN')
-    ensemble_weights = load_pickle(f'{output_path}/best_params', 'ENS_params')
-    rnn_param = load_pickle(f'{self.output_path}/best_params', 'RNN_params')
-    trainer = Trainer(X, Y, tag, output_path)
-    rnn_model = trainer.models.get_model('RNN', trainer.n_features, trainer.n_targets, **rnn_param)
-    rnn_model.load_weights(f'{self.output_path}/{rnn_param["model"]}')
-    
-    # predict function
-    idx = Y.columns.tolist().index('365d Mortality')
-    drop_cols = ['ikn'] + Y.columns.tolist()
-    def _predict(alg, X):
-        if alg == 'RNN':
-            trainer.ikns = X['ikn']
-            trainer.labels['Test'] = X[trainer.target_events] # dummy variable
-            X = X.drop(columns=drop_cols)
-            trainer.datasets['Test'] = X # set the new input
-            pred = trainer.predict(model, 'Test', alg, calibrated=True)
-            return pred.to_numpy()[:, idx]
+    # use a 1000 random patient sample subset of the test data
+    sampled_ikns = np.random.choice(data['ikn'].unique(), size=1000)
+    mask = data['ikn'].isin(sampled_ikns)
+    data, bg_dist = data[mask], data[~mask]
+    drop_cols = ['ikn', 'visit_date']
+    bg_dist[drop_cols] = -1
 
-        X = X.drop(columns=drop_cols)
-        if alg == 'LR':
-            return lr_model.estimators_[idx].predict_proba(X)[:, 1]
-        elif alg == 'XGB':
-            return xgb_model.estimators_[idx].predict_proba(X)[:, 1]
-        elif alg == 'RF':
-            return rf_model.estimators_[idx].predict_proba(X)[:, 1]
-        elif alg == 'NN':
-            return nn_model.predict_proba(X)[:, idx]
-        else:
-            raise ValueError(f'{alg} not supported')
-
-    def predict(X):
-        weights, preds = [], []
-        for alg, weight in ensemble_weights.items():
-            weights.append(weight)
-            preds.append(_predict(alg, X))
-        pred = np.average(preds, axis=0, weights=weights)
-        return pred
-    
     # compute shap values for the ENS model
-    explainer = shap.Explainer(predict, bg_dist)
-    shap_values = explainer(x, max_evals=800)
+    # NOTE: the explainer will loop through each sample row, and create multiple versions of the sample row
+    # with different feature permutations, where the values are replaced with the background distribution values
+    shap_model = SHAPModel(data, trainer, target_event='365d Mortality', drop_cols=drop_cols)
+    explainer = shap.Explainer(shap_model.predict, bg_dist, seed=42)
+    shap_values = explainer(data, max_evals=800)
     save_pickle(shap_values, f'{output_path}/feat_importance', 'shap_values_1000_patient')
     
 if __name__ == '__main__':

@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -41,7 +41,7 @@ from src.evaluate import EvaluateClf
 from src.model import SimpleBaselineModel
 from src.prep_data import PrepDataCAN
 from src.summarize import data_description_summary, feature_summary
-from src.train import TrainML, TrainRNN, TrainENS
+from src.train import Ensembler, LASSOTrainer, Trainer
 from src.utility import (
     initialize_folders, load_pickle, 
     get_nunique_categories, get_nmissing, most_common_categories,
@@ -63,62 +63,62 @@ initialize_folders(output_path)
 
 # # Prepare Data for Model Training
 
-# In[4]:
+# In[18]:
 
 
 prep = PrepDataCAN(adverse_event=adverse_event, target_keyword=target_keyword)
-model_data = prep.get_data(include_comorbidity=True, verbose=True)
+model_data = prep.get_data(include_comorbidity=True, verbose=True, first_course_treatment=True)
 model_data
 
 
-# In[5]:
+# In[19]:
 
 
 most_common_categories(model_data, catcol='regimen', with_respect_to='patients', top=10)
 
 
-# In[6]:
+# In[20]:
 
 
 sorted(model_data.columns)
 
 
-# In[7]:
+# In[21]:
 
 
 get_nunique_categories(model_data)
 
 
-# In[8]:
+# In[22]:
 
 
 get_nmissing(model_data)
 
 
-# In[9]:
+# In[27]:
 
 
 prep = PrepDataCAN(adverse_event=adverse_event, target_keyword=target_keyword)
-model_data = prep.get_data(missing_thresh=80, include_comorbidity=True, verbose=True)
+model_data = prep.get_data(missing_thresh=80, include_comorbidity=True, verbose=True, first_course_treatment=True)
 model_data['next_eGFR'].hist(bins=100)
 X, Y, tag = prep.split_and_transform_data(model_data, split_date=split_date)
 # remove sessions in model_data that were excluded during split_and_transform
 model_data = model_data.loc[tag.index]
 
 
-# In[10]:
+# In[28]:
 
 
 prep.get_label_distribution(Y, tag, with_respect_to='sessions')
 
 
-# In[11]:
+# In[29]:
 
 
 prep.get_label_distribution(Y, tag, with_respect_to='patients')
 
 
-# In[12]:
+# In[30]:
 
 
 # Convenience variables
@@ -129,7 +129,7 @@ Y_train, Y_valid, Y_test = Y[train_mask], Y[valid_mask], Y[test_mask]
 
 # ## Study Characteristics
 
-# In[17]:
+# In[31]:
 
 
 subgroups = [
@@ -137,13 +137,14 @@ subgroups = [
     'regimen', 'cancer_type', 'cancer_location', 'target', 'comorbidity', 'dialysis', 'ckd'
 ]
 data_description_summary(
-    model_data, Y, tag, save_dir=f'{output_path}/tables', partition_method='cohort', target_event='CKD', subgroups=subgroups
+    model_data, Y, tag, save_dir=f'{output_path}/tables', partition_method='cohort', target_event='CKD', 
+    subgroups=subgroups
 )
 
 
 # ## Feature Characteristic
 
-# In[18]:
+# In[32]:
 
 
 df = prep.ohe.encode(model_data.copy(), verbose=False) # get original (non-normalized, non-imputed) data one-hot encoded
@@ -155,104 +156,72 @@ feature_summary(
 
 # # Train Models
 
-# ## Main ML Models
+# ## Main Models
 
-# In[14]:
-
-
-train_ml = TrainML(X, Y, tag, output_path, n_jobs=processes)
-train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True)
+# In[35]:
 
 
-# ## RNN Model
-
-# In[9]:
-
-
-# Distrubution of the sequence lengths in the training set
-dist_seq_lengths = X_train.groupby(tag.loc[train_mask, 'ikn']).apply(len)
-dist_seq_lengths = dist_seq_lengths.clip(upper=dist_seq_lengths.quantile(q=0.999))
-fig, ax = plt.subplots(figsize=(15, 3))
-ax.grid(zorder=0)
-sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
-
-
-# In[13]:
-
-
-train_rnn = TrainRNN(X, Y, tag, output_path)
-train_rnn.tune_and_train(run_bayesopt=False, run_training=True, run_calibration=True, save_preds=True)
+trainer = Trainer(X, Y, tag, output_path)
+trainer.run(bayesopt=True, train=True, save_preds=True, algs=['LR', 'RF', 'XGB', 'NN'], allow_duplicate_points=True)
 
 
 # ## ENS Model 
+# Find Optimal Ensemble Weights
 
-# In[14]:
-
-
-# combine rnn and ml predictions
-preds = load_pickle(f'{output_path}/preds', 'ML_preds')
-preds_rnn = load_pickle(f'{output_path}/preds', 'RNN_preds')
-for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
-del preds_rnn
+# In[36]:
 
 
-# In[15]:
-
-
-train_ens = TrainENS(X, Y, tag, output_path, preds=preds)
-train_ens.tune_and_train(run_bayesopt=True, run_calibration=True, calibrate_pred=True)
+preds = load_pickle(f'{output_path}/preds', 'all_preds')
+ensembler = Ensembler(X, Y, tag, output_path, preds)
+ensembler.run(bayesopt=True, calibrate=True)
 
 
 # # Evaluate Models
 
-# In[16]:
+# In[37]:
 
 
 # setup the final prediction and labels
-preds, labels = train_ens.preds, train_ens.labels
-base_model = SimpleBaselineModel(model_data[['regimen', 'baseline_eGFR']], labels)
-base_preds = base_model.predict()
-for split, pred in base_preds.items(): preds[split].update(pred)
+preds, labels = ensembler.preds, ensembler.labels
+preds.update(SimpleBaselineModel(model_data[['regimen', 'baseline_eGFR']], labels).predict())
 
 
-# In[19]:
+# In[39]:
 
 
-eval_models = EvaluateClf(output_path, preds, labels)
-eval_models.get_evaluation_scores(display_ci=True, load_ci=False, save_ci=True)
+evaluator = EvaluateClf(output_path, preds, labels)
+evaluator.get_evaluation_scores(display_ci=True, load_ci=True, save_ci=True)
 
 
-# In[20]:
+# In[40]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_loc='lower left', save=False)
-eval_models.plot_curves(curve_type='roc', legend_loc='lower right', save=False)
-eval_models.plot_curves(curve_type='pred_cdf', save=False) # cumulative distribution function of model prediction
-eval_models.plot_calibs(legend_loc='upper left', save=False) 
-# eval_models.plot_calibs(include_pred_hist=True, legend_loc='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
+evaluator.plot_curves(curve_type='pr', legend_loc='lower left', save=False)
+evaluator.plot_curves(curve_type='roc', legend_loc='lower right', save=False)
+evaluator.plot_curves(curve_type='pred_cdf', save=False) # cumulative distribution function of model prediction
+evaluator.plot_calibs(legend_loc='upper left', save=False) 
+# evaluator.plot_calibs(include_pred_hist=True, legend_loc='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
 
 
 # # Post-Training Analysis
 
 # ## Threshold Op Points
 
-# In[21]:
+# In[41]:
 
 
 pred_thresholds = np.arange(0.05, 0.51, 0.05)
-perf_metrics = [
-    'warning_rate', 'precision', 'recall', 'NPV', 'specificity', 
-]
-thresh_df = eval_models.operating_points(points=pred_thresholds, alg='ENS', op_metric='threshold', perf_metrics=perf_metrics)
+perf_metrics = ['warning_rate', 'precision', 'recall', 'NPV', 'specificity']
+thresh_df = evaluator.operating_points(pred_thresholds, alg='ENS', op_metric='threshold', perf_metrics=perf_metrics)
 thresh_df
 
 
 # ## All the Plots
 
-# In[22]:
+# In[42]:
 
 
-eval_models.all_plots_for_single_target(alg='ENS', target_event='CKD')
+evaluator.all_plots_for_single_target(alg='ENS', target_event='CKD')
 
 
 # ## Most Important Features/Feature Groups
@@ -267,7 +236,7 @@ get_ipython().system('python scripts/feat_imp.py --adverse-event CKD --output-pa
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,15), top=10, importance_by='feature', padding={'pad_x0': 2.7})
+importance_plot('ENS', evaluator.target_events, output_path, figsize=(6,15), top=10, importance_by='feature', padding={'pad_x0': 2.7})
 
 
 # In[ ]:
@@ -280,12 +249,12 @@ get_ipython().system('python scripts/feat_imp.py --adverse-event CKD --output-pa
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,15), top=10, importance_by='group', padding={'pad_x0': 1.2})
+importance_plot('ENS', evaluator.target_events, output_path, figsize=(6,15), top=10, importance_by='group', padding={'pad_x0': 1.2})
 
 
 # ## Performance on Subgroups
 
-# In[27]:
+# In[48]:
 
 
 subgroups = [
@@ -293,19 +262,19 @@ subgroups = [
     'area_density', 'ckd', 'regimen', 'cancer_location', 'days_since_starting', 
 ]
 perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate']}
-subgroup_performance = eval_models.get_perf_by_subgroup(
-    model_data, subgroups=subgroups, pred_thresh=0.1, alg='ENS', display_ci=True, load_ci=True, perf_kwargs=perf_kwargs
+subgroup_performance = evaluator.get_perf_by_subgroup(
+    model_data, subgroups=subgroups, pred_thresh=0.1, alg='ENS', display_ci=True, load_ci=False, perf_kwargs=perf_kwargs
 )
 subgroup_performance
 
 
-# In[28]:
+# In[49]:
 
 
 subgroup_performance = pd.read_csv(f'{output_path}/tables/subgroup_performance.csv', index_col=[0,1], header=[0,1])
 groupings = {
     'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Language', 'Neighborhood Income Quintile'],
-    'Treatment': ['Entire Test Cohort', 'Regimen', 'Topography ICD-0-3', 'Days Since Starting Regimen', 'CKD Prior to Treatment']
+    'Treatment': ['Entire Test Cohort', 'Regimen', 'Topography ICD-0-3', 'CKD Prior to Treatment']
 }
 padding = {'pad_y0': 1.2, 'pad_x1': 2.7, 'pad_y1': 0.2}
 for name, subgroups in groupings.items():
@@ -320,14 +289,14 @@ for name, subgroups in groupings.items():
 
 # ## Decision Curve Plot
 
-# In[29]:
+# In[50]:
 
 
-result = eval_models.plot_decision_curves('ENS')
+result = evaluator.plot_decision_curves('ENS')
 result['CKD'].tail(n=100)
 
 
-# In[30]:
+# In[51]:
 
 
 get_hyperparameters(output_path)
@@ -337,24 +306,24 @@ get_hyperparameters(output_path)
 
 # ## Spline Baseline Model
 
-# In[31]:
+# In[55]:
 
 
-from src.train import TrainLOESSModel, TrainPolynomialModel
+from src.train import LOESSModelTrainer, PolynomialModelTrainer
 from src.evaluate import EvaluateBaselineModel
 
 
-# In[32]:
+# In[57]:
 
 
-def run(X, Y, tag, base_vals, output_path, alg='SPLINE', split='Test', task_type='C'):
-    Trains = {'LOESS': TrainLOESSModel, 'SPLINE': TrainPolynomialModel, 'POLY': TrainPolynomialModel}
-    train = Trains[alg](X, Y, tag, output_path, base_vals.name, alg, task_type=task_type)
-    best_param = train.bayesopt(alg=alg, verbose=0)
-    model = train.train_model(**best_param)
-    Y_preds, Y_preds_min, Y_preds_max = train.predict(model, split=split)
+def run(X, Y, tag, base_vals, output_path, alg='SPLINE', split='Test', task_type='C', save=True):
+    Trainer = {'LOESS': LOESSModelTrainer, 'SPLINE': PolynomialModelTrainer, 'POLY': PolynomialModelTrainer}
+    trainer = Trainer[alg](X, Y, tag, output_path, base_vals.name, alg, task_type=task_type)
+    best_param = trainer.bayesopt(alg=alg)
+    model = trainer.train_model(save=save, **best_param)
+    Y_preds, Y_preds_min, Y_preds_max = trainer.predict(model, split=split)
     mask = tag['split'] == split
-    preds, pred_ci, labels = {split: {alg: Y_preds}}, {split: {alg: (Y_preds_min, Y_preds_max)}}, {split: Y[mask]}
+    preds, pred_ci, labels = {alg: {split: Y_preds}}, {alg: {split: (Y_preds_min, Y_preds_max)}}, {split: Y[mask]}
     eval_base = EvaluateBaselineModel(base_vals[mask], preds, labels, output_path, pred_ci=pred_ci)
     eval_base.all_plots(alg=alg)
     return Y_preds, Y_preds_min, Y_preds_max
@@ -364,14 +333,14 @@ preds, preds_min, preds_max = run(X, Y, tag, model_data['baseline_eGFR'], output
 
 # ### Save the CKD Spline Baseline Model as a Threshold Table
 
-# In[34]:
+# In[58]:
 
 
 cols = ['baseline_creatinine_value', 'baseline_eGFR', 'next_eGFR', 'ikn']
 df = pd.concat([preds, model_data.loc[preds.index, cols]], axis=1)
 
 
-# In[35]:
+# In[59]:
 
 
 # Assign bins to the baseline eGFR and combine bins with less than 10 unique patients
@@ -387,7 +356,7 @@ for base_val, ikns in tmp.items():
 df['baseline_eGFR'] = pd.cut(df['baseline_eGFR'], bins=bins)
 
 
-# In[37]:
+# In[60]:
 
 
 df = df.groupby('baseline_eGFR').agg({
@@ -402,16 +371,16 @@ df
 
 # ## Missingness By Splits
 
-# In[38]:
+# In[61]:
 
 
 from src.utility import get_nmissing_by_splits
 
 
-# In[39]:
+# In[63]:
 
 
-missing = get_nmissing_by_splits(model_data, train_ens.labels)
+missing = get_nmissing_by_splits(model_data, ensembler.labels)
 missing.sort_values(by=(f'Test (N={sum(test_mask)})', 'Missing (N)'), ascending=False)
 
 

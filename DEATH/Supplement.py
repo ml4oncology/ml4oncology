@@ -20,7 +20,7 @@ TERMS OF USE:
 # # Supplementary Analysis
 # From reveiwer's comments and recommendation
 
-# In[2]:
+# In[1]:
 
 
 get_ipython().run_line_magic('cd', '../')
@@ -29,7 +29,7 @@ get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
 
 
-# In[3]:
+# In[2]:
 
 
 from sklearn.preprocessing import MinMaxScaler
@@ -56,21 +56,22 @@ from src.utility import (
     equal_rate_pred_thresh, 
     get_clean_variable_name,
     get_clean_variable_names,
+    make_log_msg,
     month_diff,
 )
 from src.visualize import remove_top_right_axis
 
 
-# In[4]:
+# In[3]:
 
 
 main_dir = f'{root_path}/{death_folder}'
 output_path = f'{main_dir}/models'
 target_keyword = 'Mortality'
-date_cols = ['visit_date', 'death_date', 'first_PCCS_date', 'first_visit_date', 'last_seen_date']
+date_cols = ['visit_date', 'death_date', 'first_PCCS_date', 'first_visit_date']
 
 
-# In[ ]:
+# In[4]:
 
 
 prep = PrepDataEDHD(adverse_event='death', target_keyword=target_keyword)
@@ -85,7 +86,7 @@ X_train, X_valid, X_test = X[train_mask], X[valid_mask], X[test_mask]
 Y_train, Y_valid, Y_test = Y[train_mask], Y[valid_mask], Y[test_mask]
 
 
-# In[6]:
+# In[5]:
 
 
 # combine predictions
@@ -99,7 +100,7 @@ preds, labels = ensembler.preds.copy(), ensembler.labels.copy()
 preds.update(load_pickle(f'{output_path}/preds', 'LASSO_preds'))
 
 
-# In[30]:
+# In[6]:
 
 
 evaluator = EvaluateClf(output_path, preds, labels)
@@ -109,7 +110,7 @@ year_mortality_thresh = equal_rate_pred_thresh(
 )
 
 
-# In[8]:
+# In[7]:
 
 
 def get_data(split='Test', alg='ENS', target_event='365d Mortality', pred_thresh=None):
@@ -323,59 +324,97 @@ def glmm_fit(df, formula):
 # # SHAP
 # Takes ages to compute. Can only compute SHAP for a subset of data
 
-# In[8]:
+# In[56]:
 
 
-x = pd.concat([X_test.astype(float), Y_test.astype(float), tag.loc[test_mask, 'ikn']], axis=1)
-# sampled_ikns = np.random.choice(x['ikn'].unique(), size=1000)
-# mask = x['ikn'].isin(sampled_ikns)
-# x, bg_dist = x[mask], x[~mask]
-x = x.sample(2000, random_state=42)
-x, bg_dist = x[:1000], x[1000:] # use the latter half as background distribution
+from src.config import min_chemo_date
+
+
+# In[57]:
+
+
+min_date = pd.Timestamp(min_chemo_date)
+visit_dates = prep.event_dates.loc[test_mask, 'visit_date']
+test_ikns = tag.loc[test_mask, 'ikn']
+data = pd.concat([X_test.astype(float), (visit_dates - min_date).dt.days.astype(int), test_ikns], axis=1)
+sampled_ikns = np.random.choice(data['ikn'].unique(), size=1000)
+mask = data['ikn'].isin(sampled_ikns)
+data, bg_dist = data[mask], data[~mask] # use the latter half as background distribution
+# data = data.sample(2000, random_state=42)
+# data, bg_dist = data[:1000], data[1000:] # use the latter half as background distribution
+drop_cols = ['ikn', 'visit_date']
+bg_dist[drop_cols] = -1
 idx = Y.columns.tolist().index('365d Mortality')
-drop_cols = ['ikn'] + Y_test.columns.tolist()
 
 
-# In[9]:
+# In[10]:
 
 
 lr_model = load_pickle(output_path, 'LR')
 rf_model = load_pickle(output_path, 'RF')
 xgb_model = load_pickle(output_path, 'XGB')
 nn_model = load_pickle(output_path, 'NN')
+rnn_model = load_pickle(output_path, 'RNN')
+rnn_model.model.rnn.flatten_parameters()
 ensemble_weights = load_pickle(f'{output_path}/best_params', 'ENS_params')
-
-rnn_param = load_pickle(f'{self.output_path}/best_params', 'RNN_params')
+ensemble_weights = {alg: w for alg, w in ensemble_weights.items() if w > 0}
 trainer = Trainer(X, Y, tag, output_path)
-rnn_model = trainer.models.get_model('RNN', trainer.n_features, trainer.n_targets, **rnn_param)
-rnn_model.load_weights(f'{self.output_path}/{rnn_param["model"]}')
 
 
-# In[10]:
+# In[11]:
 
+
+def _rnn_predict(X):
+    # Reformat to sequential data
+    X = X.copy()
+    N = len(X)
+    # get the ikn and visit date for this sample row
+    res = {}
+    for col in ['ikn', 'visit_date']:
+        mask = X[col] != -1
+        val = X.loc[mask, col].unique()
+        assert len(val) == 1
+        res[col] = val[0]
+    # get patient's historical data
+    # NOTE: historical data is NOT permuted
+    hist = data.query(f'ikn == {res["ikn"]} & visit_date < {res["visit_date"]}').copy()
+    n = len(hist)
+    hist = pd.concat([hist] * N) # repeat patient historical data for each sample row
+    # set up new ikn for each sample row
+    ikns = np.arange(0, N, 1) + res['ikn']
+    hist['ikn'] = np.repeat(ikns, n)
+    X['ikn'] = ikns
+    # combine historical data and sample rows togethers
+    X['visit_date'] = res['visit_date']
+    X = pd.concat([X, hist]).sort_values(by=['ikn', 'visit_date'], ignore_index=True)
+
+    # Get the RNN predictions
+    trainer.ikns = X['ikn']
+    trainer.labels['Test'] = pd.DataFrame(True, columns=Y.columns, index=X.index) # dummy variable
+    X = X.drop(columns=drop_cols)
+    trainer.datasets['Test'] = X # set the new input
+    pred = trainer.predict(rnn_model, 'Test', 'RNN', calibrated=True)
+    pred = pred.to_numpy()[n::n+1, idx] # only take the predictions for sample rows
+    return pred
 
 def _predict(alg, X):
     if alg == 'RNN':
-        trainer.ikns = X['ikn']
-        trainer.labels['Test'] = X[trainer.target_events] # dummy variable
-        X = X.drop(columns=drop_cols)
-        trainer.datasets['Test'] = X # set the new input
-        pred = trainer.predict(model, 'Test', alg, calibrated=True)
-        return pred.to_numpy()[:, idx]
+        return _rnn_predict(X)
     
     X = X.drop(columns=drop_cols)
     if alg == 'LR':
-        return lr_model.estimators_[idx].predict_proba(X)[:, 1]
+        return lr_model.model.estimators_[idx].predict_proba(X)[:, 1]
     elif alg == 'XGB':
-        return xgb_model.estimators_[idx].predict_proba(X)[:, 1]
+        return xgb_model.model.estimators_[idx].predict_proba(X)[:, 1]
     elif alg == 'RF':
-        return rf_model.estimators_[idx].predict_proba(X)[:, 1]
+        return rf_model.model.estimators_[idx].predict_proba(X)[:, 1]
     elif alg == 'NN':
-        return nn_model.predict_proba(X)[:, idx]
+        return nn_model.predict(X)[:, idx].cpu().detach().numpy()
     else:
         raise ValueError(f'{alg} not supported')
     
 def predict(X):
+    # NOTE: X is just a single sample, duplicated multiple times with different feature permutations
     weights, preds = [], []
     for alg, weight in ensemble_weights.items():
         weights.append(weight)
@@ -387,22 +426,27 @@ def predict(X):
 # In[36]:
 
 
-get_ipython().run_cell_magic('time', '', "# compute shap values for the ENS model\nexplainer = shap.Explainer(predict, bg_dist)\nshap_values = explainer(x, max_evals=800)\nsave_pickle(shap_values, f'{output_path}/feat_importance', 'shap_values_1000_sample')")
+get_ipython().run_cell_magic('time', '', "# compute shap values for the ENS model\n# NOTE: the explainer will loop through each sample row, and create multiple versions of the sample row\n# with different feature permutations, where the values are replaced with the background distribution values\nexplainer = shap.Explainer(predict, bg_dist, seed=42)\nshap_values = explainer(x, max_evals=800)\nsave_pickle(shap_values, f'{output_path}/feat_importance', 'shap_values_1000_sample')")
 
 
-# In[9]:
+# In[58]:
 
 
-x = x.drop(columns=drop_cols)
-shap_values = load_pickle(f'{output_path}/feat_importance', 'shap_values_1000_sample')
-shap_values = shap_values[:, list(x.columns)]
+shap_values = load_pickle(f'{output_path}/feat_importance', 'shap_values_1000_patient')
+
+# ensure ikns are the same (if not, restart kernel to refresh numpy random seed)
+ikn_idx = list(data.columns).index('ikn')
+assert all(shap_values.data[:, ikn_idx] == data['ikn'])
+
+data = data.drop(columns=drop_cols)
+shap_values = shap_values[:, list(data.columns)]
 # set display version of data (unnormalized)
 norm_cols = prep.scaler.feature_names_in_
-x[norm_cols] = prep.scaler.inverse_transform(x[norm_cols])
-shap_values.data = x.to_numpy()
+data[norm_cols] = prep.scaler.inverse_transform(data[norm_cols])
+shap_values.data = data.to_numpy()
 
 
-# In[10]:
+# In[59]:
 
 
 # Group Importances
@@ -413,9 +457,10 @@ for group, keyword in variable_groupings_by_keyword.items():
     group_imp[f'Sum of {group.title()} Features'] = sum(abs_mean_shap_vals)
 group_imp = sorted(group_imp.items(), key=lambda x: x[1])
 name, vals = list(zip(*group_imp))
+group_imp
 
 
-# In[11]:
+# In[24]:
 
 
 save_path = f'{output_path}/figures/important_groups'
@@ -427,7 +472,7 @@ fig.savefig(f'{save_path}/ENS_365d Mortality_SHAP_bar.jpg', bbox_inches='tight',
 plt.show()
 
 
-# In[12]:
+# In[11]:
 
 
 # Feature Importnaces - show only the top 10 features
@@ -439,13 +484,13 @@ shap_values.feature_names = get_clean_variable_names(shap_values.feature_names)
 shap_values = shap_values[:int(shap_values.shape[0]/top)*top] # make the shape a multiple of `top` by removing some samples
 
 
-# In[13]:
+# In[12]:
 
 
 dict(zip(shap_values.feature_names, shap_values.abs.mean(axis=0).values))
 
 
-# In[14]:
+# In[51]:
 
 
 save_path = f'{output_path}/figures/important_features'
@@ -456,8 +501,10 @@ shap.plots.waterfall(shap_values[50])
 shap.plots.beeswarm(shap_values, show=False)
 plt.savefig(f'{save_path}/ENS_365d Mortality_SHAP_beeswarm.jpg', bbox_inches='tight', dpi=300)
 plt.show()
-shap.plots.heatmap(shap_values)
-shap.plots.scatter(shap_values[:, 'Chemotherapy Cycle'], color=shap_values[:, 'Neutrophil'])
+shap.plots.violin(shap_values, plot_type='layered_violin', show=False)
+plt.savefig(f'{save_path}/ENS_365d Mortality_SHAP_violin.jpg', bbox_inches='tight', dpi=300)
+# shap.plots.heatmap(shap_values)
+# shap.plots.scatter(shap_values[:, 'Chemotherapy Cycle'], color=shap_values[:, 'Neutrophil'])
 
 
 # # Prediction Correlation
@@ -480,42 +527,66 @@ fig.savefig(f'{output_path}/figures/output/prediction_correlation.jpg', bbox_inc
 
 # # Survival Curve for Dev and Test Cohort
 
-# In[26]:
+# In[246]:
 
 
 from lifelines import KaplanMeierFitter
-fig, ax = plt.subplots(figsize=(6,6))
-kmf = KaplanMeierFitter()
-df = pd.DataFrame()
-for cohort, group in tag.groupby('cohort'):
-    event_dates = prep.event_dates.loc[group.index]
+def plot_surv_curve_by_cohort(tag, event_dates, censor_dev=False, filename=None):
+    fig, ax = plt.subplots(figsize=(6,6))
+    kmf = KaplanMeierFitter()
+    df = pd.DataFrame()
+    max_duration = 0
+    for cohort, group in tag.groupby('cohort'):
+        group_dates = event_dates.loc[group.index]
+
+        visit_dates = group_dates[DATE]
+        print(f'{cohort} cohort: {visit_dates.min()} - {visit_dates.max()}')
+
+        start = group_dates['first_visit_date']
+        end = group_dates['death_date'].fillna(group_dates['death_date'].max())
+        status = group_dates['death_date'].notnull()
+        
+        if cohort == 'Development' and censor_dev:
+            # censor after one-year follow up
+            max_date = visit_dates.max() + pd.Timedelta(days=365)
+            mask = end > max_date
+            end[mask] = max_date
+            status[mask] = False # patient still alive at one-year follow up mark
+            
+        duration = month_diff(end, start)
+        max_duration = max(max_duration, int(duration.max()))
+        kmf.fit(duration, status, label=f'{cohort} Cohort')
+        kmf.plot_survival_function(ax=ax)
+
+        # report survival probability
+        ci = kmf.confidence_interval_survival_function_
+        for months_after in [6, 12, 18, 24]:
+            lower, upper = ci[ci.index > months_after].iloc[0]
+            surv_prob = kmf.predict(months_after)
+            df.loc[cohort, f'{months_after} Months'] = f'{surv_prob:.2f} ({lower:.2f}-{upper:.2f})' 
+
+    ax.set(xticks=np.arange(0, max_duration+6, 6), xlabel='Months', ylabel='Survival Probability')
+    ax.legend(frameon=False)
+    if filename is not None:
+        fig.savefig(f'{output_path}/figures/output/{filename}.jpg', bbox_inches='tight', dpi=300)
     
-    visit_dates = event_dates[DATE]
-    print(f'{cohort} cohort: {visit_dates.min()} - {visit_dates.max()}')
-    
-    start = event_dates['first_visit_date']
-    end = event_dates['death_date'].fillna(event_dates['last_seen_date'])
-    duration = month_diff(end, start)
-    status = event_dates['death_date'].notnull()
-    kmf.fit(duration, status, label=f'{cohort} Cohort')
-    kmf.plot_survival_function(ax=ax)
-    
-    # report survival probability
-    ci = kmf.confidence_interval_survival_function_
-    for months_after in [6, 12, 18, 24]:
-        lower, upper = ci[ci.index > months_after].iloc[0]
-        surv_prob = kmf.predict(months_after)
-        df.loc[cohort, f'{months_after} Months'] = f'{surv_prob:.2f} ({lower:.2f}-{upper:.2f})' 
-ax.set(xticks=np.arange(0, 80, 6), xlabel='Months', ylabel='Survival Probability')
-ax.legend(frameon=False)
-fig.savefig(f'{output_path}/figures/output/dev_test_cohort_survival_curve.jpg', bbox_inches='tight', dpi=300)
-df
+    plt.show()
+    return df
+
+
+# In[247]:
+
+
+# last seen date as max observed death date
+filename = 'dev_test_cohort_survival_curve'
+plot_surv_curve_by_cohort(tag, prep.event_dates, censor_dev=True, filename=f'{filename}_dev_censored')
+plot_surv_curve_by_cohort(tag, prep.event_dates, censor_dev=False, filename=filename)
 
 
 # # Characteristics of Lost Patients
 # Patients that Lost Early PCCS in System-Guided Care
 
-# In[27]:
+# In[8]:
 
 
 from src.config import symptom_cols
@@ -523,7 +594,7 @@ from src.preprocess import Symptoms, combine_symptom_data
 symp_cols = [col for col in symptom_cols if col in model_data.columns]
 
 
-# In[31]:
+# In[9]:
 
 
 pccs_df = get_pccs_analysis_data(
@@ -534,7 +605,7 @@ pccs_df = get_pccs_analysis_data(
 pccs_df = pd.concat([pccs_df, model_data.loc[pccs_df.index, symp_cols]], axis=1)
 
 
-# In[32]:
+# In[10]:
 
 
 display = lambda desc, N: print(f'Number of {desc} patients: {N} / {len(pccs_df)} ({N/len(pccs_df):.3f}%)')
@@ -547,7 +618,7 @@ gained_df = pccs_df.query('~received_early_pccs & early_pccs_by_alert')
 display('gained', len(gained_df))
 
 
-# In[33]:
+# In[11]:
 
 
 subgroups = [
@@ -561,7 +632,7 @@ gained_cs = CharacteristicsSummary(gained_df, Y_test.loc[gained_df.index], subgr
 gained_summary = gained_cs.get_summary()
 
 
-# In[34]:
+# In[30]:
 
 
 df = pd.concat([lost_summary, gained_summary], axis=1, keys=['Lost', 'Gained'])
@@ -569,7 +640,7 @@ df.to_csv(f'{output_path}/tables/lost_patient_characteristic_summary.csv')
 df
 
 
-# In[57]:
+# In[35]:
 
 
 def plot_symptom_dist_between_two_groups(df1, df2, group_names=None, save_path=None):
@@ -596,12 +667,18 @@ def plot_symptom_dist_between_two_groups(df1, df2, group_names=None, save_path=N
         # stats[f'{group_names[0]} Missingness Rate'] = 1 - mask1.mean()
         # stats[f'{group_names[1]} Missingness Rate'] = 1 - mask2.mean()
         
+        # get median with interquartile range
+        for name, df in zip(group_names, [df1, df2]):
+            median = int(df[col].median())
+            q25, q75 = np.nanpercentile(df[col], [25, 75]).astype(int)
+            stats[col][f'median - {name}'] = f'{median} ({q25}-{q75})'
+        
     ax.legend(group_names, loc='upper left', bbox_to_anchor=(1, 0.5), frameon=False)
     if save_path is not None: fig.savefig(save_path, bbox_inches='tight', dpi=300)
-    return pd.DataFrame(stats).T.round(4)
+    return pd.DataFrame(stats).T.round(4).sort_index()
 
 
-# In[41]:
+# In[32]:
 
 
 # check symptom scores for lost patients at the date closest preceding the usual care first PCCS date
@@ -614,7 +691,7 @@ symp_df = symp.run(df, verbose=False)
 lost_df = combine_symptom_data(df, symp_df)
 
 
-# In[59]:
+# In[68]:
 
 
 """
@@ -632,7 +709,37 @@ plot_symptom_dist_between_two_groups(
 )
 
 
+# In[29]:
+
+
+# number of patients for each score in lost_df
+res = {}
+for symp, scores in lost_df[symp_cols].items():
+    res[symp] = {i: lost_df.loc[scores == i, 'ikn'].nunique()
+                 for i in scores.unique()
+                 if ~np.isnan(i)}
+pd.DataFrame(res).sort_index()
+
+
+# In[51]:
+
+
+# number of patients for each score in gained_df
+res = {}
+for symp, scores in gained_df[symp_cols].items():
+    res[symp] = {i: gained_df.loc[scores == i, 'ikn'].nunique()
+                 for i in scores.unique()
+                 if ~np.isnan(i)}
+pd.DataFrame(res).sort_index()
+
+
 # # Label Rate For Alarm vs No Alarm
+
+# In[ ]:
+
+
+preds, labels = ensembler.preds.copy(), ensembler.labels.copy()
+
 
 # In[36]:
 
@@ -655,4 +762,55 @@ for target_event, pred in alarm.items():
 pd.DataFrame(result)
 
 
-# In[ ]:
+# # LASSO Model - More Metrics
+
+# In[79]:
+
+
+from sklearn.metrics import roc_auc_score, average_precision_score
+from src.evaluate import CLF_SCORE_FUNCS
+from src.conf_int import ScoreConfidenceInterval
+
+
+# In[81]:
+
+
+ci = ScoreConfidenceInterval(output_path, CLF_SCORE_FUNCS)
+lasso_trainer = LASSOTrainer(X, Y, tag, output_path, target_event='365d Mortality')
+C_search_space = [3.9e-5, 4.3e-5, 4.52e-5, 4.8e-5, 5.9e-5, 8.4e-5, None]
+for C in C_search_space:
+    if C is None:
+        model = load_pickle(output_path, 'LASSO')
+        estimator_idx = list(Y.columns).index(lasso_trainer.target_event)
+        lasso_trainer.labels = lasso_trainer._labels
+    else:
+        print(f'Parameter C: {C:.2E}.')
+        model = lasso_trainer.train_model(alg='LR', save=False, penalty='l1', n_jobs=-1, inv_reg_strength=C)
+        estimator_idx = None
+    
+    for split in ['Valid', 'Test']:
+        print(f'Split: {split}.')
+        
+        pred_prob = lasso_trainer.predict(model, split=split, alg='LR')[lasso_trainer.target_event]
+        label = lasso_trainer.labels[split][lasso_trainer.target_event]
+        # Get score
+        roc_score = roc_auc_score(label, pred_prob)
+        ap_score = average_precision_score(label, pred_prob)
+        
+        # Get 95% CI
+        score_ci = ci.get_score_confidence_interval(label, pred_prob,store=False, verbose=False)
+
+        lower, upper = score_ci['AUROC']
+        print(f'AUROC Score: {roc_score:.3f} ({lower:.3f}-{upper:.3f}).')
+        lower, upper = score_ci['AUPRC']
+        print(f'AUPRC Score: {ap_score:.3f} ({lower:.3f}-{upper:.3f}).')
+        
+    # Get coefficients and intercept
+    coef = lasso_trainer.get_coefficients(model, estimator_idx=estimator_idx)
+    intercept = lasso_trainer.get_intercept(model, estimator_idx=estimator_idx)
+    
+    n_features = len(coef)
+    top_ten = coef[:10].round(3).to_dict()
+    top_ten['intercept'] = np.round(intercept, 3)
+    print(f'Number of non-zero weighted features: {n_features}. ')
+    print(f'Top 10 Features: {top_ten}')

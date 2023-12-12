@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -37,11 +37,11 @@ pd.set_option('display.max_rows', 150)
 import seaborn as sns
 
 from src.config import root_path, can_folder, split_date, SCr_rise_threshold
-from src.model import SimpleBaselineModel
 from src.evaluate import EvaluateClf
+from src.model import SimpleBaselineModel
 from src.prep_data import PrepDataCAN
 from src.summarize import data_description_summary, feature_summary
-from src.train import TrainML, TrainRNN, TrainENS
+from src.train import Ensembler, LASSOTrainer, Trainer
 from src.utility import (
     initialize_folders, load_pickle, 
     get_nunique_categories, get_nmissing, most_common_categories,
@@ -63,7 +63,7 @@ initialize_folders(output_path)
 
 # # Prepare Data for Model Training
 
-# In[6]:
+# In[4]:
 
 
 prep = PrepDataCAN(adverse_event=adverse_event, target_keyword=target_keyword)
@@ -71,31 +71,31 @@ model_data = prep.get_data(verbose=True)
 model_data
 
 
-# In[7]:
+# In[5]:
 
 
 most_common_categories(model_data, catcol='regimen', with_respect_to='patients', top=10)
 
 
-# In[8]:
+# In[6]:
 
 
 sorted(model_data.columns.tolist())
 
 
-# In[9]:
+# In[7]:
 
 
 get_nunique_categories(model_data)
 
 
-# In[10]:
+# In[8]:
 
 
 get_nmissing(model_data)
 
 
-# In[5]:
+# In[9]:
 
 
 prep = PrepDataCAN(adverse_event=adverse_event, target_keyword=target_keyword) # need to reset
@@ -105,19 +105,19 @@ X, Y, tag = prep.split_and_transform_data(model_data, split_date=split_date)
 model_data = model_data.loc[tag.index]
 
 
-# In[12]:
+# In[10]:
 
 
 prep.get_label_distribution(Y, tag, with_respect_to='sessions')
 
 
-# In[13]:
+# In[11]:
 
 
 prep.get_label_distribution(Y, tag, with_respect_to='patients')
 
 
-# In[5]:
+# In[12]:
 
 
 # Convenience variables
@@ -128,7 +128,7 @@ Y_train, Y_valid, Y_test = Y[train_mask], Y[valid_mask], Y[test_mask]
 
 # ## Study Characteristics
 
-# In[14]:
+# In[13]:
 
 
 subgroups = [
@@ -136,13 +136,14 @@ subgroups = [
     'regimen', 'cancer_type', 'cancer_location', 'target', 'comorbidity', 'dialysis', 'ckd'
 ]
 data_description_summary(
-    model_data, Y, tag, save_dir=f'{output_path}/tables', partition_method='cohort', target_event='AKI', subgroups=subgroups
+    model_data, Y, tag, save_dir=f'{output_path}/tables', partition_method='cohort', target_event='AKI', 
+    subgroups=subgroups
 )
 
 
 # ## Feature Characteristic
 
-# In[15]:
+# In[14]:
 
 
 df = prep.ohe.encode(model_data.copy(), verbose=False) # get original (non-normalized, non-imputed) data one-hot encoded
@@ -154,18 +155,9 @@ feature_summary(
 
 # # Train Models
 
-# ## Main ML Models
+# ## Main Models
 
-# In[16]:
-
-
-train_ml = TrainML(X, Y, tag, output_path, n_jobs=processes)
-train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True)
-
-
-# ## RNN Model
-
-# In[17]:
+# In[15]:
 
 
 # Distrubution of the sequence lengths in the training set
@@ -176,83 +168,70 @@ ax.grid(zorder=0)
 sns.histplot(dist_seq_lengths, ax=ax, zorder=2, bins=int(dist_seq_lengths.max()))
 
 
-# In[18]:
+# In[13]:
 
 
-train_rnn = TrainRNN(X, Y, tag, output_path)
-train_rnn.tune_and_train(run_bayesopt=False, run_training=True, run_calibration=True, save_preds=True)
+trainer = Trainer(X, Y, tag, output_path)
+trainer.run(bayesopt=True, train=True, save_preds=True)
 
 
 # ## ENS Model 
-
-# In[14]:
-
-
-# combine rnn and ml predictions
-preds = load_preds(f'{output_path}/preds', 'ML_preds')
-preds_rnn = load_preds(f'{output_path}/preds', 'RNN_preds')
-for split, pred in preds_rnn.items(): preds[split]['RNN'] = pred
-del preds_rnn
-# Initialize Training Class
-train_ens = TrainENS(X, Y, tag, output_path, preds)
-
-
-# In[15]:
-
-
-train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
-
-
-# # Evaluate Models
+# Find Optimal Ensemble Weights
 
 # In[16]:
 
 
-# setup the final prediction and labels
-preds, labels = train_ens.preds, train_ens.labels
-base_model = SimpleBaselineModel(model_data[['regimen', 'baseline_eGFR']], labels)
-base_preds = base_model.predict()
-for split, pred in base_preds.items(): preds[split].update(pred)
+preds = load_pickle(f'{output_path}/preds', 'all_preds')
+ensembler = Ensembler(X, Y, tag, output_path, preds)
+ensembler.run(bayesopt=True, calibrate=True)
 
+
+# # Evaluate Models
 
 # In[18]:
 
 
-eval_models = EvaluateClf(output_path, preds, labels)
-eval_models.get_evaluation_scores(display_ci=True, load_ci=True, save_ci=False)
+# setup the final prediction and labels
+preds, labels = ensembler.preds, ensembler.labels
+preds.update(SimpleBaselineModel(model_data[['regimen', 'baseline_eGFR']], labels).predict())
 
 
-# In[24]:
+# In[22]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_loc='lower left', save=False)
-eval_models.plot_curves(curve_type='roc', legend_loc='lower right', save=False)
-eval_models.plot_curves(curve_type='pred_cdf', save=False) # cumulative distribution function of model prediction
-eval_models.plot_calibs(legend_loc='upper left', save=False) 
-# eval_models.plot_calibs(include_pred_hist=True, legend_loc='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
+evaluator = EvaluateClf(output_path, preds, labels)
+evaluator.get_evaluation_scores(display_ci=True, load_ci=True, save_ci=True)
+
+
+# In[23]:
+
+
+evaluator.plot_curves(curve_type='pr', legend_loc='lower left', save=False)
+evaluator.plot_curves(curve_type='roc', legend_loc='lower right', save=False)
+evaluator.plot_curves(curve_type='pred_cdf', save=False) # cumulative distribution function of model prediction
+evaluator.plot_calibs(legend_loc='upper left', save=False) 
+# evaluator.plot_calibs(include_pred_hist=True, legend_loc='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
 
 
 # # Post-Training Analysis
 
 # ## Threshold Op Points
 
-# In[25]:
+# In[24]:
 
 
 pred_thresholds = np.arange(0.05, 0.51, 0.05)
-perf_metrics = [
-    'warning_rate', 'precision', 'recall', 'NPV', 'specificity', 
-]
-thresh_df = eval_models.operating_points(points=pred_thresholds, alg='ENS', op_metric='threshold', perf_metrics=perf_metrics)
+perf_metrics = ['warning_rate', 'precision', 'recall', 'NPV', 'specificity', ]
+thresh_df = evaluator.operating_points(pred_thresholds, op_metric='threshold', perf_metrics=perf_metrics)
 thresh_df
 
 
 # ## All the Plots
 
-# In[26]:
+# In[25]:
 
 
-eval_models.all_plots_for_single_target(alg='ENS', target_event='AKI')
+evaluator.all_plots_for_single_target(alg='ENS', target_event='AKI')
 
 
 # ## Most Important Features/Feature Groups
@@ -267,7 +246,7 @@ get_ipython().system('python scripts/feat_imp.py --adverse-event AKI --output-pa
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,5), top=10, importance_by='feature', padding={'pad_x0': 2.7})
+importance_plot('ENS', evaluator.target_events, output_path, figsize=(6,5), top=10, importance_by='feature', padding={'pad_x0': 2.7})
 
 
 # In[29]:
@@ -280,12 +259,12 @@ get_ipython().system('python scripts/feat_imp.py --adverse-event AKI --output-pa
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_events, output_path, figsize=(6,5), top=10, importance_by='group', padding={'pad_x0': 1.2})
+importance_plot('ENS', evaluator.target_events, output_path, figsize=(6,5), top=10, importance_by='group', padding={'pad_x0': 1.2})
 
 
 # ## Performance on Subgroups
 
-# In[19]:
+# In[26]:
 
 
 subgroups = [
@@ -293,14 +272,14 @@ subgroups = [
     'area_density', 'ckd', 'regimen', 'cancer_location', 'days_since_starting', 
 ]
 perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate']}
-subgroup_performance = eval_models.get_perf_by_subgroup(
+subgroup_performance = evaluator.get_perf_by_subgroup(
     model_data, subgroups=subgroups, pred_thresh=0.1, alg='ENS', display_ci=True, load_ci=True, 
     perf_kwargs=perf_kwargs
 )
 subgroup_performance
 
 
-# In[20]:
+# In[27]:
 
 
 subgroup_performance = pd.read_csv(f'{output_path}/tables/subgroup_performance.csv', index_col=[0,1], header=[0,1])
@@ -321,14 +300,14 @@ for name, subgroups in groupings.items():
 
 # ## Decision Curve Plot
 
-# In[33]:
+# In[28]:
 
 
-result = eval_models.plot_decision_curves('ENS')
+result = evaluator.plot_decision_curves('ENS')
 result['AKI'].tail(n=100)
 
 
-# In[34]:
+# In[29]:
 
 
 get_hyperparameters(output_path)
@@ -338,12 +317,13 @@ get_hyperparameters(output_path)
 
 # ## Motwani Score Based Model
 
-# In[96]:
+# In[31]:
 
 
 prep = PrepDataCAN(adverse_event='aki', target_keyword=target_keyword)
 df = prep.get_data(include_comorbidity=True)
 X, Y, tag = prep.split_and_transform_data(df, split_date=split_date, verbose=False, ohe_kwargs={'verbose': False})
+df = df.loc[tag.index]
 print(f'Size of data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
 df['cisplatin_dosage'] *= df['body_surface_area'] # convert from mg/m^2 to mg
 df = df.loc[tag['split']=='Test']
@@ -354,7 +334,7 @@ df = df.query('days_since_starting_chemo == 0') # very first treatment
 print(f'Size of test data with only first day chemos = {len(df)}, Number of patients = {df["ikn"].nunique()}')
 
 
-# In[97]:
+# In[32]:
 
 
 def compute_score(data):
@@ -369,23 +349,23 @@ def compute_score(data):
     return score
 
 
-# In[113]:
+# In[38]:
 
 
 score = compute_score(df)
 labels = {'Test': Y.loc[df.index]}
-preds = {'Test': {'ENS': train_ens.preds['Test']['ENS'].loc[df.index], 'MSB': pd.DataFrame({'AKI': score})}}
+preds = {'ENS': {'Test': ensembler.preds['ENS']['Test'].loc[df.index]}, 'MSB': {'Test': pd.DataFrame({'AKI': score})}}
 eval_motwani_model = EvaluateClf(output_path='', preds=preds, labels=labels)
 
 
-# In[115]:
+# In[39]:
 
 
 # label distribtuion
 labels['Test'].apply(pd.value_counts)
 
 
-# In[118]:
+# In[40]:
 
 
 kwargs = {'algs': ['ENS', 'MSB'], 'splits': ['Test'], 'display_ci': True, 'save_score': False}
@@ -393,13 +373,13 @@ result = eval_motwani_model.get_evaluation_scores(**kwargs)
 result
 
 
-# In[120]:
+# In[41]:
 
 
 eval_motwani_model.all_plots_for_single_target(alg='MSB', target_event='AKI', n_bins=20, figsize=(12,16), save=False)
 
 
-# In[126]:
+# In[42]:
 
 
 points = np.arange(0, 8.6, 0.5)/8.5 # 8.5 is the highest score possible, 0 is lowest score possible
@@ -411,13 +391,13 @@ eval_motwani_model.operating_points(
 
 # ### Compare with ENS
 
-# In[127]:
+# In[43]:
 
 
 eval_motwani_model.all_plots_for_single_target(alg='ENS', target_event='AKI', n_bins=20,figsize=(12,16), save=False)
 
 
-# In[128]:
+# In[44]:
 
 
 points = np.arange(0, 8.6, 0.5)/8.5 # 8.5 is the highest score possible, 0 is lowest score possible
@@ -429,14 +409,17 @@ eval_motwani_model.operating_points(
 
 # ## Missingness By Splits
 
-# In[135]:
+# In[45]:
 
 
 from src.utility import get_nmissing_by_splits
 
 
-# In[141]:
+# In[48]:
 
 
-missing = get_nmissing_by_splits(model_data, train_ens.labels)
+missing = get_nmissing_by_splits(model_data, ensembler.labels)
 missing.sort_values(by=(f'Test (N={sum(test_mask)})', 'Missing (N)'), ascending=False)
+
+
+# In[ ]:
