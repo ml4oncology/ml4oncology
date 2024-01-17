@@ -20,7 +20,7 @@ TERMS OF USE:
 # In[1]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -53,7 +53,7 @@ from src.prep_data import PrepDataCYTO
 # In[37]:
 
 
-main_dir = f'{root_path}/{cyto_folder}'
+main_dir = f'{root_path}/projects/{cyto_folder}'
 prep = PrepDataCYTO()
 chemo_df = prep.load_data()
 

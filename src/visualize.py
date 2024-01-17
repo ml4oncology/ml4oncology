@@ -24,6 +24,7 @@ from statsmodels.stats.proportion import proportion_confint
 from tqdm import tqdm
 from xgboost import plot_tree
 import graphviz
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -35,7 +36,6 @@ from src.utility import (
     twolevel, 
     load_pickle, 
     get_clean_variable_names, 
-    pred_thresh_binary_search,
     time_to_x_after_y,
 )
 ###############################################################################
@@ -585,6 +585,7 @@ def epc_bias_mitigation_plot(
     colors=None,
     save_path=None,
     padding=None,
+    img_format='svg'
 ):
     """Plot the bias among subgroups for receival of early palliative care (EPC)
     and how the model performs comparably among these subgroups (indicating 
@@ -678,8 +679,10 @@ def epc_bias_mitigation_plot(
         if save_path is not None: 
             for idx, ax in enumerate(axes[i]):
                 fig.savefig(
-                    f'{save_path}/{catname}_bias{idx}.jpg', 
-                    bbox_inches=get_bbox(ax, fig, **padding), dpi=300
+                    f'{save_path}/{catname}_bias{idx}.{img_format}', 
+                    bbox_inches=get_bbox(ax, fig, **padding), 
+                    dpi=300,
+                    format=img_format
                 )
         results[catname] = df     
     return results
@@ -866,6 +869,49 @@ def tree_plot(train, target_event='Neutropenia', alg='RF'):
         plot_tree(clf, ax=ax)
     
 ###############################################################################
+# Tile Plots
+###############################################################################
+def tile_plot(
+    x,
+    y,
+    xlabel=None,
+    ylabel=None,
+    clip=True,
+    equal_axis=True,
+    drop_marginal_plots=True,
+    discrete_colorbar=True
+):
+    if clip:
+        # clip the prediction and label to the 0.1% and 99.9% quantile
+        # to prevent outliers from stretching the plot out
+        clip_y_min, clip_y_max = y.quantile([0.001, 0.999])
+        clip_x_min, clip_x_max = x.quantile([0.001, 0.999])
+        clip_min = min(clip_y_min, clip_x_min)
+        clip_max = min(clip_y_max, clip_x_max)
+        x = x.clip(lower=clip_min, upper=clip_max)
+        y = y.clip(lower=clip_min, upper=clip_max)
+    
+    if equal_axis:
+        # ensure x and y axis are the same range by doing this hack
+        axis_max = max(y.max(), x.max())
+        axis_min = max(y.min(), x.min())
+        x = pd.concat([x, pd.Series([axis_max, axis_min])])
+        y = pd.concat([y, pd.Series([axis_max, axis_min])])
+    
+    g = sns.jointplot(x=x, y=y, kind='hex', height=6, ratio=15)
+    if drop_marginal_plots:
+        g.ax_marg_x.remove()
+        g.ax_marg_y.remove()
+    g.set_axis_labels(xlabel=xlabel, ylabel=ylabel)
+
+    # add the color bar
+    # left, bottom, width, height (fraction of figure width and height)
+    cbar_ax = g.fig.add_axes((1, 0.1, 0.05, 0.8))
+    cbar_ax.set_title('Count', fontsize=10)
+    cbar = plt.colorbar(cax=cbar_ax)
+    if discrete_colorbar: make_discrete_colorbar(g.fig, cbar)
+    
+###############################################################################
 # Helper Functions
 ###############################################################################
 def remove_top_right_axis(ax):
@@ -885,3 +931,9 @@ def get_day_xticks(days):
     if len(days) > 22: xticks = xticks[::3] # skip every 3rd tick
     elif len(days) > 16: xticks = xticks[::2] # skip every 2nd tick
     return xticks
+
+def make_discrete_colorbar(fig, cbar):
+    cmap = cbar.cmap
+    ticks = cbar.get_ticks()
+    norm = mpl.colors.BoundaryNorm(ticks, cmap.N, extend='both')
+    fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cbar.ax)

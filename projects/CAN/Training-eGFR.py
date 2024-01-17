@@ -20,7 +20,7 @@ TERMS OF USE:
 # In[1]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -40,9 +40,9 @@ pd.set_option('display.max_rows', 150)
 import seaborn as sns
 
 from src.config import root_path, can_folder, split_date, SCr_rise_threshold
-from src.evaluate import EvaluateReg
+from src.evaluate import EvaluateReg, EvaluateBaselineModel
 from src.prep_data import PrepDataCAN
-from src.train import Ensembler, Trainer
+from src.train import Ensembler, Trainer, PolynomialModelTrainer
 from src.utility import initialize_folders, load_pickle, get_hyperparameters
 from src.visualize import importance_plot
 
@@ -52,7 +52,7 @@ from src.visualize import importance_plot
 
 processes = 64
 target_keyword = 'SCr|dialysis|next'
-main_dir = f'{root_path}/{can_folder}'
+main_dir = f'{root_path}/projects/{can_folder}'
 output_path = f'{main_dir}/models/eGFR'
 initialize_folders(output_path)
 
@@ -94,6 +94,29 @@ Y[test_mask] = Y_test = scaler.transform(Y[test_mask])
 
 # # Train Models
 
+# ## Spline Baseline Model
+
+# In[18]:
+
+
+trainer = PolynomialModelTrainer(X, Y, tag, output_path, base_col='baseline_eGFR', alg='SPLINE', task_type='R')
+trainer.run(bayesopt=True, train=True, save=True)
+
+
+# In[59]:
+
+
+# save the model as a table
+df = trainer.model_to_table(
+    model=load_pickle(output_path, 'SPLINE'),
+    base_vals=model_data['baseline_eGFR'],
+    extra_info=model_data[['baseline_creatinine_value', 'next_eGFR']].rename(columns={'next_eGFR': 'true_next_eGFR'})
+)
+df[Y.columns] = scaler.inverse_transform(df[Y.columns])
+df.to_csv(f'{output_path}/SPLINE_model.csv')
+df
+
+
 # ## Main Models
 
 # In[87]:
@@ -120,18 +143,19 @@ ensembler.run(bayesopt=True, calibrate=False)
 
 
 preds, labels = copy.deepcopy(ensembler.preds), copy.deepcopy(ensembler.labels)
+# Include the baseline models
+preds.update(load_pickle(f'{output_path}/preds', 'SPLINE_preds'))
 
 
 # In[90]:
 
 
 for split, label in labels.items():
-    # scale the labels
+    # inverse scale the labels
     labels[split][:] = scaler.inverse_transform(label)
-    # scale the predictions
-    for alg in ensembler.models:
-        pred = preds[alg][split]
-        preds[alg][split][:] = scaler.inverse_transform(pred)
+    # inverse scale the predictions
+    for alg, pred in preds.items():
+        preds[alg][split][:] = scaler.inverse_transform(pred[split])
 
 
 # In[91]:
@@ -147,113 +171,3 @@ evaluator.get_evaluation_scores(display_ci=True, load_ci=False, save_ci=True)
 evaluator.plot_err_dist(alg='LR', target_event='next_eGFR')
 evaluator.plot_err_dist(alg='LR', target_event='eGFR_change')
 
-
-# ## Most Important Features
-
-# In[28]:
-
-
-get_ipython().run_line_magic('run', "scripts/feat_imp.py --adverse-event CKD --output-path {output_path} --task-type 'R'")
-
-
-# In[94]:
-
-
-# importance score is defined as the increase in MSE when feature value is randomly shuffled
-importance_plot(
-    'ENS', ['next_eGFR'], output_path, figsize=(6,5), top=10, importance_by='feature', padding={'pad_x0': 2.7}, 
-    smaller_is_better=True
-)
-
-
-# # Scratch Notes
-
-# ## Spline Baseline Model
-
-# In[95]:
-
-
-from src.train import LOESSModelTrainer, PolynomialModelTrainer
-from src.evaluate import EvaluateBaselineModel
-
-
-# In[100]:
-
-
-def run(X, Y, tag, base_vals, output_path, scale_func, alg='SPLINE', split='Test', task_type='R', save=True):
-    Trainers = {'LOESS': LOESSModelTrainer, 'SPLINE': PolynomialModelTrainer, 'POLY': PolynomialModelTrainer}
-    trainer = Trainers[alg](X, Y, tag, output_path, base_vals.name, alg, task_type=task_type)
-    best_param = trainer.bayesopt(alg=alg)
-    model = trainer.train_model(save=save, **best_param)
-    Y_preds, Y_preds_min, Y_preds_max = trainer.predict(model, split=split)
-    Y_preds[:], Y_preds_min[:], Y_preds_max[:] = scale_func(Y_preds), scale_func(Y_preds_min), scale_func(Y_preds_max)
-    mask = tag['split'] == split
-    preds, labels = {alg: {split: Y_preds}}, {split: Y[mask]}
-    eval_base = EvaluateBaselineModel(base_vals[mask], preds, labels, output_path)
-    for target_event in Y:
-        fig, ax = plt.subplots(figsize=(6,6))
-        eval_base.plot_prediction(ax, alg, target_event, split=split, show_diagonal=True)
-        plt.savefig(f'{output_path}/figures/baseline/{target_event}_{alg}.jpg', bbox_inches='tight', dpi=300)
-        
-    return Y_preds, Y_preds_min, Y_preds_max
-
-preds, preds_min, preds_max = run(X, Y, tag, model_data['baseline_eGFR'], output_path, scaler.inverse_transform)
-
-
-# In[101]:
-
-
-base_eGFR = model_data.loc[test_mask, 'baseline_eGFR']
-for eGFR in [40, 60, 80, 100]:
-    mask = base_eGFR.round(1) == eGFR
-    pred = preds.loc[mask, 'next_eGFR'].mean()
-    print(f'Pre-treatment eGFR={eGFR}. Post-treatment eGFR Prediction={pred:.2f}')
-
-
-# In[102]:
-
-
-eval_models = EvaluateReg(output_path, preds={'SPLINE': {'Test': preds}}, labels=labels)
-eval_models.get_evaluation_scores(splits=['Test'], display_ci=True, load_ci=False, save_ci=False)
-
-
-# ### Save the Spline Baseline Model as a Threshold Table
-
-# In[109]:
-
-
-preds.columns = 'predicted_'+preds.columns
-cols = ['baseline_creatinine_value', 'baseline_eGFR', 'next_eGFR', 'ikn']
-df = pd.concat([preds, model_data.loc[preds.index, cols]], axis=1)
-
-
-# In[110]:
-
-
-# Assign bins to the baseline eGFR and combine bins with less than 10 unique patients
-df['baseline_eGFR'] = df['baseline_eGFR'].round(1)
-tmp = df.groupby('baseline_eGFR')['ikn'].unique()
-assert all(tmp.index == sorted(tmp.index))
-bins, seen = list(), set()
-for base_val, ikns in tmp.items():
-    seen.update(ikns)
-    if len(seen) > 10:
-        bins.append(base_val)
-        seen = set()
-df['baseline_eGFR'] = pd.cut(df['baseline_eGFR'], bins=bins)
-
-
-# In[111]:
-
-
-df = df.groupby('baseline_eGFR').agg({
-    'ikn': 'nunique',
-    'baseline_creatinine_value': 'mean',
-    'next_eGFR': 'mean',
-    **{col: 'mean' for col in preds.columns}
-}).round(3)
-df.to_csv(f'{output_path}/SPLINE_model.csv')
-df
-
-
-# In[ ]:

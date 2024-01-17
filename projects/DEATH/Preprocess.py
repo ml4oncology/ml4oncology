@@ -20,7 +20,7 @@ TERMS OF USE:
 # In[1]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -41,7 +41,7 @@ from src.preprocess import filter_ohip_data
 
 
 # config
-output_path = f'{root_path}/{death_folder}'
+output_path = f'{root_path}/projects/{death_folder}'
 processes = 32
 
 
@@ -50,9 +50,9 @@ processes = 32
 # In[4]:
 
 
-get_ipython().system('cp $acu_folder/data/final_data.parquet.gzip $death_folder/data/final_data.parquet.gzip')
-get_ipython().system('cp $acu_folder/data/ED.parquet.gzip $death_folder/data/ED.parquet.gzip')
-get_ipython().system('cp $acu_folder/data/H.parquet.gzip $death_folder/data/H.parquet.gzip')
+get_ipython().system('cp projects/$acu_folder/data/final_data.parquet.gzip projects/$death_folder/data/final_data.parquet.gzip')
+get_ipython().system('cp projects/$acu_folder/data/ED.parquet.gzip projects/$death_folder/data/ED.parquet.gzip')
+get_ipython().system('cp projects/$acu_folder/data/H.parquet.gzip projects/death_folder/data/H.parquet.gzip')
 
 
 # # Create my dataset

@@ -80,7 +80,7 @@ def load_reviewed_regimens():
     """Get the annotated regimens with their cycle lengths, name relabelings, 
     splits, etc
     """
-    df = pd.read_csv(f'{root_path}/{regimens_folder}/regimens.csv', dtype=str)
+    df = pd.read_csv(f'{root_path}/data/{regimens_folder}/regimens.csv', dtype=str)
     df = clean_string(df, df.columns)
 
     # convert select columns to floats
@@ -222,9 +222,9 @@ def replace_rare_categories(
         )
         replace_cats = counts.index[counts < n]
         if verbose:
-            msg = (f'The following {col} categories have less than {n} '
-                   f'{with_respect_to} and will be replaced with "Other"'
-                   f': {replace_cats.tolist()}')
+            msg = (f'The following {len(replace_cats)} {col} categories have '
+                   f'less than {n} {with_respect_to} and will be replaced with '
+                   f'"Other": {replace_cats.tolist()}')
             logger.info(msg)
         mask = df[col].isin(replace_cats)
         df.loc[mask, col] = 'Other'

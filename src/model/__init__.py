@@ -23,6 +23,7 @@ from ._model import (
     RandomForest,
     RecurrentNeuralNetwork,
     Regression,
+    TemporalConvolutionalNetwork
 )
 
 __all__ = [
@@ -35,5 +36,6 @@ __all__ = [
     'RandomForest',
     'RecurrentNeuralNetwork',
     'Regression',
-    'SimpleBaselineModel'
+    'SimpleBaselineModel',
+    'TemporalConvolutionalNetwork'
 ]

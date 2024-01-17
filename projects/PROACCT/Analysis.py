@@ -20,7 +20,7 @@ TERMS OF USE:
 # In[2]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -45,7 +45,7 @@ from src.config import (
     event_map
 )
 from src.prep_data import PrepDataEDHD
-
+main_dir = f'{root_path}/projects/{acu_folder}'
 
 # In[20]:
 
@@ -67,7 +67,7 @@ def show_year_dist(df, col='date', title=''):
 # In[5]:
 
 
-chemo_df = pd.read_parquet(f'{root_path}/{acu_folder}/data/final_data.parquet.gzip')
+chemo_df = pd.read_parquet(f'{main_dir}/data/final_data.parquet.gzip')
 
 
 # # Age Distribution
@@ -132,7 +132,7 @@ dist
 
 fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6))
 for i, event in enumerate(['H', 'ED']):
-    event_df = pd.read_parquet(f'{root_path}/{acu_folder}/data/{event}.parquet.gzip')
+    event_df = pd.read_parquet(f'{main_dir}/data/{event}.parquet.gzip')
     event_df = event_df.query('feat_or_targ == "feature"')
     event_df = event_df.set_index('chemo_idx')
     diff = chemo_df.loc[event_df.index, 'visit_date'] - event_df['date']
@@ -149,7 +149,7 @@ for i, event in enumerate(['H', 'ED']):
 # In[8]:
 
 
-H_dates = pd.read_parquet(f'{root_path}/{acu_folder}/data/H.parquet.gzip')
+H_dates = pd.read_parquet(f'{main_dir}/data/H.parquet.gzip')
 show_year_dist(H_dates)
 
 
@@ -157,7 +157,7 @@ show_year_dist(H_dates)
 
 
 # ED Visit - Filtered (only within past 5 years of treatment session)
-ED_dates = pd.read_parquet(f'{root_path}/{acu_folder}/data/ED.parquet.gzip')
+ED_dates = pd.read_parquet(f'{main_dir}/data/ED.parquet.gzip')
 show_year_dist(ED_dates)
 
 
@@ -169,7 +169,7 @@ show_year_dist(ED_dates)
 fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 6))
 for i, event in enumerate(['H', 'ED']):
     col = f'num_prior_{event}s_within_5_years'
-    event_df = pd.read_parquet(f'{root_path}/{acu_folder}/data/{event}.parquet.gzip')
+    event_df = pd.read_parquet(f'{main_dir}/data/{event}.parquet.gzip')
     event_df = event_df.query('feat_or_targ == "feature"')
     event_df = event_df.set_index('chemo_idx')
     chemo_df[col] = 0
@@ -418,7 +418,7 @@ ALL[ALL.str.contains(example_diag_code_prefix)]
 # In[21]:
 
 
-systemic = pd.read_parquet(f'{root_path}/{acu_folder}/data/systemic.parquet.gzip')
+systemic = pd.read_parquet(f'{main_dir}/data/systemic.parquet.gzip')
 systemic = systemic[['ikn', 'visit_date', 'regimen', 'line_of_therapy', 'intent_of_systemic_treatment']]
 df = pd.DataFrame(systemic.groupby('intent_of_systemic_treatment')['line_of_therapy'].value_counts())
 df.rename(columns={'line_of_therapy': 'Count'})
@@ -430,7 +430,7 @@ df.rename(columns={'line_of_therapy': 'Count'})
 
 
 target_keyword = 'within_30_days'
-output_path = f'{root_path}/{acu_folder}/models/{target_keyword}'
+output_path = f'{main_dir}/models/{target_keyword}'
 
 
 # In[16]:

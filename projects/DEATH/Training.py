@@ -20,7 +20,7 @@ TERMS OF USE:
 # In[1]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -66,7 +66,7 @@ from src.visualize import (
 # config
 processes = 64
 target_keyword = 'Mortality'
-main_dir = f'{root_path}/{death_folder}'
+main_dir = f'{root_path}/projects/{death_folder}'
 output_path = f'{main_dir}/models'
 initialize_folders(output_path, extra_folders=['figures/time_to_event', 'figures/model_impact', 'figures/output'])
 

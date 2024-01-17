@@ -23,7 +23,7 @@ TERMS OF USE:
 # In[1]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -65,7 +65,7 @@ from src.visualize import remove_top_right_axis
 # In[3]:
 
 
-main_dir = f'{root_path}/{death_folder}'
+main_dir = f'{root_path}/projects/{death_folder}'
 output_path = f'{main_dir}/models'
 target_keyword = 'Mortality'
 date_cols = ['visit_date', 'death_date', 'first_PCCS_date', 'first_visit_date']

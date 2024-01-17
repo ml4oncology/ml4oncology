@@ -20,7 +20,7 @@ TERMS OF USE:
 # In[1]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -46,7 +46,7 @@ from src.preprocess import (
 
 # config
 # NOTE: environment 64G memory, 32 cores
-output_path = f'{root_path}/{can_folder}'
+output_path = f'{root_path}/projects/{can_folder}'
 processes = 32
 
 

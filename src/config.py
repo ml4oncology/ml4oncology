@@ -24,6 +24,7 @@ cyto_folder = 'CYTOPENIA' # Cytopenia folder = 'CYTOPENIA'
 acu_folder = 'PROACCT' # Acute care use folder = 'PROACCT' (PRediction of Acute Care use during Cancer Treatment)
 can_folder = 'CAN' # Cisplatin-associated nephrotoxicity folder = 'CAN'
 death_folder = 'DEATH' # Death folder = 'DEATH'
+symp_folder = 'SYMPTOM' # Symptom deterioration folder = 'SYMPTOM'
 reco_folder = 'TRREKO' # Recommender folder = 'TRREKO' (TReatment RECOmmender)
 
 # Dates
@@ -487,7 +488,8 @@ systemic_cols = [
     DATE, 
     BSA,
     INTENT,
-    'inpatient_flag'
+    'inpatient_flag',
+    'visit_hospital_number'
 ]
 
 y3_cols = [
@@ -767,6 +769,18 @@ model_tuning_param = {
     'POLY': {
         'degree': (2,5),
         'inv_reg_strength': (0.0001, 1)
+    },
+    # Experimentally Supported Models
+    'TCN': {
+        'batch_size': (16, 1024),
+        'num_channel1': (16, 256),
+        'num_channel2': (16, 256),
+        'num_channel3': (16, 256),
+        'hidden_size': (16, 256),
+        'kernel_size': (2, 5),
+        'dropout': (0.0, 0.9),
+        'learning_rate': (0.0001, 0.01),
+        'weight_decay': (0.0001, 1),
     }
 }
                                  
@@ -780,5 +794,7 @@ bayesopt_param = {
     # Baseline Models
     'LOESS': {'init_points': 3, 'n_iter': 10},
     'SPLINE': {'init_points': 3, 'n_iter': 20},
-    'POLY': {'init_points': 3, 'n_iter': 15}
+    'POLY': {'init_points': 3, 'n_iter': 15},
+    # Experimentally Supported Models
+    'TCN': {'init_points': 60, 'n_iter': 60},
 }

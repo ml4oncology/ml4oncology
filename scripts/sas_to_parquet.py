@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -36,7 +36,7 @@ def sas_to_parquet(filename, new_filename=None, transfer_date=None, folder=sas_f
     if new_filename is None: new_filename = filename
     if transfer_date is not None: filename = f'transfer{transfer_date}/{filename}'
         
-    filepath = f'{root_path}/{folder}/{filename}.sas7bdat'
+    filepath = f'{root_path}/data/{folder}/{filename}.sas7bdat'
     filesize = os.path.getsize(filepath) / 1024 ** 3 # GB
     if filesize > 50: 
         return large_sas_to_parquet(filepath, new_filename, **kwargs)

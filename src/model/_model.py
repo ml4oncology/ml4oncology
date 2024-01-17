@@ -25,6 +25,8 @@ import torch.nn as nn
 import torch.optim as optim
 torch.manual_seed(0)
 
+from .TCN import TCNModel
+
 class Models:
     def __init__(self, task='C'):
         """
@@ -40,12 +42,17 @@ class Models:
             'NN': NeuralNetwork,
             'RNN': RecurrentNeuralNetwork
         }
-        
+        self._experimentally_supported_types = {
+            'TCN': TemporalConvolutionalNetwork
+        }
+
     def __iter__(self):
         return iter(self.types)
     
     def get_model(self, alg, *args, **params):
         params['task'] = self.task
+        if alg not in self.types:
+            return self._experimentally_supported_types[alg](*args, **params)
         return self.types[alg](*args, **params)
 
 ###############################################################################
@@ -186,6 +193,9 @@ class DLModel:
             map_location = None if self.use_gpu else torch.device('cpu')
             state_dict = torch.load(state_dict, map_location=map_location)
         self.model.load_state_dict(state_dict)
+
+    def clip_gradients(self, clip_value=1):
+        nn.utils.clip_grad_value_(self.model.parameters(), clip_value=clip_value)
         
 class NeuralNetwork(DLModel):
     def __init__(
@@ -415,4 +425,76 @@ class RNN(nn.Module):
         # outputs.shape = [Batch Size x Longest Sequence Length x Number of Targets]
         output = self.fc(padded_packed_outputs)
         return output
-    
+
+
+class TemporalConvolutionalNetwork(DLModel):
+    def __init__(
+        self,
+        n_features,
+        n_targets,
+        num_channel1,
+        num_channel2,
+        num_channel3,
+        kernel_size=3,
+        dropout=0,
+        learning_rate=1e-3,
+        weight_decay=0,
+        beta1=0.9,
+        beta2=0.999,
+        pad_value=-999,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.pad_value = pad_value
+        self.n_targets = n_targets
+        params = {
+            'input_size': n_features,
+            'output_size': n_targets,
+            'num_channels': [num_channel1, num_channel2, num_channel3],
+            'kernel_size': kernel_size,
+            'dropout': dropout
+        }
+        self.model = TCNModel(**params)
+        self.criterion = self.loss_type(reduction='none')
+        self.optimizer = optim.Adam(
+            self.model.parameters(), 
+            lr=learning_rate, 
+            weight_decay=weight_decay, 
+            betas=(beta1, beta2)
+        )
+        if self.use_gpu:
+            self.model.cuda()
+
+    def predict(self, X, grad=False, bound_pred=True):
+        """
+        Args:
+            X: batched data from train.SeqData consisting of feature tensors, 
+                target tensors, and index tensors of a batch of patients
+            grad (bool): If True, enable gradients for backward pass
+            bound_pred (bool): If True, bound the predictions applying Sigmoid
+                over the model output
+        """
+        # each is a tuple of tensors
+        inputs, targets, indices = tuple(zip(*X))
+
+        # format sequences
+        padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=self.pad_value)
+        padded_targets = pad_sequence(targets, batch_first=True, padding_value=self.pad_value)
+        targets, indices = torch.cat(targets).float(), torch.cat(indices).float()
+        if self.use_gpu: padded_inputs, targets = padded_inputs.cuda(), targets.cuda()
+            
+        # make predictions
+        with torch.set_grad_enabled(grad):
+            preds = self.model(padded_inputs)
+        
+        # unpad predictions based on target lengths
+        preds = preds[padded_targets != self.pad_value] 
+        
+        # ensure preds shape matches targets shape
+        preds = preds.reshape(-1, self.n_targets)
+        
+        # bound the model prediction
+        if bound_pred: 
+            preds = torch.sigmoid(preds)
+            
+        return preds, targets, indices

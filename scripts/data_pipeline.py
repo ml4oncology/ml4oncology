@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -17,7 +17,6 @@ TERMS OF USE:
 """
 Script run the entire data pipeline
 """
-from functools import partial
 from tqdm import tqdm
 import argparse
 import sys
@@ -25,19 +24,14 @@ import os
 sys.path.append(os.getcwd())
 
 import pandas as pd
-import numpy as np
 
-from src.config import neutrophil_dins, all_observations, event_map
+from src.config import root_path, neutrophil_dins, all_observations
 from src.preprocess import (
     Systemic, Demographic, Laboratory, Symptoms, AcuteCareUse, BloodTransfusion,
     combine_demographic_data, combine_lab_data, combine_symptom_data,
     filter_ohip_data, process_odb_data, process_dialysis_data,
 )
-from src.utility import (
-    load_included_regimens,
-    split_and_parallelize, 
-    group_observations,
-)
+from src.utility import load_included_regimens, group_observations
 
 PROCESSES = 32
 DROP_COLS = [
@@ -89,6 +83,7 @@ def main():
     drug = args.drug
     systemic_method = args.systemic_method
     time_window = args.time_window
+    special_obs = args.special_obs
     
     
     regimens = load_included_regimens(criteria=regimen_criteria)

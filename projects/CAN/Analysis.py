@@ -20,7 +20,7 @@ TERMS OF USE:
 # In[1]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -44,7 +44,7 @@ from src.prep_data import PrepDataCAN
 # In[3]:
 
 
-main_dir = f'{root_path}/{can_folder}'
+main_dir = f'{root_path}/projects/{can_folder}'
 prep = PrepDataCAN(adverse_event='ckd')
 chemo_df = prep.load_data()
 

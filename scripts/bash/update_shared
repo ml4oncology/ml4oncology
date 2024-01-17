@@ -2,13 +2,12 @@ SHARE_PATH=XXXXX
 cp -r scripts $SHARE_PATH
 cp -r src $SHARE_PATH
 cp -r test $SHARE_PATH
-cp -r src/surv $SHARE_PATH/src
-cp dev_notebooks/*.ipynb $SHARE_PATH/dev_notebooks
-cp PROACCT/*.ipynb $SHARE_PATH/PROACCT
-cp CYTOPENIA/*.ipynb $SHARE_PATH/CYTOPENIA
-cp CAN/*.ipynb $SHARE_PATH/CAN
-cp DEATH/*.ipynb $SHARE_PATH/DEATH
-cp TRREKO/*.ipynb $SHARE_PATH/TRREKO
+cp notebooks/*.ipynb $SHARE_PATH/notebooks
+cp projects/PROACCT/*.ipynb $SHARE_PATH/projects/PROACCT
+cp projects/CYTOPENIA/*.ipynb $SHARE_PATH/projects/CYTOPENIA
+cp projects/CAN/*.ipynb $SHARE_PATH/projects/CAN
+cp projects/DEATH/*.ipynb $SHARE_PATH/projects/DEATH
+cp projects/TRREKO/*.ipynb $SHARE_PATH/projects/TRREKO
 
 # Remove unnecessary files
 shopt -s globstar

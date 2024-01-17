@@ -368,7 +368,7 @@ class PrepData:
         self.event_dates = self.event_dates.loc[data.index]
             
         # split into input features, output labels, and tags
-        tag_cols = ['ikn', 'cohort', 'split']
+        tag_cols = ['ikn', 'cohort', 'split', 'visit_hospital_number']
         cols = data.columns.drop(tag_cols)
         mask = cols.str.contains(self.target_keyword)
         target_cols, feature_cols = cols[mask], cols[~mask]
@@ -624,7 +624,7 @@ class PrepDataCYTO(PrepData):
     """Prepare data for cytopenia model training/prediction"""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.main_dir = f'{root_path}/{cyto_folder}'
+        self.main_dir = f'{root_path}/projects/{cyto_folder}'
         self.norm_cols += ['cycle_length']
         
     def get_data(self, verbose=False, **kwargs):
@@ -773,9 +773,9 @@ class PrepDataEDHD(PrepData):
                              'or death')
         self.adverse_event = adverse_event
         if self.adverse_event == 'acu':
-            self.main_dir = f'{root_path}/{acu_folder}'
+            self.main_dir = f'{root_path}/projects/{acu_folder}'
         elif self.adverse_event == 'death':
-            self.main_dir = f'{root_path}/{death_folder}'
+            self.main_dir = f'{root_path}/projects/{death_folder}'
             self.target_days = ([14, 30, 90, 180, 365] if target_days is None 
                                 else target_days)
         self.norm_cols += [
@@ -960,7 +960,7 @@ class PrepDataCAN(PrepData):
             raise ValueError('advese_event must be either aki (acute kidney '
                              'injury) or ckd (chronic kidney disease)')
         self.adverse_event = adverse_event
-        self.main_dir = f'{root_path}/{can_folder}'
+        self.main_dir = f'{root_path}/projects/{can_folder}'
         self.norm_cols += ['cisplatin_dosage', 'baseline_eGFR', 'cycle_length']
         self.clip_cols += ['cisplatin_dosage', 'baseline_eGFR']
         

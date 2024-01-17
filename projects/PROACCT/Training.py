@@ -20,7 +20,7 @@ TERMS OF USE:
 # In[1]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -57,7 +57,7 @@ from src.visualize import importance_plot, subgroup_performance_plot
 processes = 64
 days = 30 # predict event within this number of days since chemo visit (the look ahead window)
 target_keyword = f'within_{days}_days'
-main_dir = f'{root_path}/{acu_folder}'
+main_dir = f'{root_path}/projects/{acu_folder}'
 output_path = f'{main_dir}/models/{target_keyword}'
 initialize_folders(output_path)
 

@@ -17,54 +17,45 @@ TERMS OF USE:
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[2]:
 
 
-get_ipython().run_line_magic('cd', '../')
-# reloads all modules everytime before cell is executed (no need to restart kernel)
+get_ipython().run_line_magic('cd', '../../')
+# reloads all modules everytime before cell is executed (no needto restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
+
+
+# In[3]:
+
+
+import pandas as pd
+import numpy as np
+from functools import partial
+
+from src.config import root_path, acu_folder, event_map
+from src.preprocess import (
+    Systemic, Demographic, Laboratory, Symptoms, AcuteCareUse,
+    combine_demographic_data, combine_lab_data, combine_symptom_data,
+)
+from src.utility import load_included_regimens, split_and_parallelize
 
 
 # In[4]:
 
 
-from tqdm import tqdm
-import pandas as pd
-pd.set_option('display.max_rows', 100)
-import numpy as np
-
-from src.config import (
-    root_path, sas_folder, cyto_folder, acu_folder, 
-    blood_types, neutrophil_dins, all_observations, event_map
-)
-
-from src.utility import load_included_regimens, group_observations
-from src.preprocess import (
-    Systemic, Demographic, Laboratory, Symptoms, BloodTransfusion,
-    combine_demographic_data, combine_lab_data, combine_symptom_data,
-    process_odb_data,
-)
-
-
-# In[5]:
-
-
 # config
-# NOTE: environment 64G memory, 32 cores
-output_path = f'{root_path}/{cyto_folder}'
+# NOTE: environment 256G memory, 32 cores
+output_path = f'{root_path}/projects/{acu_folder}'
 processes = 32
 
 
 # # Selected Regimens
 
-# In[4]:
+# In[5]:
 
 
-regimens = load_included_regimens(criteria='cytotoxic')
-cycle_length_map = dict(regimens[['regimen', 'shortest_cycle_length']].values)
-cycle_length_map['Other'] = 7.0 # make rare regimen cycle lengths default to 7
-max_cycle_length = int(regimens['shortest_cycle_length'].max())
+regimens = load_included_regimens()
 regimens_renamed = sorted(regimens['relabel'].fillna(regimens['regimen']).unique())
 print(f'{len(regimens)} raw regimens -> {len(regimens_renamed)} relabeled total regimens')
 regimens_renamed
@@ -72,7 +63,7 @@ regimens_renamed
 
 # # Create my dataset
 
-# In[5]:
+# In[6]:
 
 
 def quick_summary(df):
@@ -85,13 +76,13 @@ def quick_summary(df):
 # ### Include features from systemic therapy treatment data
 # NOTE: ikn is the encoded ontario health insurance plan (OHIP) number of a patient
 
-# In[69]:
+# In[13]:
 
 
-get_ipython().run_cell_magic('time', '', "syst = Systemic()\ndf = syst.run(\n    regimens, \n    filter_kwargs={'exclude_dins': neutrophil_dins, 'remove_inpatients': False, 'verbose': True}, \n    process_kwargs={'cycle_length_map': cycle_length_map}\n)\ndf.to_parquet(f'{output_path}/data/systemic.parquet.gzip', compression='gzip', index=False)")
+get_ipython().run_cell_magic('time', '', "syst = Systemic()\ndf = syst.run(regimens, filter_kwargs={'verbose': True}, process_kwargs={'method': 'one-per-week'})\ndf.to_parquet(f'{output_path}/data/systemic.parquet.gzip', compression='gzip', index=False)")
 
 
-# In[70]:
+# In[8]:
 
 
 df = pd.read_parquet(f'{output_path}/data/systemic.parquet.gzip')
@@ -101,14 +92,14 @@ quick_summary(df)
 # ### Include features from demographic data
 # Includes cancer diagnosis, income, immigration, area of residence, etc
 
-# In[73]:
+# In[39]:
 
 
 demog = Demographic()
 demo_df = demog.run()
 
 
-# In[74]:
+# In[40]:
 
 
 df = combine_demographic_data(df, demo_df)
@@ -117,7 +108,7 @@ df = df.drop(columns=drop_cols)
 quick_summary(df)
 
 
-# In[75]:
+# In[41]:
 
 
 df['world_region_of_birth'].value_counts()
@@ -125,13 +116,13 @@ df['world_region_of_birth'].value_counts()
 
 # ### Include features from lab test data
 
-# In[76]:
+# In[42]:
 
 
 labr = Laboratory(f'{output_path}/data', processes)
 
 
-# In[30]:
+# In[11]:
 
 
 get_ipython().run_cell_magic('time', '', "# NOTE: need to restart kerel after this point to avoid annoying IOStream.flush timed out messages\nlabr.preprocess(set(df['ikn']))")
@@ -140,80 +131,39 @@ get_ipython().run_cell_magic('time', '', "# NOTE: need to restart kerel after th
 # In[11]:
 
 
-get_ipython().run_cell_magic('time', '', "lab_df = labr.run(df, time_window=(-5, max_cycle_length))\nlab_df.to_parquet(f'{output_path}/data/lab.parquet.gzip', compression='gzip', index=False)")
+get_ipython().run_cell_magic('time', '', "lab_df = labr.run(df)\nlab_df.to_parquet(f'{output_path}/data/lab.parquet.gzip', compression='gzip', index=False)")
 
 
-# In[77]:
+# In[43]:
 
 
-get_ipython().run_cell_magic('time', '', "lab_df = pd.read_parquet(f'{output_path}/data/lab.parquet.gzip')\ndf, lab_map, count = combine_lab_data(df, lab_df)\ncount")
-
-
-# In[84]:
-
-
-# save all the main blood measurements taken within the time window of each treatment session
-grouped_obs = group_observations(all_observations, lab_df['obs_code'].value_counts())
-counts = {} 
-for bt in tqdm(blood_types):
-    for i, obs_code in enumerate(grouped_obs[bt]):
-        obs = lab_map[obs_code] if i == 0 else obs.fillna(lab_map[obs_code])
-    obs.columns = obs.columns.astype(str)
-    obs.to_parquet(f'{output_path}/data/{bt}.parquet.gzip', compression='gzip', index=False)
-    counts[bt] = obs.notnull().sum(axis=1).value_counts().sort_index()
-# How many treatment sessions had x number of measurements in their time window
-counts = pd.DataFrame(counts).fillna(0).astype(int)
-counts.index.name = 'Number of Measurements'
-counts
+get_ipython().run_cell_magic('time', '', "lab_df = pd.read_parquet(f'{output_path}/data/lab.parquet.gzip')\ndf, lab_map, missing_df = combine_lab_data(df, lab_df)\nmissing_df")
 
 
 # ### Include features from symptom data
 
-# In[14]:
+# In[13]:
 
 
 get_ipython().run_cell_magic('time', '', "symp = Symptoms(processes=processes)\nsymp_df = symp.run(df)\nsymp_df.to_parquet(f'{output_path}/data/symptom.parquet.gzip', compression='gzip', index=False)")
 
 
-# In[78]:
+# In[44]:
 
 
 symp_df = pd.read_parquet(f'{output_path}/data/symptom.parquet.gzip')
 df = combine_symptom_data(df, symp_df)
 
 
-# ### Include features from ontario drug benefit
-# use of growth factors
-
-# In[79]:
-
-
-get_ipython().run_cell_magic('time', '', 'df = process_odb_data(df)')
-
-
-# In[80]:
-
-
-df['GF_given'].value_counts()
-
-
-# In[81]:
+# In[45]:
 
 
 df.to_parquet(f'{output_path}/data/final_data.parquet.gzip', compression='gzip', index=False)
 
 
-# ## Get blood transfusions during acute care use
+# ## Get events from acute care use
 
-# In[82]:
-
-
-get_ipython().run_cell_magic('time', '', "bt = BloodTransfusion(f'{output_path}/data')\nbt.run(df.reset_index())")
+# In[14]:
 
 
-# # Scratch Notes
-
-# In[83]:
-
-
-np.save(f'{output_path}/analysis/orig_chemo_idx.npy', df.index)
+get_ipython().run_cell_magic('time', '', "acu = AcuteCareUse(f'{output_path}/data', processes)\nacu.run(df.reset_index())")

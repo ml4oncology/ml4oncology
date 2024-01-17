@@ -1,68 +1,68 @@
-rm -r output
-mkdir output
-mkdir output/code
+rm -r data/output
+mkdir data/output
+mkdir data/output/code
 
 # Copy results
 ############### PROACCT RESULTS (PUBLISHED) ###############
-# mkdir output/PROACCT_results
-# cp -r PROACCT/models/within_30_days/figures output/PROACCT_results/
-# cp -r PROACCT/models/within_30_days/tables output/PROACCT_results/
-# cp PROACCT/models/within_14_days/tables/evaluation_scores.csv output/PROACCT_results/tables/14day_evaluation_scores.csv
-# cp PROACCT/models/within_180_days/tables/evaluation_scores.csv output/PROACCT_results/tables/180day_evaluation_scores.csv
+# mkdir data/output/PROACCT_results
+# cp -r projects/PROACCT/models/within_30_days/figures data/output/PROACCT_results/
+# cp -r projects/PROACCT/models/within_30_days/tables data/output/PROACCT_results/
+# cp projects/PROACCT/models/within_14_days/tables/evaluation_scores.csv data/output/PROACCT_results/tables/14day_evaluation_scores.csv
+# cp projects/PROACCT/models/within_180_days/tables/evaluation_scores.csv data/output/PROACCT_results/tables/180day_evaluation_scores.csv
 ############### CYTOPENIA RESULTS ###############
-mkdir output/CYTO_results
-cp -r CYTOPENIA/models/figures output/CYTO_results/
-cp -r CYTOPENIA/models/tables output/CYTO_results/
-cp -r CYTOPENIA/analysis/figures/*.jpg output/CYTO_results/
-cp -r CYTOPENIA/analysis/tables/*_summary.csv output/CYTO_results/
+mkdir data/output/CYTO_results
+cp -r projects/CYTOPENIA/models/figures data/output/CYTO_results/
+cp -r projects/CYTOPENIA/models/tables data/output/CYTO_results/
+cp -r projects/CYTOPENIA/analysis/figures/*.jpg data/output/CYTO_results/
+cp -r projects/CYTOPENIA/analysis/tables/*_summary.csv data/output/CYTO_results/
 ############### AKI RESULTS ###############
-mkdir output/AKI_results
-cp -r CAN/models/AKI/figures output/AKI_results/
-cp -r CAN/models/AKI/tables output/AKI_results/
+mkdir data/output/AKI_results
+cp -r projects/CAN/models/AKI/figures data/output/AKI_results/
+cp -r projects/CAN/models/AKI/tables data/output/AKI_results/
 ############### CKD RESULTS ###############
-mkdir output/CKD_results
-cp -r CAN/models/CKD/figures output/CKD_results/
-cp -r CAN/models/CKD/tables output/CKD_results/
-cp CAN/models/CKD/SPLINE_model.csv output/CKD_results/
+mkdir data/output/CKD_results
+cp -r projects/CAN/models/CKD/figures data/output/CKD_results/
+cp -r projects/CAN/models/CKD/tables data/output/CKD_results/
+cp projects/CAN/models/CKD/SPLINE_model.csv data/output/CKD_results/
 ############### eGFR RESULTS ###############
-mkdir output/eGFR_results
-cp -r CAN/models/eGFR/figures/baseline output/eGFR_results/
-############### DEATH RESULTS ###############
-mkdir output/DEATH_results
-cp -r DEATH/models/figures output/DEATH_results
-cp -r DEATH/models/tables output/DEATH_results
+mkdir data/output/eGFR_results
+cp -r projects/CAN/models/eGFR/figures/baseline data/output/eGFR_results/
+############### DEATH RESULTS (PUBLISHED) ###############
+# mkdir data/output/DEATH_results
+# cp -r projects/DEATH/models/figures data/output/DEATH_results
+# cp -r projects/DEATH/models/tables data/output/DEATH_results
 
 # Copy code
 # NOTE: need to change config.py
 # NOTE: need to change update_shared
-cp -r scripts/ output/code/
-cp -r src/ output/code/
-cp -r test/ output/code/
+cp -r scripts/ data/output/code/
+cp -r src/ data/output/code/
+cp -r test/ data/output/code/
 
 # Copy notebooks
-mkdir output/code/PROACCT
-mkdir output/code/CYTOPENIA
-mkdir output/code/CAN
-mkdir output/code/DEATH
-mkdir output/code/TRREKO
-mkdir output/code/dev_notebooks
-jupyter nbconvert --output-dir output/code/PROACCT --to script PROACCT/*ipynb
-jupyter nbconvert --output-dir output/code/CYTOPENIA --to script CYTOPENIA/*ipynb
-jupyter nbconvert --output-dir output/code/CAN --to script CAN/*ipynb
-jupyter nbconvert --output-dir output/code/DEATH --to script DEATH/*ipynb
-jupyter nbconvert --output-dir output/code/TRREKO --to script TRREKO/*ipynb
-jupyter nbconvert --output-dir output/code/dev_notebooks --to script dev_notebooks/*ipynb
+mkdir data/output/code/PROACCT
+mkdir data/output/code/CYTOPENIA
+mkdir data/output/code/CAN
+mkdir data/output/code/DEATH
+mkdir data/output/code/TRREKO
+mkdir data/output/code/notebooks
+jupyter nbconvert --output-dir data/output/code/PROACCT --to script projects/PROACCT/*ipynb
+jupyter nbconvert --output-dir data/output/code/CYTOPENIA --to script projects/CYTOPENIA/*ipynb
+jupyter nbconvert --output-dir data/output/code/CAN --to script projects/CAN/*ipynb
+jupyter nbconvert --output-dir data/output/code/DEATH --to script projects/DEATH/*ipynb
+jupyter nbconvert --output-dir data/output/code/TRREKO --to script projects/TRREKO/*ipynb
+jupyter nbconvert --output-dir data/output/code/dev_notebooks --to script dev_notebooks/*ipynb
 
 # Copy environment file
-cp env.yaml output/code/
+cp env.yaml data/output/code/
 
 # Remove unnecessary files
 shopt -s globstar
-rm -r output/**/.ipynb_checkpoints
-rm -r output/**/__pycache__
+rm -r data/output/**/.ipynb_checkpoints
+rm -r data/output/**/__pycache__
 
 # Add Terms of Use
 TOU=`cat TermsOfUse_ForICESCode.txt`
-for filename in output/code/**/*.py; do
+for filename in data/output/code/**/*.py; do
     echo "$(printf "\"\"\"\n$TOU\n\"\"\"\n"| cat - "$filename")" > $filename
 done

@@ -83,24 +83,35 @@ class Tuner:
         self.model_tuning_param = copy.deepcopy(model_tuning_param)
         self.bayesopt_param = copy.deepcopy(bayesopt_param)
     
-    def bayesopt(self, alg, filename='', random_state=42, **kwargs):
+    def bayesopt(
+        self, 
+        alg, 
+        filename='', 
+        random_state=42, 
+        eval_kwargs=None,
+        bopt_kwargs=None
+    ):
         """Conduct bayesian optimization, a sequential search framework 
         for finding optimal hyperparameters using bayes theorem
         """
+        if not filename: filename = f'{alg}_params'
+        if eval_kwargs is None: eval_kwargs = {}
+        if bopt_kwargs is None: bopt_kwargs = {}
+
         # set up
         hyperparam_config = self.model_tuning_param[alg]
         optim_config = self.bayesopt_param[alg]
-        eval_func = partial(self._eval_func, alg=alg)
+        eval_func = partial(self._eval_func, alg=alg, **eval_kwargs)
         bo = BayesianOptimization(
             f=eval_func, 
             pbounds=hyperparam_config, 
             verbose=2,
             random_state=random_state, 
-            **kwargs
+            **bopt_kwargs
         )
         
         # log the progress
-        logger1 = JSONLogger(path=f'{self.output_path}/logs/{alg}-bayesopt.log')
+        logger1 = JSONLogger(path=f'{self.output_path}/logs/{filename}-bayesopt.log')
         logger2 = ScreenLogger(verbose=2, is_constrained=False)
         for bo_logger in [logger1, logger2]:
             bo.subscribe(Events.OPTIMIZATION_START, bo_logger)
@@ -115,7 +126,6 @@ class Tuner:
         logger.info(f'Best param: {best_param}')
 
         # save the best hyperparameters
-        if not filename: filename = f'{alg}_params'
         save_pickle(best_param, f'{self.output_path}/best_params', filename)
 
         return best_param
@@ -152,51 +162,62 @@ class Trainer(Tuner):
         self, 
         bayesopt=True, 
         train=True, 
+        calibrate=True,
         save_preds=True,
         pred_filename=None,
         algs=None, 
+        train_kwargs=None,
+        bayes_kwargs=None,
         **kwargs
     ):
         """
         Args:
             algs (list): A sequence of algorithms (str) to train/tune. If None,
                 train/tune all algorithms
-            **kwargs: keyword arguments fed into BayesianOptimization
+            train_kwargs: keyword arguments fed into Trainer.train_model
+            bayes_kwargs: keyword arguments fed into BayesianOptimization
         """
         if algs is None: algs = self.models
+        if train_kwargs is None: train_kwargs = {}
+        if bayes_kwargs is None: bayes_kwargs = {}
+
         for alg in algs:
             # Hyperparameter Tuning
             if bayesopt:
-                best_param = self.bayesopt(alg, **kwargs)
+                best_param = self.bayesopt(alg, eval_kwargs=train_kwargs, **bayes_kwargs)
             else:
+                filename = bayes_kwargs.get('filename', f'{alg}_params')
                 best_param = load_pickle(
-                    f'{self.output_path}/best_params', f'{alg}_params',
+                    f'{self.output_path}/best_params', filename,
                     err_msg=(f'Please tune hyperparameters for {alg}')
                 )
-                
+            # NOTE: train_kwargs takes precedence if there are duplicate keys
+            for name, param in best_param.items():
+                train_kwargs[name] = train_kwargs.get(name, param)
+
             # Model Training
             if train: 
-                model = self.train_model(alg, **best_param)
+                model = self.train_model(alg, calibrate=calibrate, **train_kwargs)
                 logger.info(f'{alg} training completed!')
             else:
                 model = load_pickle(self.output_path, alg)
 
             # Prediction
-            self.preds[alg] = {split: self.predict(model, split, alg) 
+            self.preds[alg] = {split: self.predict(model, split, alg, calibrated=calibrate) 
                                for split in self.splits}
                 
         if save_preds:
             if pred_filename is None: pred_filename = 'all_preds'
             save_pickle(self.preds, f'{self.output_path}/preds', pred_filename)
             
-    def train_model(self, alg, save=True, filename='', **kwargs):
-        if alg in ['RNN', 'NN']:
+    def train_model(self, alg, calibrate=True, save=True, filename='', **kwargs):
+        if alg in ['RNN', 'NN', 'TCN']:
             model = self.train_dl_model(alg, **kwargs)
-            if self.task_type == 'C':
+            if self.task_type == 'C' and calibrate:
                 model = self.calibrate_dl_model(model, alg)
         elif alg in ['LR', 'RF', 'XGB']:
             model = self.train_ml_model(alg, **kwargs)
-            if self.task_type == 'C':
+            if self.task_type == 'C' and calibrate:
                 model = self.calibrate_ml_model(model)
         
         if save:
@@ -218,6 +239,7 @@ class Trainer(Tuner):
         batch_size=128, 
         early_stop_count=10, 
         early_stop_tol=1e-4,
+        clip_gradients=False,
         save=False,
         save_checkpoints=False,
         **kwargs
@@ -229,7 +251,7 @@ class Trainer(Tuner):
         
         X_train, Y_train = self.datasets['Train'], self.labels['Train']
         X_valid, Y_valid = self.datasets['Valid'], self.labels['Valid']
-        if alg == 'RNN':
+        if alg in ['RNN', 'TCN']:
             train_dataset = self.transform_to_seq_dataset(X_train, Y_train)
             valid_dataset = self.transform_to_seq_dataset(X_valid, Y_valid)
             collate_fn = lambda x:x
@@ -244,7 +266,7 @@ class Trainer(Tuner):
             
         loader_params = dict(batch_size=batch_size, collate_fn=collate_fn)
         train_loader = DataLoader(dataset=train_dataset, **loader_params)
-        valid_loader = DataLoader(dataset=train_dataset, **loader_params)
+        valid_loader = DataLoader(dataset=valid_dataset, **loader_params)
         
         best_val_loss = prev_val_loss = np.inf
         best_model_weights = None
@@ -256,7 +278,8 @@ class Trainer(Tuner):
             model.train() # activate dropout
             train_loss = 0
             for i, batch in enumerate(train_loader):
-                if alg == 'RNN':
+                model.optimizer.zero_grad() # clear gradients
+                if alg in ['RNN', 'TCN']:
                     preds, targets, _ = model.predict(
                         batch, grad=True, bound_pred=False
                     )
@@ -273,8 +296,8 @@ class Trainer(Tuner):
                 
                 loss = loss.mean()
                 loss.backward() # back propagation, compute gradients
+                if clip_gradients: model.clip_gradients()
                 model.optimizer.step() # apply gradients
-                model.optimizer.zero_grad() # clear gradients for next train
             # lr_scheduler.step()
             
             model.eval() # deactivates dropout
@@ -298,7 +321,7 @@ class Trainer(Tuner):
                     save_path = f"{self.output_path}/train_perf/{alg}-checkpoint"
                     torch.save({
                         'epoch': epoch,
-                        'model_state_dict': best_model_param,
+                        'model_state_dict': best_model_weights,
                         'optimizer_state_dict': model.optimizer.state_dict()
                     }, save_path)
 
@@ -310,10 +333,11 @@ class Trainer(Tuner):
             prev_val_loss = cur_val_loss
             
         if save:
+            if self.n_targets == 1: alg += f'_{self.target_events[0]}'
             save_path = f"{self.output_path}/train_perf"
             save_pickle(perf, save_path, f"{alg}_perf")
-            save_path = f'{self.output_path}/{model.name}'
-            torch.save(best_model_param, save_path)
+            save_path = f'{self.output_path}/{alg}'
+            torch.save(best_model_weights, save_path)
 
         model.load_weights(best_model_weights)
         return model
@@ -339,8 +363,8 @@ class Trainer(Tuner):
         if self.task_type == 'R': calibrated = False
 
         X, Y = self.datasets[split], self.labels[split]
-        if alg == 'RNN':
-            pred = self._rnn_predict(model, split)
+        if alg in ['RNN', 'TCN']:
+            pred = self._seq_predict(model, split)
         elif alg == 'NN': 
             pred = self._nn_predict(model, X)
         else: 
@@ -349,14 +373,14 @@ class Trainer(Tuner):
         # make your life easier by ensuring pred and Y have same data format
         pred = pd.DataFrame(pred, index=Y.index, columns=Y.columns)
         
-        if alg in ['RNN', 'NN'] and calibrated:
+        if alg in ['RNN', 'NN', 'TCN'] and calibrated:
             calibrator = IsotonicCalibrator(self.target_events)
             calibrator.load_model(self.output_path, alg)
             pred = calibrator.predict(pred)
             
         return pred
     
-    def _rnn_predict(self, model, split):
+    def _seq_predict(self, model, split):
         X, Y = self.datasets[split], self.labels[split]
         dataset = self.transform_to_seq_dataset(X, Y)
         
@@ -392,7 +416,7 @@ class Trainer(Tuner):
     def _validate_dl_model(self, model, alg, loader):
         total_loss = 0
         for i, batch in enumerate(loader):
-            if alg == 'RNN':
+            if alg in ['RNN', 'TCN']:
                 preds, targets, _ = model.predict(
                     batch, grad=True, bound_pred=False
                 )
@@ -416,12 +440,16 @@ class Trainer(Tuner):
         """
         kwargs = self.convert_hyperparams(kwargs)
         try:
-            model = self.train_model(alg, save=False, **kwargs)
+            model = self.train_model(alg, calibrate=False, save=False, **kwargs)
         except Exception as e:
             raise e
             logger.warning(e)
             return -1e9
-        pred = self.predict(model, split, alg)
+        pred = self.predict(model, split, alg, calibrated=False)
+        if pred.isnull().any().any():
+            # TODO: figure out how to prevent this
+            logger.warning('Invalid prediction - contains NaNs')
+            return -1e9
         return self.score_func(self.labels[split], pred)
     
     def convert_hyperparams(self, params):
@@ -431,9 +459,12 @@ class Trainer(Tuner):
             if param == 'n_estimators': params[param] = int(value)
             if param == 'min_child_weight': params[param] = int(value)
             if param == 'hidden_layers': params[param] = int(value)
+            if param == 'kernel_size': params[param] = int(value)
             if param == 'model': params[param] = 'LSTM' if value > 0.5 else 'GRU'
             if param == 'optimizer': params[param] = 'adam' if value > 0.5 else 'sgd'
-            if param == 'batch_size' or param.startswith('hidden_size'):
+            if (param == 'batch_size' or 
+                param.startswith('hidden_size') or 
+                params.startswith('num_channel')):
                 idx = abs(cat_param_choices - value).argmin()
                 params[param] = round(cat_param_choices[idx])
                 
@@ -698,8 +729,34 @@ class BaselineTrainer(Tuner):
     def __init__(self, X, Y, tag, output_path, base_col, alg, **kwargs):
         super().__init__(X, Y, tag, output_path, **kwargs)
         self.col = base_col
-        self.alg = alg
         self.datasets = {split: X[self.col] for split, X in self.datasets.items()}
+        self.alg = alg
+        self.preds = {alg: {}}
+        self.preds_ci = {alg: {}}
+
+    def run(self, bayesopt=True, train=True, save=True):
+        if bayesopt:
+            best_param = self.bayesopt(alg=self.alg)
+        else:
+            best_param = load_pickle(
+                f'{self.output_path}/best_params', f'{self.alg}_params',
+                err_msg=f'Please tune hyperparameters for the {self.alg} model'
+            )
+        
+        if train:
+            model = self.train_model(save=save, **best_param)
+        else:
+            model = load_pickle(self.output_path, self.alg)
+
+        for split in self.splits:
+            Y_preds, Y_preds_min, Y_preds_max = self.predict(model, split=split)
+            self.preds[self.alg][split] = Y_preds
+            self.preds_ci[self.alg][split] = (Y_preds_min, Y_preds_max)
+
+        if save:
+            save_dir = f'{self.output_path}/preds'
+            save_pickle(self.preds, save_dir, f'{self.alg}_preds')
+            save_pickle(self.preds_ci, save_dir, f'{self.alg}_preds_ci')
 
     def predict(self, model, split='Test', ci=True, **kwargs):
         X, Y = self.datasets[split], self.labels[split]
@@ -713,7 +770,7 @@ class BaselineTrainer(Tuner):
         else:
             pred = model.predict(X)
             return pd.DataFrame(pred, index=Y.index)
-        
+    
     def _eval_func(self, alg, split='Valid', **kwargs):
         """Evaluation function for bayesian optimization"""
         kwargs = self.convert_hyperparams(kwargs)
@@ -722,9 +779,45 @@ class BaselineTrainer(Tuner):
         pred = self.predict(model, split=split, ci=False)
         return self.score_func(self.labels[split], pred)
     
+    def model_to_table(self, model, base_vals, extra_info, split='Test'):
+        """Save the model as a threshold table so it's transferrable from ICES
+        
+        Args:
+            base_vals (pd.Series): the unnormalized baseline values with the 
+                `self.base_col` name
+        """
+        preds = self.predict(model, split=split, ci=False)
+        idxs = preds.index
+        ikns = self.ikns.loc[idxs]
+        base_vals = base_vals.loc[idxs].round(1)
+        extra_info = extra_info.loc[idxs]
+        df = pd.concat([base_vals, preds, ikns, extra_info], axis=1)
+
+        # Assign bins to the baseline values
+        # Combine bins with less than 10 unique patients
+        tmp = df.groupby(self.base_col)['ikn'].unique()
+        assert all(tmp.index == sorted(tmp.index))
+        bins, seen = list(), set()
+        for base_val, ikns in tmp.items():
+            seen.update(ikns)
+            if len(seen) > 10:
+                bins.append(base_val)
+                seen = set()
+        df[self.base_col] = pd.cut(df[self.base_col], bins=bins)
+
+        # Aggregate stats in each bin
+        cols = extra_info.columns.tolist() + preds.columns.tolist()
+        df = df.groupby(self.base_col).agg({
+            'ikn': 'nunique',
+            **{col: 'mean' for col in cols}
+        }).round(3)
+
+        return df
+    
     def train_model(self, **param):
         raise NotImplementedError
         
+
 class LOESSModelTrainer(BaselineTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -732,7 +825,7 @@ class LOESSModelTrainer(BaselineTrainer):
         # prediction
         self.max_observations = 10000
         
-    def train_model(self, **param):
+    def train_model(self, save=False, **param):
         X, Y = self.datasets['Train'], self.labels['Train']
         if len(Y) > self.max_observations:
             Y = Y.sample(n=self.max_observations, random_state=42)
@@ -751,13 +844,23 @@ class LOESSModelTrainer(BaselineTrainer):
                 return None
             else: 
                 raise e
-                
+
+        if save: save_pickle(model, self.output_path, self.alg)
         return model
     
+
 class PolynomialModelTrainer(BaselineTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.max_observations = 13000
+
+    def train_model(self, save=False, **param):
+        X, Y = self.datasets['Train'], self.labels['Train']
+        model = PolynomialModel(
+            alg=self.alg, task_type=self.task_type, **param
+        )
+        model.fit(X, Y)
+        if save: save_pickle(model, self.output_path, self.alg)
+        return model
         
     def convert_hyperparams(self, best_param):
         for param in ['degree', 'n_knots']:
@@ -777,12 +880,3 @@ class PolynomialModelTrainer(BaselineTrainer):
             best_param['REG']['alpha'] = 1 / inv_reg_strength
 
         return best_param
-        
-    def train_model(self, save=False, **param):
-        X, Y = self.datasets['Train'], self.labels['Train']
-        model = PolynomialModel(
-            alg=self.alg, task_type=self.task_type, **param
-        )
-        model.fit(X, Y)
-        if save: save_pickle(model, self.output_path, self.alg)
-        return model

@@ -20,7 +20,7 @@ TERMS OF USE:
 # In[1]:
 
 
-get_ipython().run_line_magic('cd', '../')
+get_ipython().run_line_magic('cd', '../../')
 # reloads all modules everytime before cell is executed (no need to restart kernel)
 get_ipython().run_line_magic('load_ext', 'autoreload')
 get_ipython().run_line_magic('autoreload', '2')
@@ -51,7 +51,7 @@ from src.visualize import importance_plot, subgroup_performance_plot
 
 # config
 processes = 64
-output_path = f'{root_path}/{cyto_folder}/models'
+output_path = f'{root_path}/projects/{cyto_folder}/models'
 initialize_folders(output_path)
 
 

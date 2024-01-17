@@ -1,6 +1,6 @@
 """
 ========================================================================
-© 2018 Institute for Clinical Evaluative Sciences. All rights reserved.
+© 2023 Institute for Clinical Evaluative Sciences. All rights reserved.
 
 TERMS OF USE:
 ##Not for distribution.## This code and data is provided to the user solely for its own non-commercial use by individuals and/or not-for-profit corporations. User shall not distribute without express written permission from the Institute for Clinical Evaluative Sciences.
@@ -448,7 +448,7 @@ def merge_intervals(df, min_interval=4, merge_cols=None):
         df.loc[next_idx, merge_cols] += df.loc[cur_idx, merge_cols]
         
         # merge different regimens and their related info
-        # TODO: merge different intents
+        # TODO: merge different intents and hospital IDs
         cur_regimen = df.loc[cur_idx, 'regimen']
         next_regimen = df.loc[next_idx, 'regimen']
         if next_regimen != cur_regimen:
@@ -583,11 +583,11 @@ def combine_demographic_data(systemic, demographic, verbose=True):
     df['age'] = get_years_diff(df, DATE, 'birth_date')
     
     # do not include patients under 18
-    mask = df['age'] < 18
+    mask = df['age'] >= 18
     if verbose:
-        N = df.loc[mask, 'ikn'].nunique()
-        logger.info(f"Removing {N} patients under 18")
-    df = df[~mask]
+        context = ' at which patients were under 18 years of age'
+        logger.info(make_log_msg(df, mask, context=context))
+    df = df[mask]
     
     # get years since immigrating to Canada 
     col = 'years_since_immigration'
@@ -819,11 +819,12 @@ class Symptoms:
         symp = symp.sort_values(by='surveydate')
         return symp
     
-    def run(self, df, verbose=True, **kwargs):
+    def run(self, df, verbose=True, worker=None, **kwargs):
+        if worker is None: worker = symptom_worker
         data = self.load()
         symp = self.combine(data, df['ikn'], verbose=verbose)
         mask = df['ikn'].isin(symp['ikn'])
-        worker = partial(symptom_worker, **kwargs)
+        worker = partial(worker, **kwargs)
         result = split_and_parallelize(
             (df[mask], symp), worker, processes=self.processes
         )

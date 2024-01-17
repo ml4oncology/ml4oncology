@@ -23,9 +23,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FuncFormatter
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
-    accuracy_score, 
     average_precision_score,
-    classification_report, 
     confusion_matrix, 
     mean_absolute_error,
     mean_squared_error,
@@ -51,13 +49,11 @@ from src.config import blood_types, cancer_code_mapping
 from src.summarize import SubgroupSummary
 from src.utility import (
     split_and_parallelize,
-    get_clean_variable_name,
-    get_clean_variable_names,
     group_pred_by_outcome,
     pred_thresh_binary_search,
     twolevel
 )
-from src.visualize import get_bbox
+from src.visualize import tile_plot, get_bbox
 
 CLF_SCORE_FUNCS = {
     'AUROC': roc_auc_score,
@@ -69,6 +65,15 @@ REG_SCORE_FUNCS = {
     'RMSE': partial(mean_squared_error, squared=False), 
     'R2': r2_score
 }
+NAME_MAP = {
+    'baseline_eGFR': 'Pre-Treatment eGFR',
+    'next_eGFR': 'Post-Treatment eGFR',
+    'eGFR_change': 'eGFR Change'
+}
+for bt in blood_types:
+    NAME_MAP[f'baseline_{bt}_value'] = f'Pre-Treatment {bt.title()} Value'
+    NAME_MAP[f'target_{bt}_value'] = f'Before Next Treatment {bt.title()} Value'
+
 
 def get_perf_at_operating_point(
     point, 
@@ -460,7 +465,8 @@ class EvaluateClf(Evaluate):
         n_bins=10, 
         calib_strategy='quantile', 
         figsize=(12,18), 
-        save=True
+        save=True,
+        img_format='svg'
     ):
         # setup 
         fig, axes = plt.subplots(nrows=3, ncols=2, figsize=figsize)
@@ -491,12 +497,12 @@ class EvaluateClf(Evaluate):
             for idx, filename in enumerate(filenames):
                 filename = f'{alg}_{target_event}_{filename}'
                 fig.savefig(
-                    f'{self.output_path}/figures/curves/{filename}.jpg', 
-                    bbox_inches=get_bbox(axes[idx], fig), dpi=300
+                    f'{self.output_path}/figures/curves/{filename}.{img_format}', 
+                    bbox_inches=get_bbox(axes[idx], fig), dpi=300, format=img_format
                 ) 
             plt.savefig(
-                f'{self.output_path}/figures/curves/{alg}_{target_event}.jpg',
-                bbox_inches='tight', dpi=300
+                f'{self.output_path}/figures/curves/{alg}_{target_event}.{img_format}',
+                bbox_inches='tight', dpi=300, format=img_format
             )
         plt.show()
 
@@ -621,10 +627,7 @@ class EvaluateClf(Evaluate):
             ax.plot(prob_pred, prob_true, label=label, color=color)
         
         if show_perf_calib:
-            ax.plot(
-                [0,axis_max_limit], [0,axis_max_limit], 'k:', 
-                label='Perfect Calibration'
-            )
+            self.plot_perf_calib(ax, axis_max_limit)
             
         ax.set(
             title=title, xlabel='Predicted Probability', 
@@ -763,19 +766,15 @@ class EvaluateClf(Evaluate):
             else:
                 ax = fig.add_subplot(nrows, ncols, idx+1)
             
-            cur_max_prob, max_prob = 0, -1
-            for i, target_event in enumerate(target_events):                    
-                show_perf_calib = cur_max_prob > max_prob
-                max_prob = max(max_prob, cur_max_prob)
+            axis_max_limit = 0
+            for i, target_event in enumerate(target_events):
                 Y_true = self.labels[split][target_event]
                 Y_pred_prob = self.preds[alg][split][target_event]
                 prob_true, prob_pred = self.plot_calib(
                     ax, Y_true, Y_pred_prob, title=alg, n_bins=n_bins, 
                     calib_strategy=calib_strategy, legend_loc=legend_loc,
-                    label_prefix=f'{target_event}\n', 
-                    show_perf_calib=show_perf_calib,
+                    label_prefix=f'{target_event}\n', show_perf_calib=False,
                 )
-                cur_max_prob = max(prob_true.max(), prob_pred.max())
                 
                 if save:
                     # save the calibration numbers
@@ -783,6 +782,11 @@ class EvaluateClf(Evaluate):
                             f'{target_event}_calib_true_array.npy', prob_true)
                     np.save(f'{self.output_path}/figures/curves/'
                             f'{target_event}_calib_pred_array.npy', prob_pred)
+
+                cur_axis_max_limit = max(prob_true.max(), prob_pred.max())
+                axis_max_limit = max(axis_max_limit, cur_axis_max_limit)
+            self.plot_perf_calib(ax, axis_max_limit)
+            ax.legend(loc=legend_loc, frameon=False)
 
             if include_pred_hist:
                 axis_max_limit = max(ax.axis())
@@ -883,10 +887,45 @@ class EvaluateClf(Evaluate):
         )
         return cm
     
+    def plot_perf_calib(self, ax, axis_max_limit):
+        ax.plot(
+            [0, axis_max_limit], [0, axis_max_limit], 'k:',
+            label='Perfect Calibration'
+        )
+    
 class EvaluateReg(Evaluate):
     """Evaluate regressors"""
     def __init__(self, output_path, preds, labels, **kwargs):
         super().__init__(output_path, preds, labels, REG_SCORE_FUNCS, **kwargs)
+        
+    def plot_label_vs_pred(
+        self,
+        alg,
+        target_event,
+        split='Test',
+        save=True,
+        **kwargs 
+    ):
+        """
+        Args:
+            **kwargs: keyword arguments fed into tile_plot
+        """
+        Y_pred = self.preds[alg][split][target_event]
+        Y_true = self.labels[split][target_event]
+        name = NAME_MAP.get(target_event, target_event)
+        tile_plot(
+            Y_pred,
+            Y_true,
+            xlabel=f'Predicted {name}',
+            ylabel=f'True {name}',
+            **kwargs
+        )
+        if save:
+            filename = f'{alg}_{target_event}_label_vs_pred'
+            plt.savefig(
+                f'{self.output_path}/figures/curves/{filename}.jpg',
+                bbox_inches='tight', dpi=300
+            )
         
     def plot_err_dist(self, alg, target_event, split='Test'):
         Y_pred = self.preds[alg][split][target_event]
@@ -894,7 +933,7 @@ class EvaluateReg(Evaluate):
         err = Y_true - Y_pred
         
         fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(18,6))
-        name = target_event.replace('_', ' ').title()
+        name = NAME_MAP.get(target_event, target_event)
         # histogram of error alues
         err.hist(bins=100, ax=axes[0])
         axes[0].set(
@@ -925,8 +964,8 @@ class EvaluateReg(Evaluate):
 ###############################################################################
 # Baseline Evaluation
 ###############################################################################
-class EvaluateBaselineModel(EvaluateClf):
-    def __init__(self,  X, preds,  labels,  output_path, pred_ci=None):
+class EvaluateBaselineModel(Evaluate):
+    def __init__(self, X, preds, labels, output_path, pred_ci=None):
         """
         Args:
             X (pd.Series): the original baseline predictor values
@@ -934,7 +973,7 @@ class EvaluateBaselineModel(EvaluateClf):
                 upper and lower confidence interval predictions by each 
                 algorithm (dict of str: tuple(pd.DataFrame, pd.DataFrame))
         """
-        super().__init__(output_path, preds, labels)
+        super().__init__(output_path, preds, labels, score_funcs=None)
         self.X = X
         self.base_col = X.name
         self.pred_ci = pred_ci
@@ -942,20 +981,7 @@ class EvaluateBaselineModel(EvaluateClf):
         save_path = f'{output_path}/figures/baseline'
         if not os.path.exists(save_path): os.makedirs(save_path)
         
-        self.name_mapping = {
-            'baseline_eGFR': 'Pre-Treatment eGFR', 
-            'next_eGFR': '90-day Post-Treatment eGFR'
-        }
-        self.name_mapping.update(
-            {f'baseline_{bt}_value': f'Pre-Treatment {bt.title()} Value' 
-             for bt in blood_types}
-        )
-        self.name_mapping.update(
-            {f'target_{bt}_value': f'Before Next Treatment {bt.title()} Value'
-             for bt in blood_types}
-        )
-        
-    def plot_prediction(
+    def plot_pred_vs_base(
         self, 
         ax, 
         alg, 
@@ -989,62 +1015,37 @@ class EvaluateBaselineModel(EvaluateClf):
             axis_min = min(x.min(), pred.min())
             ax.plot([axis_min, axis_max], [axis_min, axis_max], 'k:')
         
-        xlabel = self.name_mapping.get(self.base_col, self.base_col)
-        ylabel = f'Prediction for {self.name_mapping.get(target_event, target_event)}'
+        xlabel = NAME_MAP.get(self.base_col, self.base_col)
+        ylabel = f'Prediction for {NAME_MAP.get(target_event, target_event)}'
         ax.set(xlabel=xlabel, ylabel=ylabel)
         ax.grid()
-            
-    def all_plots_for_single_target(
-        self, 
-        alg='LOESS', 
-        target_event='AKI', 
-        split='Test',
-        n_bins=10, 
-        calib_strategy='quantile', 
-        figsize=(12,12), 
-        save=True, 
-        filename=''
-    ):
-        # setup 
-        fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize)
-        axes = axes.flatten()
-        plt.subplots_adjust(hspace=0.2, wspace=0.2)
-        Y_true = self.labels[split][target_event]
-        Y_pred_prob = self.preds[alg][split][target_event]
 
-        # plot
-        self.plot_prediction(axes[0], alg, target_event, split=split)
-        self.plot_auc_curve(
-            axes[1], Y_true, Y_pred_prob, curve_type='pr', legend_loc='lower right',
-            ci_name=f'{alg}_{split}_{target_event}'
+    def plot_label_vs_base(
+        self,
+        target_event,
+        split='Test',
+        save=True,
+        **kwargs
+    ):
+        """
+        Args:
+            **kwargs: keyword arguments fed into tile_plot
+        """
+        x = self.X.sort_values()
+        y = self.labels[split].loc[x.index, target_event]
+        tile_plot(
+            x,
+            y,
+            xlabel=NAME_MAP.get(self.base_col, self.base_col),
+            ylabel=f'True {NAME_MAP.get(target_event, target_event)}',
+            **kwargs
         )
-        self.plot_auc_curve(
-            axes[2], Y_true, Y_pred_prob, curve_type='roc', legend_loc='lower right',
-            ci_name=f'{alg}_{split}_{target_event}'
-        )
-        # hotfix - bound the predictions to (0, 1) for calibration
-        self.plot_calib(
-            axes[3], Y_true, Y_pred_prob.clip(lower=0, upper=1), n_bins=n_bins,
-            legend_loc='lower right', calib_strategy=calib_strategy
-        )
-        
-        # save
         if save:
-            if not filename: filename = alg
-            filename = f'{target_event}_{filename}'
+            filename = f'{target_event}_label_vs_base'
             plt.savefig(
-                f'{self.output_path}/figures/baseline/{filename}.jpg', 
+                f'{self.output_path}/figures/curves/{filename}.jpg',
                 bbox_inches='tight', dpi=300
             )
-        plt.show()
-        
-    def all_plots(self, split='Test', **kwargs):
-        Y = self.labels[split]
-        for target_event, Y_true in Y.items():
-            if Y_true.nunique() < 2: 
-                # no pos examples, no point in plotting/evaluating
-                continue
-            self.all_plots_for_single_target(target_event=target_event, **kwargs)
         
 ###############################################################################
 # Subgroup Evaluation
