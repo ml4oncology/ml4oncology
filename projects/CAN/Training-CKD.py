@@ -184,7 +184,7 @@ df
 
 
 trainer = Trainer(X, Y, tag, output_path)
-trainer.run(bayesopt=True, train=True, save_preds=True, algs=['LR', 'RF', 'XGB', 'NN'], allow_duplicate_points=True)
+trainer.run(bayesopt=True, train=True, save_preds=True, algs=['LR', 'RF', 'XGB', 'NN'])
 
 
 # ## ENS Model 

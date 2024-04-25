@@ -781,6 +781,18 @@ model_tuning_param = {
         'dropout': (0.0, 0.9),
         'learning_rate': (0.0001, 0.01),
         'weight_decay': (0.0001, 1),
+    },
+    'LGBM': {
+        'n_estimators': (50, 200),
+        'max_depth': (3, 7),
+        'learning_rate': (0.01, 0.3),
+        'num_leaves': (20, 40),
+        'min_data_in_leaf': (6, 100),
+        'feature_fraction': (0.5, 1),
+        'bagging_fraction': (0.5, 1),
+        'bagging_freq': (0, 10),
+        'reg_lambda': (0, 1),
+        'reg_alpha': (0, 1)
     }
 }
                                  
@@ -796,5 +808,6 @@ bayesopt_param = {
     'SPLINE': {'init_points': 3, 'n_iter': 20},
     'POLY': {'init_points': 3, 'n_iter': 15},
     # Experimentally Supported Models
-    'TCN': {'init_points': 60, 'n_iter': 60},
+    'TCN': {'init_points': 16, 'n_iter': 60},
+    'LGBM': {'init_points': 20, 'n_iter': 200}
 }

@@ -197,10 +197,14 @@ class Trainer(Tuner):
 
             # Model Training
             if train: 
-                model = self.train_model(alg, calibrate=calibrate, **train_kwargs)
+                # NOTE: train_kwargs takes precedence if there are duplicate keys
+                for key in best_param:
+                    if key in train_kwargs:
+                        del best_param[key]
+                model = self.train_model(alg, calibrate=calibrate, **train_kwargs, **best_param)
                 logger.info(f'{alg} training completed!')
             else:
-                model = load_pickle(self.output_path, alg)
+                model = load_pickle(self.output_path, train_kwargs.get('filename', alg))
 
             # Prediction
             self.preds[alg] = {split: self.predict(model, split, alg, calibrated=calibrate) 
@@ -215,7 +219,7 @@ class Trainer(Tuner):
             model = self.train_dl_model(alg, **kwargs)
             if self.task_type == 'C' and calibrate:
                 model = self.calibrate_dl_model(model, alg)
-        elif alg in ['LR', 'RF', 'XGB']:
+        elif alg in ['LR', 'RF', 'XGB', 'LGBM']:
             model = self.train_ml_model(alg, **kwargs)
             if self.task_type == 'C' and calibrate:
                 model = self.calibrate_ml_model(model)
@@ -391,10 +395,9 @@ class Trainer(Tuner):
             dataset=dataset, batch_size=10000, collate_fn=lambda x:x
         )
         pred_arr, index_arr = np.empty([0, self.n_targets]), np.empty(0)
+        bound_pred = self.task_type == 'C'
         for i, batch in enumerate(loader):
-            preds, targets, indices = model.predict(
-                batch, grad=False, bound_pred=True
-            )
+            preds, targets, indices = model.predict(batch, grad=False, bound_pred=bound_pred)
             if model.use_gpu: preds = preds.cpu()
             pred_arr = np.concatenate([pred_arr, preds])
             index_arr = np.concatenate([index_arr, indices])
@@ -409,7 +412,8 @@ class Trainer(Tuner):
     
     def _nn_predict(self, model, X):
         model.eval() # deactivates dropout
-        pred = model.predict(X, grad=False, bound_pred=True)
+        bound_pred = self.task_type == 'C'
+        pred = model.predict(X, grad=False, bound_pred=bound_pred)
         if model.use_gpu: pred = pred.cpu()
         return pred
     
@@ -454,12 +458,12 @@ class Trainer(Tuner):
     
     def convert_hyperparams(self, params):
         cat_param_choices = np.geomspace(start=16, stop=4096, num=9)
+        int_params = [
+            'bagging_freq', 'hidden_layers', 'kernel_size', 'max_depth',
+            'min_child_weights', 'min_data_in_leaf', 'n_estimators', 'num_leaves'
+        ]
         for param, value in params.items():
-            if param == 'max_depth': params[param] = int(value)
-            if param == 'n_estimators': params[param] = int(value)
-            if param == 'min_child_weight': params[param] = int(value)
-            if param == 'hidden_layers': params[param] = int(value)
-            if param == 'kernel_size': params[param] = int(value)
+            if param in int_params: params[param] = int(value)
             if param == 'model': params[param] = 'LSTM' if value > 0.5 else 'GRU'
             if param == 'optimizer': params[param] = 'adam' if value > 0.5 else 'sgd'
             if (param == 'batch_size' or 
