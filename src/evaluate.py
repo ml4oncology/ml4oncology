@@ -354,6 +354,7 @@ class EvaluateClf(Evaluate):
         target_events=None,
         split='Test',
         save=True,
+        fname='subgroup_performance',
         **kwargs
     ):
         """
@@ -400,12 +401,9 @@ class EvaluateClf(Evaluate):
         summary_df = pd.concat(results).T
         
         if save:
-            filename = 'subgroup_performance'
-            summary_df.to_csv(f'{self.output_path}/tables/{filename}.csv')
-            
+            summary_df.to_csv(f'{self.output_path}/tables/{fname}.csv')
             if sp.display_ci: 
-                filename = 'bootstrapped_subgroup_scores'
-                sp.ci.save_bootstrapped_scores(filename=filename)
+                sp.ci.save_bootstrapped_scores(filename=sp.filename_ci)
 
         return summary_df
     
@@ -1058,6 +1056,7 @@ class SubgroupPerformance(SubgroupSummary):
         subgroups=None,
         display_ci=False, 
         load_ci=False,
+        filename_ci='bootstrapped_subgroup_scores',
         top=3,
         cohort_name='Test',
         perf_kwargs=None,
@@ -1078,18 +1077,17 @@ class SubgroupPerformance(SubgroupSummary):
                 'income', 'area_density', 'regimen', 'cancer_location', 
                 'days_since_starting'
             ]
-        self.subgroups = subgroups
-        self.display_ci = display_ci
-        if self.display_ci:
-            self.ci = ScoreConfidenceInterval(output_path, CLF_SCORE_FUNCS)
-            if load_ci:
-                filename='bootstrapped_subgroup_scores'
-                self.ci.load_bootstrapped_scores(filename=filename)
-        self.top = top
-        self.cohort_name = cohort_name
         if perf_kwargs is None:
             perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate']}
+        self.subgroups = subgroups
+        self.top = top
+        self.cohort_name = cohort_name
         self.perf_kwargs = perf_kwargs
+        self.display_ci = display_ci
+        self.filename_ci = filename_ci
+        if self.display_ci:
+            self.ci = ScoreConfidenceInterval(output_path, CLF_SCORE_FUNCS)
+            if load_ci: self.ci.load_bootstrapped_scores(filename=self.filename_ci)
         
     def get_summary(self, *args):
         summary = {}
