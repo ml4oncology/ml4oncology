@@ -229,6 +229,7 @@ class PrepData:
         reduce_sparsity=True, 
         treatment_intents=None, 
         regimens=None,
+        cancer_sites=None,
         first_course_treatment=False, 
         include_comorbidity=False,
         verbose=True
@@ -247,6 +248,8 @@ class PrepData:
                 If None, all intent of systemic treatment is kept.
             regimens (list): A sequence of regimens (str) to keep. If None, all
                 treatment regimens are kept.
+            cancer_sites (list): A sequence of cancer sites (str) to keep. If
+                None, all cancer sites are kept.
             first_course_treatment (bool): If True, keep only first course 
                 treatments of a new line of therapy
             include_comorbidity (bool): If True, include features indicating if
@@ -260,17 +263,15 @@ class PrepData:
         # fill null values with 0 or max value
         df = self.fill_missing_feature(df)
         
-        if treatment_intents:
-            df = self.filter_treatment_catgories(
-                df, treatment_intents, catcol=INTENT, verbose=verbose
-            )
-            if len(treatment_intents) == 1: drop_cols.append(INTENT)
-                
-        if regimens:
-            df = self.filter_treatment_catgories(
-                df, regimens, catcol='regimen', verbose=verbose
-            )
-            if len(regimens) == 1: drop_cols.append('regimen')
+        keep_map = {
+            INTENT: treatment_intents,
+            'regimen': regimens,
+            'cancer_topog_cd': cancer_sites
+        }
+        for col, keep in keep_map.items():
+            if keep is None: continue
+            df = self.filter_treatment_catgories(df, keep, col, verbose=verbose)
+            if len(keep) == 1: drop_cols.append(col)
         
         if first_course_treatment: 
             df = self.get_first_course_treatments(df, verbose=verbose)
