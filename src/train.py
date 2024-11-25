@@ -422,11 +422,11 @@ class Trainer(Tuner):
         for i, batch in enumerate(loader):
             if alg in ['RNN', 'TCN']:
                 preds, targets, _ = model.predict(
-                    batch, grad=True, bound_pred=False
+                    batch, grad=False, bound_pred=False
                 )
             elif alg == 'NN':
                 feats, targets = batch
-                preds = model.predict(feats, grad=True, bound_pred=False)
+                preds = model.predict(feats, grad=False, bound_pred=False)
             loss = model.criterion(preds, targets)
             loss = loss.mean(dim=0)
             total_loss += loss
