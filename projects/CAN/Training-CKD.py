@@ -184,7 +184,7 @@ df
 
 
 trainer = Trainer(X, Y, tag, output_path)
-trainer.run(bayesopt=True, train=True, save_preds=True, algs=['LR', 'RF', 'XGB', 'NN'], allow_duplicate_points=True)
+trainer.run(bayesopt=True, train=True, save_preds=True, algs=['LR', 'RF', 'XGB', 'NN'])
 
 
 # ## ENS Model 
@@ -285,6 +285,8 @@ importance_plot('ENS', evaluator.target_events, output_path, figsize=(6,15), top
 
 # ## Performance on Subgroups
 
+# ### ENS
+
 # In[48]:
 
 
@@ -294,7 +296,8 @@ subgroups = [
 ]
 perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate']}
 subgroup_performance = evaluator.get_perf_by_subgroup(
-    model_data, subgroups=subgroups, pred_thresh=0.1, alg='ENS', display_ci=True, load_ci=False, perf_kwargs=perf_kwargs
+    model_data, subgroups=subgroups, pred_thresh=0.1, alg='ENS', fname='ENS_subgroup_performance',
+    display_ci=True, load_ci=False, filename_ci='ENS_bootstrapped_subgroup_scores', perf_kwargs=perf_kwargs
 )
 subgroup_performance
 
@@ -302,7 +305,7 @@ subgroup_performance
 # In[49]:
 
 
-subgroup_performance = pd.read_csv(f'{output_path}/tables/subgroup_performance.csv', index_col=[0,1], header=[0,1])
+subgroup_performance = pd.read_csv(f'{output_path}/tables/ENS_subgroup_performance.csv', index_col=[0,1], header=[0,1])
 groupings = {
     'Demographic': ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Language', 'Neighborhood Income Quintile'],
     'Treatment': ['Entire Test Cohort', 'Regimen', 'Topography ICD-0-3', 'CKD Prior to Treatment']
@@ -316,6 +319,31 @@ for name, subgroups in groupings.items():
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
 # Event Rate = 0.15 means true alarms occur 15% of the time
+
+
+# ### SPLINE
+
+# In[48]:
+
+
+subgroups = ['all', 'age', 'sex', 'immigrant', 'language', 'arrival', 'income', 'area_density', 'ckd']
+perf_kwargs = {'perf_metrics': ['precision', 'recall', 'event_rate']}
+subgroup_performance = evaluator.get_perf_by_subgroup(
+    model_data, subgroups=subgroups, pred_thresh=0.1, alg='SPLINE', fname='SPLINE_subgroup_performance',
+    display_ci=True, load_ci=False, filename_ci='SPLINE_bootstrapped_subgroup_scores', perf_kwargs=perf_kwargs
+)
+subgroup_performance
+
+
+# In[49]:
+
+
+subgroup_performance = pd.read_csv(f'{output_path}/tables/SPLINE_subgroup_performance.csv', index_col=[0,1], header=[0,1])
+subgroups = ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Area of Residence', 'CKD Prior to Treatment']
+subgroup_performance_plot(
+    subgroup_performance, target_event='CKD', subgroups=subgroups, padding=padding,
+    figsize=(12,30), save_dir=f'{output_path}/figures/subgroup_perf/SPLINE'
+)
 
 
 # ## Decision Curve Plot

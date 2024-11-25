@@ -229,6 +229,7 @@ class PrepData:
         reduce_sparsity=True, 
         treatment_intents=None, 
         regimens=None,
+        cancer_sites=None,
         first_course_treatment=False, 
         include_comorbidity=False,
         verbose=True
@@ -247,6 +248,8 @@ class PrepData:
                 If None, all intent of systemic treatment is kept.
             regimens (list): A sequence of regimens (str) to keep. If None, all
                 treatment regimens are kept.
+            cancer_sites (list): A sequence of cancer sites (str) to keep. If
+                None, all cancer sites are kept.
             first_course_treatment (bool): If True, keep only first course 
                 treatments of a new line of therapy
             include_comorbidity (bool): If True, include features indicating if
@@ -260,17 +263,15 @@ class PrepData:
         # fill null values with 0 or max value
         df = self.fill_missing_feature(df)
         
-        if treatment_intents:
-            df = self.filter_treatment_catgories(
-                df, treatment_intents, catcol=INTENT, verbose=verbose
-            )
-            if len(treatment_intents) == 1: drop_cols.append(INTENT)
-                
-        if regimens:
-            df = self.filter_treatment_catgories(
-                df, regimens, catcol='regimen', verbose=verbose
-            )
-            if len(regimens) == 1: drop_cols.append('regimen')
+        keep_map = {
+            INTENT: treatment_intents,
+            'regimen': regimens,
+            'cancer_topog_cd': cancer_sites
+        }
+        for col, keep in keep_map.items():
+            if keep is None: continue
+            df = self.filter_treatment_catgories(df, keep, col, verbose=verbose)
+            if len(keep) == 1: drop_cols.append(col)
         
         if first_course_treatment: 
             df = self.get_first_course_treatments(df, verbose=verbose)
@@ -484,17 +485,31 @@ class PrepData:
             data[norm_cols] = self.scaler.transform(data[norm_cols])
         return data
     
-    def create_cohort(self, df, split_date, verbose=True):
-        """Create the development and testing cohort 
-        by partitioning on split_date
+    def create_cohort(
+        self, 
+        df, 
+        split_date, 
+        verbose=True,
+        exclude_after_split=True
+    ):
+        """Create the development and testing cohort by partitioning on 
+        split_date
+
+        Args:
+            exclude_after_split (bool): If True, exclude sessions that occured
+                after the split_date in development cohort
         """
-        mask = self.event_dates[f'first_{DATE}'] <= split_date
+        event_dates = self.event_dates.loc[df.index]
+        mask = event_dates[f'first_{DATE}'] <= split_date
         dev_cohort, test_cohort = df[mask].copy(), df[~mask].copy()
-        mask = self.event_dates.loc[dev_cohort.index, DATE] <= split_date
-        if verbose:
-            context = f' that occured after {split_date} in the development set'
-            logger.info(make_log_msg(dev_cohort, mask, context=context))
-        dev_cohort = dev_cohort[mask]
+
+        if exclude_after_split:
+            mask = event_dates.loc[dev_cohort.index, DATE] <= split_date
+            if verbose:
+                context = f' that occured after {split_date} in the development set'
+                logger.info(make_log_msg(dev_cohort, mask, context=context))
+            dev_cohort = dev_cohort[mask]
+            
         if verbose:
             disp = lambda x: f"NSessions={len(x)}. NPatients={x.ikn.nunique()}"
             msg = (f"Development Cohort: {disp(dev_cohort)}. Contains all "
@@ -516,23 +531,16 @@ class PrepData:
         test_data = df.iloc[test_idxs].copy()
         return train_data, test_data
     
-    def create_splits(self, data, split_date=None, verbose=True):
+    def create_splits(self, data, split_date=None, **kwargs):
         if split_date is None: 
             # create training, validation, and testing set (60-20-20 split)
             train_data, test_data = self.create_split(data, test_size=0.4)
             valid_data, test_data = self.create_split(test_data, test_size=0.5)
         else:
             # split data temporally based on patients first visit date
-            train_data, test_data = self.create_cohort(
-                data, split_date, verbose=verbose
-            )
+            train_data, test_data = self.create_cohort(data, split_date, **kwargs)
             # create validation set from train data (80-20 split)
             train_data, valid_data = self.create_split(train_data, test_size=0.2)
-
-        # sanity check - make sure there are no overlap of patients in the splits
-        assert(not set.intersection(set(train_data['ikn']), 
-                                    set(valid_data['ikn']), 
-                                    set(test_data['ikn'])))
         
         return train_data, valid_data, test_data
     

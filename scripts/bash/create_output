@@ -26,11 +26,16 @@ cp -r projects/CAN/models/CKD/tables data/output/CKD_results/
 cp projects/CAN/models/CKD/SPLINE_model.csv data/output/CKD_results/
 ############### eGFR RESULTS ###############
 mkdir data/output/eGFR_results
-cp -r projects/CAN/models/eGFR/figures/baseline data/output/eGFR_results/
+cp -r projects/CAN/models/eGFR/figures data/output/eGFR_results/
+cp -r projects/CAN/models/eGFR/tables data/output/eGFR_results/
 ############### DEATH RESULTS (PUBLISHED) ###############
 # mkdir data/output/DEATH_results
 # cp -r projects/DEATH/models/figures data/output/DEATH_results
 # cp -r projects/DEATH/models/tables data/output/DEATH_results
+############### SYMPTOM RESULTS ###############
+mkdir data/output/SYMPTOM_results
+cp -r projects/SYMPTOM/models/figures data/output/SYMPTOM_results
+cp -r projects/SYMPTOM/models/tables data/output/SYMPTOM_results
 
 # Copy code
 # NOTE: need to change config.py
@@ -44,14 +49,16 @@ mkdir data/output/code/PROACCT
 mkdir data/output/code/CYTOPENIA
 mkdir data/output/code/CAN
 mkdir data/output/code/DEATH
+mkdir data/output/code/SYMPTOM
 mkdir data/output/code/TRREKO
 mkdir data/output/code/notebooks
 jupyter nbconvert --output-dir data/output/code/PROACCT --to script projects/PROACCT/*ipynb
 jupyter nbconvert --output-dir data/output/code/CYTOPENIA --to script projects/CYTOPENIA/*ipynb
 jupyter nbconvert --output-dir data/output/code/CAN --to script projects/CAN/*ipynb
 jupyter nbconvert --output-dir data/output/code/DEATH --to script projects/DEATH/*ipynb
+jupyter nbconvert --output-dir data/output/code/SYMPTOM --to script projects/SYMPTOM/*ipynb
 jupyter nbconvert --output-dir data/output/code/TRREKO --to script projects/TRREKO/*ipynb
-jupyter nbconvert --output-dir data/output/code/dev_notebooks --to script dev_notebooks/*ipynb
+jupyter nbconvert --output-dir data/output/code/notebooks --to script notebooks/*ipynb
 
 # Copy environment file
 cp env.yaml data/output/code/

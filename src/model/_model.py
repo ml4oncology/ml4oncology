@@ -14,6 +14,7 @@ TERMS OF USE:
 ##Warning.## By receiving this code and data, user accepts these terms, and uses the code and data, solely at its own risk.
 ========================================================================
 """
+from lightgbm import LGBMClassifier, LGBMRegressor
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.multioutput import MultiOutputClassifier, MultiOutputRegressor
@@ -43,7 +44,8 @@ class Models:
             'RNN': RecurrentNeuralNetwork
         }
         self._experimentally_supported_types = {
-            'TCN': TemporalConvolutionalNetwork
+            'TCN': TemporalConvolutionalNetwork,
+            'LGBM': LightGradientBoosting
         }
 
     def __iter__(self):
@@ -161,6 +163,44 @@ class ExtremeGradientBoosting(MLModel):
         model = model_types[self.task](**params)
         model = self.MultiOutput(model)
         self.model = model
+
+
+class LightGradientBoosting(MLModel):
+    def __init__(
+        self, 
+        n_estimators=100, 
+        max_depth=6, 
+        learning_rate=0.1, 
+        num_leaves=31,
+        min_data_in_leaf=20,
+        feature_fraction=1,
+        bagging_fraction=1,
+        bagging_freq=0,
+        reg_lambda=0,
+        reg_alpha=0,
+        verbosity=-1,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        model_types = {'C': LGBMClassifier, 'R': LGBMRegressor}
+        params = {
+            'n_estimators': n_estimators, 
+            'max_depth': max_depth,
+            'learning_rate': learning_rate, 
+            'num_leaves': num_leaves, 
+            'min_child_samples': min_data_in_leaf,
+            'colsample_bytree': feature_fraction,
+            'subsample': bagging_fraction,
+            'subsample_freq': bagging_freq,
+            'reg_lambda': reg_lambda,
+            'reg_alpha': reg_alpha,
+            'verbosity': verbosity,
+            'random_state': self.random_state,
+            'n_jobs': self.n_jobs
+        }
+        model = model_types[self.task](**params)
+        model = self.MultiOutput(model)
+        self.model = model
         
 ###############################################################################
 # Deep Learning Models
@@ -254,7 +294,7 @@ class NeuralNetwork(DLModel):
             # NOTE: need to call .detach() is True
             pred = self.model(X)
             
-        if bound_pred: 
+        if bound_pred and self.task == 'C': 
             pred = torch.sigmoid(pred)
             
         return pred
@@ -353,7 +393,7 @@ class RecurrentNeuralNetwork(DLModel):
         preds = preds.reshape(-1, self.n_targets)
         
         # bound the model prediction
-        if bound_pred: 
+        if bound_pred and self.task == 'C': 
             preds = torch.sigmoid(preds)
             
         return preds, targets, indices
@@ -494,7 +534,7 @@ class TemporalConvolutionalNetwork(DLModel):
         preds = preds.reshape(-1, self.n_targets)
         
         # bound the model prediction
-        if bound_pred: 
+        if bound_pred and self.task == 'C': 
             preds = torch.sigmoid(preds)
             
         return preds, targets, indices
