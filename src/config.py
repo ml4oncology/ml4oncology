@@ -187,6 +187,7 @@ cancer_code_mapping = {
     'C38': 'Heart, mediastinum, and pleura',
     'C40': 'Bones, joints, and articular cartilage of limbs',
     'C41': 'Bones, joints, and articular cartilage of other and unspecified sites',
+    'C42': 'Hematopoietic and reticuloendothelial systems',
     'C44': 'Skin',
     'C47': 'Peripheral nerves and autonomic nervous system',
     'C48': 'Retroperitoneum and peritoneum',
@@ -216,6 +217,7 @@ cancer_code_mapping = {
     'C74': 'Adrenal Gland', 
     'C75': 'Other endocrine glands and related structures', 
     'C76': 'Other and ill-defined sites',
+    'C77': 'Lymph Nodes',
     'C80': 'Unknown primary site',
     '800': 'Neoplasms, NOS',
     '801': 'Epithelial neoplasms, NOS',
@@ -308,10 +310,14 @@ cancer_code_mapping = {
 }
 blood_cancer_code = ['C77', 'C42']
 cancer_grouping = {
-    'Head and Neck': ['C00', 'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C09', 'C10', 'C12', 'C13', 'C14', 'C32'],
-    'Liver': ['C23', 'C24', 'C22'],
-    'Connective Tissue': ['C40', 'C41', 'C44', 'C49'],
-    'Uterus': ['C54', 'C55']
+    'Head and Neck': ['C00', 'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C09', 'C10', 'C12', 'C13', 'C14'],
+    'Gastrointestinal': ['C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C21', 'C22', 'C23', 'C24', 'C25', 'C26'], # aka gastroenterology
+    'Chest': ['C30', 'C31', 'C32', 'C33', 'C34', 'C37', 'C38'], # aka thoracic oncology, includes everything in the thorax (chest cavity) like lung, heart
+    'Female Organs': ['C51', 'C52', 'C53', 'C54', 'C55', 'C56', 'C57', 'C58'], # aka gynecology
+    'Male Organs': ['C60', 'C61', 'C62', 'C63'], # aka andrology
+    'Urinary Tract': ['C64', 'C65', 'C66', 'C68'], # aka urology
+    'Central Nervous System': ['C69', 'C70', 'C71', 'C72'], # aka neuro-oncology, includes eye, brain
+    'Endocrine': ['C73', 'C74', 'C75'], # aka endocrine oncology, includes thyroid
 }
 palliative_cancer_grouping = {'Colorectal': ['C18', 'C19', 'C20']} # can group together only when intent is palliative
 
@@ -489,7 +495,10 @@ systemic_cols = [
     BSA,
     INTENT,
     'inpatient_flag',
-    'visit_hospital_number'
+    'visit_hospital_number',
+    'init_date',
+    'init_regimen_date',
+    'prev_date'
 ]
 
 y3_cols = [
