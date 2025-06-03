@@ -45,19 +45,23 @@ from src.utility import (
 class SubgroupSummary:
     """Base class for summarizing / analyzing different population subgroups
     """
-    def __init__(self, data, top_categories=None):
+    def __init__(self, data, top_categories=None, age_bins=None):
         """
         Args:
             top_categories (dict): mapping of categorical columns (str) and 
                 their most common categories (list of str)
+            age_bins (list): list of tuples where each tuple defines an age 
+                bin as a range. If None, defaults to [(18, 64), (65, np.inf)]
         """
         self.data = data
         if top_categories is None: top_categories = {}
+        if age_bins is None: age_bins = [(18, 64), (65, np.inf)]
         self.top_categories = top_categories
+        self.age_bins = age_bins
         self.N = self.data['ikn'].nunique()
         
     def age_summary(self, *args):
-        for (low, high) in [(18, 64), (65, np.inf)]:
+        for (low, high) in self.age_bins:
             mask = self.data['age'].between(low, high)
             interval = f'{low}+' if high == np.inf else f'{low}-{high}'
             name = ('Age',  interval)

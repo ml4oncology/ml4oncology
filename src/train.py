@@ -191,9 +191,10 @@ class Trainer(Tuner):
                     f'{self.output_path}/best_params', filename,
                     err_msg=(f'Please tune hyperparameters for {alg}')
                 )
+                logger.info(best_param)
             # NOTE: train_kwargs takes precedence if there are duplicate keys
-            for name, param in best_param.items():
-                train_kwargs[name] = train_kwargs.get(name, param)
+            # for name, param in best_param.items():
+            #     train_kwargs[name] = train_kwargs.get(name, param)
 
             # Model Training
             if train: 
@@ -746,6 +747,7 @@ class BaselineTrainer(Tuner):
                 f'{self.output_path}/best_params', f'{self.alg}_params',
                 err_msg=f'Please tune hyperparameters for the {self.alg} model'
             )
+            logger.info(best_param)
         
         if train:
             model = self.train_model(save=save, **best_param)

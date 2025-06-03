@@ -59,7 +59,7 @@ class FeatImportance:
         # load pretrained models 
         self.ensemble_weights = load_pickle(f'{self.output_path}/best_params', 'ENS_params')
         self.models = {alg: load_pickle(self.output_path, alg) for alg in self.ensemble_weights}
-        self.models['RNN'].model.rnn.flatten_parameters()
+        if 'RNN' in self.models: self.models['RNN'].model.rnn.flatten_parameters()
     
     def get_feature_importance(self, alg):
         """Run permutation feature importance across each column/feature"""
@@ -195,7 +195,6 @@ class CANFeatImportance(FeatImportance):
     def __init__(self, output_path, adverse_event, task_type='C'):
         self.prep = PrepDataCAN(adverse_event=adverse_event, target_keyword='SCr|dialysis|next')
         self.get_data_kwargs = {'missing_thresh': 80, 'include_comorbidity': True}
-        if adverse_event == 'ckd': self.get_data_kwargs['first_course_treatment'] = True
         self.split_data_kwargs = {'split_date': split_date}
         self.task_type = task_type
         super().__init__(output_path, task_type=task_type)
