@@ -1125,6 +1125,8 @@ class SubgroupPerformance(SubgroupSummary):
             self.cycle_length_summary(summary, *args)
         if 'ckd' in self.subgroups: 
             self.ckd_summary(summary, *args)
+        if 'comorbidity' in self.subgroups: 
+            self.comorbidity_summary(summary, *args)
             
         return pd.DataFrame(summary)
 
