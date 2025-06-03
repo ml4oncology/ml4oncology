@@ -53,7 +53,7 @@ from src.utility import (
     pred_thresh_binary_search,
     twolevel
 )
-from src.visualize import tile_plot, get_bbox
+from src.visualize import tile_plot, get_bbox, remove_top_right_axis
 
 CLF_SCORE_FUNCS = {
     'AUROC': roc_auc_score,
@@ -504,6 +504,51 @@ class EvaluateClf(Evaluate):
             )
         plt.show()
 
+    def all_plots_for_all_targets(
+        self,
+        alg='XGB',
+        split='Test',
+        save=True,
+        img_format='svg',
+        **calib_kwargs
+    ):
+        # setup
+        fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(12, 12))
+        axes = axes.flatten()
+        plt.subplots_adjust(hspace=0.2, wspace=0.2)
+        Y_true = self.labels[split]
+        Y_pred_prob = self.preds[alg][split]
+        calib_axis_max_limit = 0
+
+        # all curves
+        for i, target_event in enumerate(self.target_events):
+            y_true, y_pred_prob = Y_true[target_event], Y_pred_prob[target_event]
+            self.plot_auc_curve(
+                axes[0], y_true, y_pred_prob, curve_type='pr', legend_loc='upper right',
+                ci_name=f'{alg}_{split}_{target_event}', label_prefix=f'{target_event}\n'
+            )
+            self.plot_auc_curve(
+                axes[1], y_true, y_pred_prob, curve_type='roc', legend_loc='lower right',
+                ci_name=f'{alg}_{split}_{target_event}', label_prefix=f'{target_event}\n'
+            )
+            self.plot_pred_cdf(
+                axes[2], y_pred_prob, label=target_event
+            )
+            prob_true, prob_pred = self.plot_calib(
+                axes[3], y_true, y_pred_prob,legend_loc='lower right', **calib_kwargs,
+                show_perf_calib=False, label_prefix=f'{target_event}\n'
+            )
+            cur_calib_axis_max_limit = max(prob_true.max(), prob_pred.max())
+            calib_axis_max_limit = max(calib_axis_max_limit, cur_calib_axis_max_limit)
+        axes[3].plot([0, calib_axis_max_limit], [0, calib_axis_max_limit], 'k:', label='Perfect Calibration')
+
+        if save:
+            plt.savefig(
+                f'{self.output_path}/figures/curves/{alg}_{split}_all_curves.{img_format}', format=img_format,
+                bbox_inches='tight', dpi=300
+            )
+        plt.show()
+
     def plot_auc_curve(
         self, 
         ax, 
@@ -752,7 +797,8 @@ class EvaluateClf(Evaluate):
         if padding is None: padding = {'pad_y1': 0.3}
         
         nrows, ncols = math.ceil(len(algs)/2), 2
-        if figsize is None: figsize = (ncols*6, nrows*6)
+        if figsize is None: 
+            figsize = (ncols*6, nrows*9) if include_pred_hist else (ncols*6, nrows*6)
         fig = plt.figure(figsize=figsize)
         gs = GridSpec(3*nrows, ncols, hspace=0.5)
 
@@ -844,18 +890,19 @@ class EvaluateClf(Evaluate):
         """
         # setup 
         if target_events is None: target_events = self.target_events
-        N = len(target_events)
-        if figsize is None: figsize = (6, 6*N)
         if padding is None: padding = {}
-        fig = plt.figure(figsize=figsize)
+        nrows, ncols = math.ceil(len(target_events)/2), 2
+        if figsize is None: figsize = (ncols*6, nrows*6)
+        fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
+        axes = axes.flatten()
         plt.subplots_adjust(hspace=0.2, wspace=0.2)
         result = {}
         
         for idx, target_event in enumerate(target_events):
+            ax = axes[idx]
             Y_true = self.labels[split][target_event]
             Y_pred_prob = self.preds[alg][split][target_event]
             label = self.labels[split][target_event]
-            ax = fig.add_subplot(N,1,idx+1)
             result[target_event] = self.plot_decision_curve(
                 ax, Y_true, Y_pred_prob, xlim=xlim
             )
@@ -987,6 +1034,9 @@ class EvaluateBaselineModel(Evaluate):
         split, 
         show_diagonal=False, 
         clip_flat_edges=True,
+        use_legend=True,
+        axis_limit=None,
+        open_top_right=True,
     ):
         """
         Args:
@@ -1000,8 +1050,18 @@ class EvaluateBaselineModel(Evaluate):
             end_flat_mask = (pred == pred.iloc[-1])[::-1].cumprod()[::-1]
             mask = (initial_flat_mask | end_flat_mask).astype(bool)
             x, pred = x[~mask], pred[~mask]
-        ax.plot(x, pred)
-        
+
+        name = NAME_MAP.get(target_event, target_event)
+        if use_legend:
+            ax.plot(x, pred, label=name)
+            ax.legend(frameon=False)
+            ylabel = 'Predicted Probability'
+        else:
+            ax.plot(x, pred)
+            ylabel = 'Prediction for {name}'
+        xlabel = NAME_MAP.get(self.base_col, self.base_col)
+        ax.set(xlabel=xlabel, ylabel=ylabel)
+
         if self.pred_ci is not None:
             pred_min, pred_max = self.pred_ci[alg][split]
             pred_min = pred_min.loc[x.index, target_event]
@@ -1009,14 +1069,19 @@ class EvaluateBaselineModel(Evaluate):
             ax.fill_between(x, pred_min, pred_max, alpha=0.25)
         
         if show_diagonal:
-            axis_max = max(x.max(), pred.max())
-            axis_min = min(x.min(), pred.min())
-            ax.plot([axis_min, axis_max], [axis_min, axis_max], 'k:')
+            if axis_limit is None:
+                axis_max = max(x.max(), pred.max())
+                axis_min = min(x.min(), pred.min())
+                limit = [axis_max, axis_min]
+            else:
+                limit = [axis_limit[0] + 5, axis_limit[1] - 5]
+            ax.plot(limit, limit, 'k:')
         
-        xlabel = NAME_MAP.get(self.base_col, self.base_col)
-        ylabel = f'Prediction for {NAME_MAP.get(target_event, target_event)}'
-        ax.set(xlabel=xlabel, ylabel=ylabel)
-        ax.grid()
+        if axis_limit is not None:
+            ax.set(xlim=axis_limit, ylim=axis_limit)
+        if open_top_right:
+            remove_top_right_axis(ax)
+    
 
     def plot_label_vs_base(
         self,
