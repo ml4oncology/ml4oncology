@@ -76,7 +76,7 @@ def importance_plot(
     
     summary = pd.DataFrame()
     for idx, target_event in tqdm(enumerate(target_events)):
-        feat_importances = df[target_event]
+        feat_importances = df[target_event].clip(lower=0)
         feat_importances = feat_importances.sort_values(ascending=False)
         feat_importances = feat_importances[0:top]
         feat_importances = feat_importances.round(4)
@@ -116,7 +116,8 @@ def subgroup_performance_plot(
     figsize=(16,24), 
     xtick_rotation=45,
     ylim=None,
-    save_dir=None
+    save_dir=None,
+    bar_names=None
 ):
     # Setup
     if subgroups is None: 
@@ -131,9 +132,10 @@ def subgroup_performance_plot(
     df = df.loc[subgroups]
     df.index = df.index.remove_unused_levels()
     metrics = df.columns.levels[1].tolist()
-    bar_names = [idx[1] for idx in df.index]
-    bar_names = [name.split('(')[0].strip() for name in bar_names]
-    bar_names[0] = subgroups[0] # Edge Case: Entire Test Cohort
+    if bar_names is None:
+        bar_names = [idx[1] for idx in df.index]
+        bar_names = [name.split('(')[0].strip() for name in bar_names]
+        bar_names[0] = subgroups[0] # Edge Case: Entire Test Cohort
     
     start_pos = 0
     x_bar_pos = []
@@ -874,12 +876,17 @@ def tree_plot(train, target_event='Neutropenia', alg='RF'):
 def tile_plot(
     x,
     y,
-    xlabel=None,
-    ylabel=None,
     clip=True,
     equal_axis=True,
     drop_marginal_plots=True,
-    discrete_colorbar=True
+    discrete_colorbar=True,
+    axis_limit=None,
+    xlabel=None,
+    ylabel=None,
+    xticks=None,
+    yticks=None,
+    xticklabels=None,
+    yticklabels=None,
 ):
     if clip:
         # clip the prediction and label to the 0.1% and 99.9% quantile
@@ -893,16 +900,25 @@ def tile_plot(
     
     if equal_axis:
         # ensure x and y axis are the same range by doing this hack
-        axis_max = max(y.max(), x.max())
-        axis_min = max(y.min(), x.min())
-        x = pd.concat([x, pd.Series([axis_max, axis_min])])
-        y = pd.concat([y, pd.Series([axis_max, axis_min])])
+        # NOTE: if you try to modify the axis limits without this, the tiles get distorted
+        if axis_limit is None:
+            axis_max = max(y.max(), x.max())
+            axis_min = max(y.min(), x.min())
+            limit = [axis_max, axis_min]
+        else:
+            limit = axis_limit
+        x = pd.concat([x, pd.Series(limit)])
+        y = pd.concat([y, pd.Series(limit)])
     
-    g = sns.jointplot(x=x, y=y, kind='hex', height=6, ratio=15)
+    g = sns.jointplot(x=x, y=y, kind='hex', height=6, ratio=15, xlim=axis_limit, ylim=axis_limit)
     if drop_marginal_plots:
         g.ax_marg_x.remove()
         g.ax_marg_y.remove()
     g.set_axis_labels(xlabel=xlabel, ylabel=ylabel)
+    if xticks: g.ax_joint.set_xticks(xticks)
+    if yticks: g.ax_joint.set_yticks(yticks)
+    if xticklabels: g.ax_joint.set_xticklabels(xticklabels)
+    if yticklabels: g.ax_joint.set_yticklabels(yticklabels)
 
     # add the color bar
     # left, bottom, width, height (fraction of figure width and height)
@@ -911,6 +927,41 @@ def tile_plot(
     cbar = plt.colorbar(cax=cbar_ax)
     if discrete_colorbar: make_discrete_colorbar(g.fig, cbar)
     
+
+###############################################################################
+# Score Bar Plots
+###############################################################################
+def score_plot(scores, targets, output_path, metric='AUROC', ylim=None):
+    models = ['LR', 'RF', 'XGB', 'NN', 'ENS', 'SPLINE']
+    index_slice = pd.IndexSlice[models, metric]
+    df = scores['Test'].loc[index_slice, :]
+    score = df.applymap(lambda x: x.split(' ')[0])
+    lower = df.applymap(lambda x: x.split(' ')[1].strip('()').split('-')[0])
+    upper = df.applymap(lambda x: x.split(' ')[1].strip('()').split('-')[1])
+    df = pd.concat([score, lower, upper], keys=['score', 'lower', 'upper'], axis=1).astype(float)
+    df = df.reset_index(level=1, names=[None, 'metric'])
+
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 6))
+    start_pos = 0
+    x_bar_pos = []
+    N = len(models)
+    colors = sns.color_palette()
+    for idx, target in enumerate(targets):
+        bar_pos = np.arange(start_pos, start_pos + N).tolist()
+        x_bar_pos += bar_pos
+        start_pos += N + 1
+        score, lower, upper = df['score'][target], df['lower'][target], df['upper'][target]
+        yerr = None if lower is None else [score - lower, upper - score]
+        ax.bar(
+            bar_pos, score, alpha=0.8, width=1.0, linewidth=1.0, edgecolor='black', align='center', yerr=yerr, capsize=5, color=colors, 
+            label=models if idx == 0 else None
+        )
+    ax.legend(ncols=N, frameon=False)
+    ax.set(ylim=ylim, ylabel=metric, xticks=[2.5, 9.5, 16.5], xticklabels=targets)
+    plt.savefig(f'{output_path}/figures/score_plot_{metric}.jpg', bbox_inches='tight', dpi=300)
+    plt.show()
+
+
 ###############################################################################
 # Helper Functions
 ###############################################################################
