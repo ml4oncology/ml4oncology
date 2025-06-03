@@ -32,7 +32,7 @@ get_ipython().run_line_magic('autoreload', '2')
 import pandas as pd
 import numpy as np
 
-from src.config import root_path, can_folder, all_observations, DATE
+from src.config import root_path, can_folder, all_observations, cisplatin_cco_drug_codes, cisplatin_dins, DATE
 from src.utility import load_included_regimens
 from src.preprocess import (
     Systemic, Demographic, Laboratory, Symptoms, BloodTransfusion,
@@ -82,7 +82,7 @@ def quick_summary(df):
 # In[6]:
 
 
-get_ipython().run_cell_magic('time', '', "syst = Systemic()\ndf = syst.run(\n    regimens, \n    drug='cisplatin',\n    filter_kwargs={'remove_inpatients': False, 'verbose': True}, \n    process_kwargs={'cycle_length_map': cycle_length_map, 'day_one_regimens': day_one_regimens}\n)\ndf.to_parquet(f'{output_path}/data/systemic.parquet.gzip', compression='gzip', index=False)")
+get_ipython().run_cell_magic('time', '', "syst = Systemic()\ndf = syst.run(\n    regimens, \n    drug='cisplatin',\n    filter_kwargs={'remove_inpatients': True, 'verbose': True}, \n    process_kwargs={'cycle_length_map': cycle_length_map, 'day_one_regimens': day_one_regimens}\n)\ndf.to_parquet(f'{output_path}/data/systemic.parquet.gzip', compression='gzip', index=False)")
 
 
 # In[6]:
@@ -92,6 +92,14 @@ df = pd.read_parquet(f'{output_path}/data/systemic.parquet.gzip')
 quick_summary(df)
 
 
+# In[7]:
+
+
+# Add init cisplatin date
+systemic = pd.read_parquet(f'{output_path}/data/systemic.parquet.gzip')
+cisplatin_trts = systemic[systemic['din'].isin(cisplatin_dins) | systemic['cco_drug_code'].isin(cisplatin_cco_drug_codes)]
+df['init_cisp_date'] = df['ikn'].map(cisplatin_trts.groupby('ikn')[DATE].min())
+
 # ### Include features from demographic data
 # Includes cancer diagnosis, income, immigration, area of residence, etc
 
@@ -99,7 +107,7 @@ quick_summary(df)
 
 
 demog = Demographic()
-demo_df = demog.run(exclude_blood_cancer=False)
+demo_df = demog.run(exclude_blood_cancer=True)
 
 
 # In[8]:
