@@ -230,7 +230,6 @@ class PrepData:
         treatment_intents=None, 
         regimens=None,
         cancer_sites=None,
-        first_course_treatment=False, 
         include_comorbidity=False,
         verbose=True
     ):
@@ -250,8 +249,6 @@ class PrepData:
                 treatment regimens are kept.
             cancer_sites (list): A sequence of cancer sites (str) to keep. If
                 None, all cancer sites are kept.
-            first_course_treatment (bool): If True, keep only first course 
-                treatments of a new line of therapy
             include_comorbidity (bool): If True, include features indicating if
                 patients had hypertension and/or diabetes
         """
@@ -272,9 +269,6 @@ class PrepData:
             if keep is None: continue
             df = self.filter_treatment_catgories(df, keep, col, verbose=verbose)
             if len(keep) == 1: drop_cols.append(col)
-        
-        if first_course_treatment: 
-            df = self.get_first_course_treatments(df, verbose=verbose)
         
         if include_comorbidity:
             for col in ['hypertension', 'diabetes']:
@@ -437,21 +431,33 @@ class PrepData:
         with_respect_to='sessions',
         save_path=''
     ):
-        if with_respect_to == 'patients':
-            dists = {}
-            for split, group in Y.groupby(tag['split']):
-                ikn = tag.loc[group.index, 'ikn']
-                count = {True: group.apply(lambda mask: ikn[mask].nunique())}
-                count[False] = ikn.nunique() - count[True] 
-                dists[split] = pd.DataFrame(count).T
-        elif with_respect_to == 'sessions':
-            dists = {split: group.apply(pd.value_counts) 
-                     for split, group in Y.groupby(tag['split'])}
-        dists['Total'] = dists['Train'] + dists['Valid'] + dists['Test']
-        dists = pd.concat(dists).T
+        dists = {}
+        for split, group in Y.groupby(tag['split']):
+            dists[split] = self._get_binary_label_distribution(group, tag, with_respect_to=with_respect_to)
+        dists['Total'] = self._get_binary_label_distribution(Y, tag, with_respect_to=with_respect_to)
+        dists = pd.DataFrame(dists).T
         if save_path: dists.to_csv(save_path, index=False)
         return dists
     
+    def _get_binary_label_distribution(self, df, tag, with_respect_to='sessions'):
+        ikns = tag.loc[df.index, 'ikn']
+        N = {'sessions': len(df), 'patients': ikns.nunique()}[with_respect_to]
+        count = {}
+        for target, labels in df.items():
+            if with_respect_to == 'sessions':
+                N_pos = sum(labels == 1)
+                N_neg = sum(labels == 0)
+                N_exc = sum(labels == -1)
+            elif with_respect_to == 'patients':
+                N_pos = ikns[labels == 1].nunique()
+                N_neg = N - N_pos
+                N_exc = 0
+            count[(target, 1)] = f'{N_pos} ({N_pos/N*100:.2f}%)'
+            count[(target, 0)] = f'{N_neg} ({N_neg/N*100:.2f}%)'
+            if N_exc > 0:
+                count[(target, -1)] = f'{N_exc} ({N_exc/N*100:.2f}%)'
+        return count
+
     def clip_outliers(
         self, 
         data, 
@@ -549,19 +555,6 @@ class PrepData:
         month = df[DATE].dt.month - 1
         df['visit_month_sin'] = np.sin(2*np.pi*month/12)
         df['visit_month_cos'] = np.cos(2*np.pi*month/12)
-        return df
-    
-    def get_first_course_treatments(self, df, verbose=False):
-        """Keep the very first treatment session for each line of therapy for 
-        each patient
-        """
-        keep_idxs = split_and_parallelize(df, _first_course_worker)
-        if verbose:
-            mask = df.index.isin(keep_idxs)
-            context = (' that are not first course treatment of a new line of '
-                       'therapy')
-            logger.info(make_log_msg(df, mask, context=context))
-        df = df.loc[keep_idxs]
         return df
     
     def fill_missing_feature(self, df):
@@ -1005,13 +998,35 @@ class PrepDataCAN(PrepData):
                 second measurement does not exist, remove the sample.
             **kwargs (dict): the parameters of PrepData.prepare_features
         """
-        df = self.load_data()
-        df = self.get_creatinine_data(
-            df, include_rechallenges=include_rechallenges, 
+        orig_data = self.load_data()
+        filt_data = self.get_creatinine_data(
+            orig_data, include_rechallenges=include_rechallenges, 
             use_target_average=use_target_average, verbose=verbose
         )
-        df = self.prepare_features(df, verbose=verbose, **kwargs)
-        return df
+
+        if self.adverse_event == 'ckd':
+            # take only the very first treatment
+            # NOTE: why this approach? cuz get_creatinine_data requires the full treatment sequence,
+            # and also filters potential first treatments
+            first_trt_idxs = orig_data.reset_index().groupby('ikn')['index'].first()
+            mask = filt_data.index.isin(first_trt_idxs)
+            if verbose:
+                context = ' which are not the very first treatments'
+                logger.info(make_log_msg(filt_data, mask, context=context))
+            filt_data = filt_data[mask].copy()
+            # remove non-varying features
+            filt_data = filt_data.drop(columns=['days_since_starting_chemo', 'chemo_cycle', 'immediate_new_regimen'])
+
+            # some patients' first cisplatin treatment dates were actually prior to the min_chemo_date cutoff
+            # we need to exclude them
+            mask = (filt_data[DATE] == filt_data['init_cisp_date']) | (filt_data[DATE] == filt_data['init_regimen_date'])
+            if verbose:
+                context = ' which are not the very first treatments'
+                logger.info(make_log_msg(filt_data, mask, context=context))
+            filt_data = filt_data[mask]
+
+        proc_data = self.prepare_features(filt_data, verbose=verbose, **kwargs)
+        return proc_data
     
     def get_creatinine_data(
         self, 
@@ -1158,14 +1173,14 @@ class PrepDataCAN(PrepData):
             include_rechallenges=include_rechallenges
         )
         result = split_and_parallelize(df, worker, processes=8)
-        result = pd.DataFrame(result, columns=['index'] + next_scr_cols)
+        result = pd.DataFrame(result, columns=['index'] + next_scr_cols + ['last_cisplatin_date'])
         result = result.set_index('index')
         if verbose: 
             mask = df.index.isin(result.index)
             context = ' during next creatinine reassignment'
             logger.info(make_log_msg(df, mask, context=context))
         df = df.loc[result.index]
-        df[next_scr_cols] = result[next_scr_cols]
+        df[result.columns] = result
         df = df.sort_values(by=['ikn', DATE])
         return df
     
@@ -1198,14 +1213,6 @@ class PrepDataCAN(PrepData):
         return target
 
 # Worker Helpers
-def _first_course_worker(partition):
-    keep_idxs = []
-    for ikn, group in partition.groupby('ikn'):
-        lot = group['line_of_therapy']
-        new_lot = ~(lot == lot.shift())
-        keep_idxs += group.index[new_lot].tolist()
-    return keep_idxs
-
 def _reassign_next_creatinine_worker(partition, include_rechallenges=True):
     result = []
     for ikn, group in partition.groupby('ikn'):
@@ -1216,7 +1223,7 @@ def _reassign_next_creatinine_worker(partition, include_rechallenges=True):
 
         prev_idx = idxs[0] - 1
         for cur_idx in valid_idxs:
-            tmp = group.loc[cur_idx, next_scr_cols]
+            tmp = group.loc[cur_idx, next_scr_cols+[DATE]]
             if not np.isnan(tmp['next_SCr_value']):
                 for i in range(prev_idx+1, cur_idx+1):
                     result.append([i]+tmp.tolist())

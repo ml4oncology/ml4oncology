@@ -60,6 +60,18 @@ class Systemic:
         if process_kwargs is None: process_kwargs = {}
         df = self.load()
         if verbose: _get_n_patients(df, 'treatment')
+            
+        df = clean_up_systemic(df, regimens, verbose=verbose)
+        # sanity check, regimens have already been relabeled
+        assert all(regimens['regimen'] == regimens['relabel'].fillna(regimens['regimen']))
+
+        # TODO: reorganize, but make sure this is calculated PRIOR to filtering
+        df['init_date'] = df.groupby('ikn')[DATE].transform('min')
+        df['init_regimen_date'] = df.groupby(['ikn', 'regimen'])[DATE].transform('min')
+        unique_visits = df[['ikn', DATE]].drop_duplicates().sort_values(by=['ikn', DATE])
+        unique_visits['prev_date'] = unique_visits.groupby('ikn')[DATE].shift()
+        df = df.merge(unique_visits, on=['ikn', DATE], how='left')
+
         df = filter_systemic_data(df, regimens, drug=drug, **filter_kwargs)
         df = process_systemic_data(df, drug=drug, **process_kwargs)
         return df
@@ -84,8 +96,6 @@ def filter_systemic_data(
             to exclude. If None, all drugs are included
     """
     cols = systemic_cols.copy()
-    
-    df = clean_up_systemic(df, verbose=verbose)
     df = filter_regimens(df, regimens, verbose=verbose)
     df = filter_date(df, min_date=min_date, max_date=max_date, verbose=verbose)
     if drug is not None:
@@ -248,7 +258,7 @@ def process_systemic_data(
 ###############################################################################
 # Systemic Threapy Treatment Data - Helper Functions
 ###############################################################################
-def clean_up_systemic(df, verbose=True):
+def clean_up_systemic(df, regimens, verbose=True):
     df = df.rename(columns={'cco_regimen': 'regimen'})
     
     # filter out rows with no regimen data 
@@ -265,6 +275,12 @@ def clean_up_systemic(df, verbose=True):
         .str.replace(" ", "", regex=False) \
         .str.lower()
     
+    # change regimen name to the correct mapping
+    mask = regimens['relabel'].notnull()
+    old_name, new_name = regimens.loc[mask, ['regimen', 'relabel']].T.values
+    df['regimen'] = df['regimen'].replace(old_name, new_name)
+    regimens['regimen'].replace(old_name, new_name, inplace=True)
+    
     # clean other features
     df[BSA] = df[BSA].replace(0, np.nan).replace(-99, np.nan)
     df[INTENT] = df[INTENT].replace('U', np.nan)
@@ -279,12 +295,6 @@ def filter_regimens(df, regimens, verbose=True):
     if verbose:
         logger.info(make_log_msg(df, mask, context=f' not in selected reigmens.'))
     df = df[mask].copy()
-    
-    # change regimen name to the correct mapping
-    mask = regimens['relabel'].notnull()
-    old_name, new_name = regimens.loc[mask, ['regimen', 'relabel']].T.values
-    df['regimen'] = df['regimen'].replace(old_name, new_name)
-    
     return df
 
 def filter_date(
@@ -528,13 +538,14 @@ def filter_basic_demographic_data(df, exclude_blood_cancer=True, verbose=False):
             logger.info(f"Removing {N} patients with blood cancer")
         df = df[~mask]
         
-    # remove morphology codes >= 959
-    mask = df['cancer_morph_cd'] >= '959'
-    if verbose:
-        N = df.loc[mask, 'ikn'].nunique()
-        removed_cancers = df.loc[mask, 'cancer_morph_cd'].unique()
-        logger.info(f"Removing {N} patients and cancer types {removed_cancers}")
-    df = df[~mask]
+        # remove morphology codes >= 959
+        # represent heamtologic malignancies, such as leukemia, lymphoma, or plasma cell neoplasms
+        mask = df['cancer_morph_cd'] >= '959'
+        if verbose:
+            N = df.loc[mask, 'ikn'].nunique()
+            removed_cancers = df.loc[mask, 'cancer_morph_cd'].unique()
+            logger.info(f"Removing {N} patients and cancer types {removed_cancers}")
+        df = df[~mask]
     
     return df
 
